@@ -22,21 +22,7 @@ public sealed unsafe class SwapchainManager : IDisposable
 
     public void Initialize()
     {
-        var support = _context.QuerySwapchainSupport();
-
-        var surfaceFormat = ChooseSurfaceFormat(support.Formats);
-        var presentMode = ChoosePresentMode(support.PresentModes);
-        var extent = ChooseExtent(support.Capabilities);
-
-        _imageFormat = surfaceFormat.Format;
-        _extent = extent;
-
-        Console.WriteLine($"Swapchain format: {surfaceFormat.Format}");
-        Console.WriteLine($"Present mode: {presentMode}");
-        Console.WriteLine($"Extent: {extent.Width}x{extent.Height}");
-
-        CreateSwapchain(support, surfaceFormat, presentMode, extent);
-        CreateImageViews();
+        CreateSwapchainResources();
 
         Console.WriteLine("SwapchainManager initialized successfully");
     }
@@ -197,5 +183,55 @@ public sealed unsafe class SwapchainManager : IDisposable
         {
             _context.KhrSwapchain.DestroySwapchain(_context.Device, _swapchain, null);
         }
+    }
+    
+    public void Recreate()
+    {
+        DestroySwapchainResources();
+        CreateSwapchainResources();
+    }
+    
+    private void CreateSwapchainResources()
+    {
+        var support = _context.QuerySwapchainSupport();
+
+        var surfaceFormat = ChooseSurfaceFormat(support.Formats);
+        var presentMode = ChoosePresentMode(support.PresentModes);
+        var extent = ChooseExtent(support.Capabilities);
+
+        _imageFormat = surfaceFormat.Format;
+        _extent = extent;
+
+        CreateSwapchain(
+            support,
+            surfaceFormat,
+            presentMode,
+            extent);
+
+        CreateImageViews();
+    }
+    
+    private void DestroySwapchainResources()
+    {
+        foreach (var view in _imageViews)
+        {
+            if (view.Handle != 0)
+                _context.Vk.DestroyImageView(
+                    _context.Device,
+                    view,
+                    null);
+        }
+
+        _imageViews = [];
+
+        if (_swapchain.Handle != 0)
+        {
+            _context.KhrSwapchain.DestroySwapchain(
+                _context.Device,
+                _swapchain,
+                null);
+        }
+
+        _swapchain = default;
     }
 }

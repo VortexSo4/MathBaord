@@ -23,7 +23,9 @@ public sealed unsafe class FramebufferManager : IDisposable
     public void Initialize()
     {
         CreateFramebuffers();
-        Console.WriteLine($"Framebuffers created: {_framebuffers.Length}");
+
+        Console.WriteLine(
+            $"Framebuffers created: {_framebuffers.Length}");
     }
 
     private void CreateFramebuffers()
@@ -38,8 +40,10 @@ public sealed unsafe class FramebufferManager : IDisposable
             {
                 SType = StructureType.FramebufferCreateInfo,
                 RenderPass = _renderPass.RenderPass,
+
                 AttachmentCount = 1,
                 PAttachments = &attachment,
+
                 Width = _swapchain.Extent.Width,
                 Height = _swapchain.Extent.Height,
                 Layers = 1
@@ -52,18 +56,40 @@ public sealed unsafe class FramebufferManager : IDisposable
                 out _framebuffers[i]);
 
             if (result != Result.Success)
-                throw new Exception($"CreateFramebuffer failed: {result}");
+                throw new Exception(
+                    $"CreateFramebuffer failed: {result}");
         }
+    }
+
+    private void DestroyFramebuffers()
+    {
+        foreach (var framebuffer in _framebuffers)
+        {
+            if (framebuffer.Handle != 0)
+            {
+                _context.Vk.DestroyFramebuffer(
+                    _context.Device,
+                    framebuffer,
+                    null);
+            }
+        }
+
+        _framebuffers = [];
+    }
+
+    public void Recreate()
+    {
+        DestroyFramebuffers();
+        CreateFramebuffers();
+
+        Console.WriteLine(
+            $"Framebuffers recreated: {_framebuffers.Length}");
     }
 
     public IReadOnlyList<Framebuffer> Framebuffers => _framebuffers;
 
     public void Dispose()
     {
-        foreach (var framebuffer in _framebuffers)
-        {
-            if (framebuffer.Handle != 0)
-                _context.Vk.DestroyFramebuffer(_context.Device, framebuffer, null);
-        }
+        DestroyFramebuffers();
     }
 }

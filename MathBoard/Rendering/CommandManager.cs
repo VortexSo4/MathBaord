@@ -8,6 +8,7 @@ public sealed unsafe class CommandManager : IDisposable
 
     private CommandPool _commandPool;
     private CommandBuffer[] _commandBuffers = [];
+    
 
     public CommandManager(VulkanContext context)
     {
@@ -67,17 +68,16 @@ public sealed unsafe class CommandManager : IDisposable
     public void RecordCommandBuffers(
         IReadOnlyList<Framebuffer> framebuffers,
         RenderPass renderPass,
-        Extent2D extent)
+        Extent2D extent,
+        StrokeRenderer strokeRenderer)
     {
         for (int i = 0; i < _commandBuffers.Length; i++)
         {
             var cmd = _commandBuffers[i];
 
-            CommandBufferBeginInfo beginInfo = new()
-            {
-                SType = StructureType.CommandBufferBeginInfo
-            };
-
+            _context.Vk.ResetCommandBuffer(cmd, 0);
+        
+            CommandBufferBeginInfo beginInfo = new() { SType = StructureType.CommandBufferBeginInfo };
             _context.Vk.BeginCommandBuffer(cmd, &beginInfo);
 
             RenderPassBeginInfo renderPassInfo = new()
@@ -90,13 +90,17 @@ public sealed unsafe class CommandManager : IDisposable
 
             ClearValue clearColor = new()
             {
-                Color = new ClearColorValue { Float32_0 = 0.1f, Float32_1 = 0.1f, Float32_2 = 0.12f, Float32_3 = 1.0f }
+                Color = new ClearColorValue { Float32_0 = 0.98f, Float32_1 = 0.98f, Float32_2 = 0.99f, Float32_3 = 1.0f }
             };
 
             renderPassInfo.ClearValueCount = 1;
             renderPassInfo.PClearValues = &clearColor;
 
             _context.Vk.CmdBeginRenderPass(cmd, &renderPassInfo, SubpassContents.Inline);
+        
+            // ← Рисуем наши линии
+            strokeRenderer.Render(cmd);
+
             _context.Vk.CmdEndRenderPass(cmd);
 
             var endResult = _context.Vk.EndCommandBuffer(cmd);
@@ -104,10 +108,40 @@ public sealed unsafe class CommandManager : IDisposable
                 throw new Exception($"EndCommandBuffer failed: {endResult}");
         }
 
-        Console.WriteLine("Command buffers recorded (dark gray clear)");
+        Console.WriteLine("Command buffers recorded with strokes");
+    }
+    
+    private void FreeCommandBuffers()
+    {
+        if (_commandBuffers.Length == 0)
+            return;
+
+        fixed (CommandBuffer* ptr = _commandBuffers)
+        {
+            _context.Vk.FreeCommandBuffers(
+                _context.Device,
+                _commandPool,
+                (uint)_commandBuffers.Length,
+                ptr);
+        }
+
+        _commandBuffers = [];
+    }
+    
+    public void Recreate(
+        uint framebufferCount,
+        IReadOnlyList<Framebuffer> framebuffers,
+        RenderPass renderPass,
+        Extent2D extent,
+        StrokeRenderer strokeRenderer)
+    {
+        FreeCommandBuffers();
+        CreateCommandBuffers(framebufferCount);
+        RecordCommandBuffers(framebuffers, renderPass, extent, strokeRenderer);
     }
 
     public CommandBuffer[] CommandBuffers => _commandBuffers;
+    public CommandPool CommandPool => _commandPool;
 
     public void Dispose()
     {

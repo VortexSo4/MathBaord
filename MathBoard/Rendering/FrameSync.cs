@@ -71,9 +71,8 @@ public sealed unsafe class FrameSync : IDisposable
             default,
             &imageIndex);
 
-        if (acquireResult != Result.Success && acquireResult != Result.SuboptimalKhr)
+        if (acquireResult == Result.ErrorOutOfDateKhr)
         {
-            Console.WriteLine($"AcquireNextImage failed: {acquireResult}");
             return;
         }
 
@@ -126,9 +125,9 @@ public sealed unsafe class FrameSync : IDisposable
             _context.PresentQueue,
             &presentInfo);
 
-        if (presentResult != Result.Success && presentResult != Result.SuboptimalKhr)
+        if (presentResult is Result.ErrorOutOfDateKhr or Result.SuboptimalKhr)
         {
-            Console.WriteLine($"QueuePresent failed: {presentResult}");
+            return;
         }
     }
 
