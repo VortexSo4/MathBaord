@@ -76,161 +76,169 @@ public class RadialMenu
     }
 
     public void OnMouseDown(Vector2 screenPos)
-{
-    if (!IsOpen) return;
-    _isMouseDown = true;
-
-    if (_isPickingColor)
     {
+        if (!IsOpen) return;
+        _isMouseDown = true;
+
+        if (_isPickingColor)
+        {
+            var dir = screenPos - Position;
+            float dist = dir.Length();
+
+            // Если нажали по центру — не захватываем кольцо
+            if (dist <= PickerCenterRadius)
+            {
+                _activePickerRing = -1;
+                return;
+            }
+
+            float r1 = PickerCenterRadius + 6f;
+            float r2 = r1 + PickerRingWidth;
+            float gap = 6f;
+            float r3 = r2 + gap + PickerRingWidth;
+            float r4 = r3 + gap + PickerRingWidth;
+
+            if (dist >= r1 && dist <= r2)
+                _activePickerRing = 0;
+            else if (dist >= r2 + gap && dist <= r3)
+                _activePickerRing = 1;
+            else if (dist >= r3 + gap && dist <= r4)
+                _activePickerRing = 2;
+            else
+                _activePickerRing = -1;
+
+            if (_activePickerRing >= 0)
+                HandlePickerMove(screenPos);
+        }
+    }
+
+    public void OnMouseMove(Vector2 screenPos)
+    {
+        if (!IsOpen) return;
+
+        if (_isAdjustingThickness)
+        {
+            float deltaY = Position.Y - screenPos.Y;
+            _previewThickness = Math.Clamp(_thicknessBaseWidth + deltaY * 0.6f, 4f, 90f);
+            _renderer.SetDirty();
+            return;
+        }
+
+        if (_isPickingColor)
+        {
+            // Крутим только при зажатой кнопке и захваченном кольце
+            if (_isMouseDown && _activePickerRing >= 0)
+                HandlePickerMove(screenPos);
+            return;
+        }
+
         var dir = screenPos - Position;
         float dist = dir.Length();
 
-        // Если нажали по центру — не захватываем кольцо
-        if (dist <= PickerCenterRadius)
+        if (dist < CenterRadius || dist > OuterRadius * 1.35f)
         {
+            _selectedIndex = -1;
+            return;
+        }
+
+        float angle = MathF.Atan2(dir.Y, dir.X) + MathF.PI;
+        float sectorAngle = MathF.PI * 2f / SectorCount;
+        float shiftedAngle = angle + sectorAngle * 0.5f;
+        _selectedIndex = (int)(shiftedAngle / sectorAngle) % SectorCount;
+    }
+
+    public void OnMouseUp(Vector2 screenPos)
+    {
+        if (!IsOpen) return;
+
+        _isMouseDown = false;
+
+        if (_isPickingColor)
+        {
+            var dir = screenPos - Position;
+            float dist = dir.Length();
+
+            // Если отпустили над центром — подтверждаем выбор цвета
+            if (dist <= PickerCenterRadius)
+            {
+                ApplyPickerColor();
+            }
+
             _activePickerRing = -1;
             return;
         }
 
-        float r1 = PickerCenterRadius + 6f;
-        float r2 = r1 + PickerRingWidth;
-        float gap = 6f;
-        float r3 = r2 + gap + PickerRingWidth;
-        float r4 = r3 + gap + PickerRingWidth;
+        var timeHeld = (DateTime.Now - _pressStartTime).TotalSeconds;
 
-        if (dist >= r1 && dist <= r2)
-            _activePickerRing = 0;
-        else if (dist >= r2 + gap && dist <= r3)
-            _activePickerRing = 1;
-        else if (dist >= r3 + gap && dist <= r4)
-            _activePickerRing = 2;
-        else
-            _activePickerRing = -1;
-
-        if (_activePickerRing >= 0)
-            HandlePickerMove(screenPos);
-    }
-}
-
-public void OnMouseMove(Vector2 screenPos)
-{
-    if (!IsOpen) return;
-
-    if (_isAdjustingThickness)
-    {
-        float deltaY = Position.Y - screenPos.Y;
-        _previewThickness = Math.Clamp(_thicknessBaseWidth + deltaY * 0.6f, 4f, 90f);
-        _renderer.SetDirty();
-        return;
-    }
-
-    if (_isPickingColor)
-    {
-        // Крутим только при зажатой кнопке и захваченном кольце
-        if (_isMouseDown && _activePickerRing >= 0)
-            HandlePickerMove(screenPos);
-        return;
-    }
-
-    var dir = screenPos - Position;
-    float dist = dir.Length();
-
-    if (dist < CenterRadius || dist > OuterRadius * 1.35f)
-    {
-        _selectedIndex = -1;
-        return;
-    }
-
-    float angle = MathF.Atan2(dir.Y, dir.X) + MathF.PI;
-    float sectorAngle = MathF.PI * 2f / SectorCount;
-    float shiftedAngle = angle + sectorAngle * 0.5f;
-    _selectedIndex = (int)(shiftedAngle / sectorAngle) % SectorCount;
-}
-
-public void OnMouseUp(Vector2 screenPos)
-{
-    if (!IsOpen) return;
-
-    _isMouseDown = false;
-
-    if (_isPickingColor)
-    {
-        var dir = screenPos - Position;
-        float dist = dir.Length();
-
-        // Если отпустили над центром — подтверждаем выбор
-        if (dist <= PickerCenterRadius)
+        if (_isAdjustingThickness)
         {
-            ApplyPickerColor();
+            _renderer.CurrentBrushWidth = _previewThickness;
+            if (Settings.RadialMenuCloseOnToolSelect)
+                Close();
+            else
+                _renderer.SetDirty();
+            return;
         }
 
-        _activePickerRing = -1;
-        return;
-    }
-
-    var timeHeld = (DateTime.Now - _pressStartTime).TotalSeconds;
-
-    if (_isAdjustingThickness)
-    {
-        _renderer.CurrentBrushWidth = _previewThickness;
-        Close();
-        return;
-    }
-
-    if (_selectedIndex == -1)
-    {
-        if (_isConfirmingClear)
-            _renderer.ClearAll();
-        Close();
-        return;
-    }
-
-    if (_selectedIndex <= 3)
-        HandleToolSelection(_selectedIndex);
-    else
-    {
-        int colorIdx = _selectedIndex - 4;
-        if (colorIdx >= 0 && colorIdx < Settings.Colors.Count)
+        if (_selectedIndex == -1)
         {
-            if (timeHeld > ColorLongPressThreshold)
+            if (_isConfirmingClear)
+                _renderer.ClearAll();
+            Close();
+            return;
+        }
+
+        if (_selectedIndex <= 3)
+        {
+            HandleToolSelection(_selectedIndex);
+        }
+        else
+        {
+            int colorIdx = _selectedIndex - 4;
+            if (colorIdx >= 0 && colorIdx < Settings.Colors.Count)
             {
-                OpenColorPicker(colorIdx);
+                if (timeHeld > Settings.RadialMenuLongPressThreshold)
+                {
+                    OpenColorPicker(colorIdx);
+                }
+                else
+                {
+                    _renderer.SetColor(Settings.Colors[colorIdx]);
+                    if (Settings.RadialMenuCloseOnToolSelect)
+                        Close();
+                    else
+                        _renderer.SetDirty();
+                }
             }
             else
             {
-                _renderer.SetColor(Settings.Colors[colorIdx]);
                 Close();
             }
         }
-        else
-        {
-            Close();
-        }
     }
-}
 
-private void HandlePickerMove(Vector2 screenPos)
-{
-    var dir = screenPos - Position;
-    // Угол: atan2 даёт 0 справа, PI/2 вниз и т.д.
-    float angle = MathF.Atan2(dir.Y, dir.X);
-    // Сдвиг, чтобы value=0 соответствовало направлению вверх (как в DrawRingIndicator)
-    float raw = (angle + MathF.PI * 0.5f) / (MathF.PI * 2f);
-    float value = raw < 0f ? raw + 1f : raw;
-
-    switch (_activePickerRing)
+    private void HandlePickerMove(Vector2 screenPos)
     {
-        case 0: _pickerHue = value; break;
-        case 1: _pickerSaturation = value; break;
-        case 2: _pickerValue = value; break;
+        var dir = screenPos - Position;
+        // Угол: atan2 даёт 0 справа, PI/2 вниз и т.д.
+        float angle = MathF.Atan2(dir.Y, dir.X);
+        // Сдвиг, чтобы value=0 соответствовало направлению вверх (как в DrawRingIndicator)
+        float raw = (angle + MathF.PI * 0.5f) / (MathF.PI * 2f);
+        float value = raw < 0f ? raw + 1f : raw;
+
+        switch (_activePickerRing)
+        {
+            case 0: _pickerHue = value; break;
+            case 1: _pickerSaturation = value; break;
+            case 2: _pickerValue = value; break;
+        }
+
+        var previewColor = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
+        _renderer.SetColor(previewColor);
+        _renderer.SetDirty();
     }
 
-    var previewColor = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
-    _renderer.SetColor(previewColor);
-    _renderer.SetDirty();
-}
-
-private void OpenColorPicker(int colorIndex)
+    private void OpenColorPicker(int colorIndex)
     {
         _isPickingColor = true;
         _colorEditIndex = colorIndex;
@@ -256,19 +264,19 @@ private void OpenColorPicker(int colorIndex)
         {
             case 0:
                 _renderer.ToggleEraser(false);
-                Close();
+                if (Settings.RadialMenuCloseOnToolSelect) Close();
                 break;
             case 1:
                 _renderer.ToggleEraser(true);
-                Close();
+                if (Settings.RadialMenuCloseOnToolSelect) Close();
                 break;
-            case 2:
+            case 2: // толщина
                 _isAdjustingThickness = true;
                 _previewThickness = _renderer.CurrentBrushWidth;
                 _thicknessBaseWidth = _renderer.CurrentBrushWidth;
                 _renderer.SetDirty();
                 break;
-            case 3:
+            case 3: // очистка
                 _isConfirmingClear = true;
                 _renderer.SetDirty();
                 break;
@@ -399,7 +407,8 @@ private void OpenColorPicker(int colorIndex)
         }
     }
 
-    private static void DrawSatValRing(List<Vertex> vertices, Vector2 center, float r1, float r2, float hue, bool isSaturation,
+    private static void DrawSatValRing(List<Vertex> vertices, Vector2 center, float r1, float r2, float hue,
+        bool isSaturation,
         int segments)
     {
         float step = MathF.PI * 2f / segments;
@@ -454,7 +463,8 @@ private void OpenColorPicker(int colorIndex)
         }
     }
 
-    private static void DrawLineSegment(List<Vertex> v, Vector2 center, float r1, float r2, float a1, float a2, Vector4 color)
+    private static void DrawLineSegment(List<Vertex> v, Vector2 center, float r1, float r2, float a1, float a2,
+        Vector4 color)
     {
         var inner1 = center + new Vector2(MathF.Cos(a1), MathF.Sin(a1)) * r1;
         var outer1 = center + new Vector2(MathF.Cos(a1), MathF.Sin(a1)) * r2;

@@ -12,7 +12,8 @@ public sealed class InputManager : IDisposable
     private readonly Camera _camera;
     private readonly Document _document;
     private readonly RadialMenu _radialMenu;
-
+    private readonly LibraryManager? _libraryManager;
+    
     private IMouse? _mouse;
     private IKeyboard? _keyboard;
     private readonly IWindow _window;
@@ -21,12 +22,11 @@ public sealed class InputManager : IDisposable
     private Vector2 _lastPanPosition;
     private Vector2 _mouseDownPos;
 
-    // Menu opens immediately on press. For the first 120ms, moving >8px cancels
-    // the menu and starts a stroke instead — this preserves the draw-by-drag UX.
-    private bool _menuEscapeActive = false;
-    private DateTime _menuOpenTime;
+    // Новое поведение: меню открывается только после долгого нажатия
+    private bool _menuPending = false;
+    private DateTime _mouseDownTime;
 
-    public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document, RadialMenu radialMenu)
+    public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document, RadialMenu radialMenu, LibraryManager libraryManager)
     {
         _strokeRenderer = strokeRenderer;
         _camera = camera;
@@ -34,6 +34,7 @@ public sealed class InputManager : IDisposable
         _window = window;
         _input = window.CreateInput();
         _radialMenu = radialMenu;
+        _libraryManager = libraryManager;
 
         _mouse = _input.Mice.FirstOrDefault();
         _keyboard = _input.Keyboards.FirstOrDefault();
@@ -59,14 +60,10 @@ public sealed class InputManager : IDisposable
         if (button == MouseButton.Left)
         {
             _mouseDownPos = pos;
+            _mouseDownTime = DateTime.Now;
+            _menuPending = true;
 
-            if (!_radialMenu.IsOpen)
-            {
-                _radialMenu.OpenAt(pos);
-                _menuEscapeActive = true;
-                _menuOpenTime = DateTime.Now;
-            }
-            else
+            if (_radialMenu.IsOpen)
             {
                 _radialMenu.OnMouseDown(pos);
             }
@@ -81,31 +78,38 @@ public sealed class InputManager : IDisposable
     {
         var pos = GetMousePosition(mouse, _window);
 
+        // Если меню уже открыто — передаём движение в меню
         if (_radialMenu.IsOpen)
         {
-            if (_menuEscapeActive)
-            {
-                float elapsed = (float)(DateTime.Now - _menuOpenTime).TotalSeconds;
-                float dist    = Vector2.Distance(_mouseDownPos, pos);
-
-                // Quick drag within the grace window → user wants to draw, not use the menu.
-                if (dist > Settings.RadialMenuEscapeDistance && elapsed < Settings.RadialMenuEscapeTime)
-                {
-                    _radialMenu.Close();
-                    _menuEscapeActive = false;
-                    _strokeRenderer.BeginStroke(_mouseDownPos);
-                    _strokeRenderer.AddPoint(pos);
-                    _isDrawing = true;
-                    return;
-                }
-
-                if (elapsed >= Settings.RadialMenuEscapeTime)
-                    _menuEscapeActive = false;
-            }
-
             _radialMenu.OnMouseMove(pos);
             _strokeRenderer.SetDirty();
             return;
+        }
+
+        // Проверка отмены открытия меню при быстром движении
+        if (_menuPending)
+        {
+            float elapsed = (float)(DateTime.Now - _mouseDownTime).TotalSeconds;
+            float dist = Vector2.Distance(_mouseDownPos, pos);
+
+            // Отмена меню при быстром движении
+            if (dist > Settings.RadialMenuEscapeDistance && elapsed < Settings.RadialMenuEscapeTime)
+            {
+                _menuPending = false;
+                _strokeRenderer.BeginStroke(_mouseDownPos);
+                _strokeRenderer.AddPoint(pos);
+                _isDrawing = true;
+                return;
+            }
+
+            if (elapsed >= Settings.RadialMenuOpenThreshold)
+            {
+                _menuPending = false;
+                _radialMenu.OpenAt(_mouseDownPos);
+                _radialMenu.OnMouseDown(pos);
+                _strokeRenderer.SetDirty();
+                return;
+            }
         }
 
         if (_isDrawing)
@@ -128,8 +132,6 @@ public sealed class InputManager : IDisposable
 
         if (button == MouseButton.Left)
         {
-            _menuEscapeActive = false;
-
             if (_radialMenu.IsOpen)
             {
                 _radialMenu.OnMouseUp(pos);
@@ -139,13 +141,15 @@ public sealed class InputManager : IDisposable
                 _strokeRenderer.EndStroke();
                 _isDrawing = false;
             }
+
+            _menuPending = false;
         }
     }
 
     private void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
     {
-        bool ctrl  = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
-        bool shift = keyboard.IsKeyPressed(Key.ShiftLeft)   || keyboard.IsKeyPressed(Key.ShiftRight);
+        bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
+        bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
 
         if (ctrl && key == Key.Z)
         {
@@ -169,47 +173,9 @@ public sealed class InputManager : IDisposable
         }
 
         if (ctrl && key == Key.S)
-            SaveCanvasAuto();
+            _libraryManager?.SaveCanvas();
         else if (ctrl && key == Key.O)
-            LoadCanvasAuto();
-    }
-
-    private void SaveCanvasAuto()
-    {
-        try
-        {
-            string filename = $"MathBoard_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mathboard";
-            _document.SaveToFile(filename);
-            Console.WriteLine($"Canvas saved to: {filename}");
-            _document.SaveToFile("last_save.mathboard");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Save failed: {ex.Message}");
-        }
-    }
-
-    private void LoadCanvasAuto()
-    {
-        try
-        {
-            string filename = "last_save.mathboard";
-            if (File.Exists(filename))
-            {
-                _document.LoadFromFile(filename);
-                _strokeRenderer.SetDirty();
-                _strokeRenderer.UpdateGeometry();
-                Console.WriteLine($"Canvas loaded from: {filename}");
-            }
-            else
-            {
-                Console.WriteLine("No save file found. Use Ctrl+S to save first.");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Load failed: {ex.Message}");
-        }
+            _libraryManager?.LoadLastSave();
     }
 
     private void OnMouseWheel(IMouse mouse, ScrollWheel wheel)
