@@ -1,6 +1,4 @@
 ﻿using System.Numerics;
-using System.Linq;
-using System.Collections.Generic;
 
 namespace MathBoard.Core;
 

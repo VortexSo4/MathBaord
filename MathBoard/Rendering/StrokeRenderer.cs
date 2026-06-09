@@ -22,13 +22,13 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private readonly CommandManager _commandManager;
     private readonly Document _document;
     private readonly Camera _camera;
-    
+
     private bool _isEraser = false;
     private float _eraserSize = 8f;
-    
-    private Vector4 _currentColor = new Vector4(0.0f, 0.0f, 0.0f, 1.0f);
+
+    private Vector4 _currentColor = new(0.0f, 0.0f, 0.0f, 1.0f);
     private float _currentBrushWidth = 22f;
-    
+
     private Pipeline _pipeline;
     private PipelineLayout _pipelineLayout;
 
@@ -40,7 +40,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private bool _dirty = true;
 
     private Extent2D _extent;
-    
+
     private RadialMenu? _radialMenu;
 
     public StrokeRenderer(
@@ -58,11 +58,19 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _document = document;
         _camera = camera;
         _extent = _swapchain.Extent;
-    }
     
+        _currentBrushWidth = Settings.DefaultBrushWidth;
+        _eraserSize = Settings.DefaultEraserSize;
+    }
+
     public void SetRadialMenu(RadialMenu menu) => _radialMenu = menu;
     public Camera Camera => _camera;
-    public float CurrentBrushWidth { get => _currentBrushWidth; set => _currentBrushWidth = value; }
+
+    public float CurrentBrushWidth
+    {
+        get => _currentBrushWidth;
+        set => _currentBrushWidth = value;
+    }
 
     public void Initialize()
     {
@@ -118,7 +126,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _document.Strokes[^1].Points.Add(worldPos);
         _dirty = true;
     }
-    
+
     private void EraseAt(Vector2 screenPos)
     {
         var worldPos = ScreenToWorld(screenPos);
@@ -146,11 +154,11 @@ public sealed unsafe class StrokeRenderer : IDisposable
     }
 
     // ==================== SMOOTH VERTEX GENERATION ====================
-        private void RebuildAllVertices()
+    private void RebuildAllVertices()
     {
         _vertices.Clear();
 
-        const int circleSegments = 14;
+        int circleSegments = Settings.StrokeCircleSegments;
         const float twoPi = MathF.PI * 2f;
 
         foreach (var stroke in _document.Strokes)
@@ -170,8 +178,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
                     float a2 = (i + 1) * twoPi / circleSegments;
 
                     _vertices.Add(new Vertex { Position = center, Color = color });
-                    _vertices.Add(new Vertex { Position = center + new Vector2(MathF.Cos(a1), MathF.Sin(a1)) * radius, Color = color });
-                    _vertices.Add(new Vertex { Position = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * radius, Color = color });
+                    _vertices.Add(new Vertex
+                        { Position = center + new Vector2(MathF.Cos(a1), MathF.Sin(a1)) * radius, Color = color });
+                    _vertices.Add(new Vertex
+                        { Position = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * radius, Color = color });
                 }
             }
 
@@ -244,7 +254,8 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _context.Vk.CmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 
         Matrix4x4* pProj = &projection;
-        _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4), pProj);
+        _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4),
+            pProj);
 
         _context.Vk.CmdDraw(cmd, _vertexCount, 1, 0, 0);
     }
@@ -281,9 +292,19 @@ public sealed unsafe class StrokeRenderer : IDisposable
         };
 
         var attributes = stackalloc VertexInputAttributeDescription[3];
-        attributes[0] = new VertexInputAttributeDescription { Location = 0, Binding = 0, Format = Format.R32G32Sfloat, Offset = (uint)Marshal.OffsetOf<Vertex>("Position") };
-        attributes[1] = new VertexInputAttributeDescription { Location = 1, Binding = 0, Format = Format.R32Sfloat, Offset = (uint)Marshal.OffsetOf<Vertex>("Thickness") };
-        attributes[2] = new VertexInputAttributeDescription { Location = 2, Binding = 0, Format = Format.R32G32B32A32Sfloat, Offset = (uint)Marshal.OffsetOf<Vertex>("Color") };
+        attributes[0] = new VertexInputAttributeDescription
+        {
+            Location = 0, Binding = 0, Format = Format.R32G32Sfloat, Offset = (uint)Marshal.OffsetOf<Vertex>("Position")
+        };
+        attributes[1] = new VertexInputAttributeDescription
+        {
+            Location = 1, Binding = 0, Format = Format.R32Sfloat, Offset = (uint)Marshal.OffsetOf<Vertex>("Thickness")
+        };
+        attributes[2] = new VertexInputAttributeDescription
+        {
+            Location = 2, Binding = 0, Format = Format.R32G32B32A32Sfloat,
+            Offset = (uint)Marshal.OffsetOf<Vertex>("Color")
+        };
 
         var vertexInput = new PipelineVertexInputStateCreateInfo
         {
@@ -343,7 +364,8 @@ public sealed unsafe class StrokeRenderer : IDisposable
             SrcAlphaBlendFactor = BlendFactor.One,
             DstAlphaBlendFactor = BlendFactor.Zero,
             AlphaBlendOp = BlendOp.Add,
-            ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit | ColorComponentFlags.ABit
+            ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit |
+                             ColorComponentFlags.ABit
         };
 
         var colorBlending = new PipelineColorBlendStateCreateInfo
@@ -417,7 +439,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             _context.Vk.DeviceWaitIdle(_context.Device); // важно!
             _context.Vk.DestroyBuffer(_context.Device, _vertexBuffer, null);
             _context.Vk.FreeMemory(_context.Device, _vertexBufferMemory, null);
-        
+
             _vertexBuffer = default;
             _vertexBufferMemory = default;
         }
@@ -440,6 +462,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         {
             System.Buffer.MemoryCopy(src, mapped, bufferSize, bufferSize);
         }
+
         _context.Vk.UnmapMemory(_context.Device, stagingMemory);
 
         // GPU buffer
@@ -491,6 +514,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             if ((typeFilter & (1u << i)) != 0 && (memProps.MemoryTypes[i].PropertyFlags & properties) == properties)
                 return (uint)i;
         }
+
         throw new Exception("Failed to find suitable memory type");
     }
 
@@ -528,7 +552,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
         _context.Vk.FreeCommandBuffers(_context.Device, _commandManager.CommandPool, 1, &cmd);
     }
-    
+
     public void ToggleEraser()
     {
         _isEraser = !_isEraser;
@@ -544,7 +568,6 @@ public sealed unsafe class StrokeRenderer : IDisposable
     public void SetColor(Vector4 color)
     {
         _currentColor = color;
-        Console.WriteLine($"Color changed to: {color}");
     }
 
     public void ClearAll()

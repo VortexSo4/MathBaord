@@ -1,6 +1,4 @@
-﻿using Silk.NET.Vulkan;
-
-namespace MathBoard.Rendering;
+﻿namespace MathBoard.Rendering;
 
 public readonly record struct QueueFamilyIndices(
     uint GraphicsFamily,

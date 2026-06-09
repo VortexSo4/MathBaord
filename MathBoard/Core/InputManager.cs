@@ -19,8 +19,12 @@ public sealed class InputManager : IDisposable
 
     private bool _isDrawing = false;
     private Vector2 _lastPanPosition;
-    private DateTime _mouseDownTime = DateTime.MinValue;
     private Vector2 _mouseDownPos;
+
+    // Menu opens immediately on press. For the first 120ms, moving >8px cancels
+    // the menu and starts a stroke instead — this preserves the draw-by-drag UX.
+    private bool _menuEscapeActive = false;
+    private DateTime _menuOpenTime;
 
     public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document, RadialMenu radialMenu)
     {
@@ -54,13 +58,17 @@ public sealed class InputManager : IDisposable
 
         if (button == MouseButton.Left)
         {
-            _mouseDownTime = DateTime.Now;
             _mouseDownPos = pos;
 
             if (!_radialMenu.IsOpen)
             {
-                _strokeRenderer.BeginStroke(pos);
-                _isDrawing = true;
+                _radialMenu.OpenAt(pos);
+                _menuEscapeActive = true;
+                _menuOpenTime = DateTime.Now;
+            }
+            else
+            {
+                _radialMenu.OnMouseDown(pos);
             }
         }
         else if (button == MouseButton.Right || button == MouseButton.Middle)
@@ -75,6 +83,26 @@ public sealed class InputManager : IDisposable
 
         if (_radialMenu.IsOpen)
         {
+            if (_menuEscapeActive)
+            {
+                float elapsed = (float)(DateTime.Now - _menuOpenTime).TotalSeconds;
+                float dist    = Vector2.Distance(_mouseDownPos, pos);
+
+                // Quick drag within the grace window → user wants to draw, not use the menu.
+                if (dist > Settings.RadialMenuEscapeDistance && elapsed < Settings.RadialMenuEscapeTime)
+                {
+                    _radialMenu.Close();
+                    _menuEscapeActive = false;
+                    _strokeRenderer.BeginStroke(_mouseDownPos);
+                    _strokeRenderer.AddPoint(pos);
+                    _isDrawing = true;
+                    return;
+                }
+
+                if (elapsed >= Settings.RadialMenuEscapeTime)
+                    _menuEscapeActive = false;
+            }
+
             _radialMenu.OnMouseMove(pos);
             _strokeRenderer.SetDirty();
             return;
@@ -100,15 +128,11 @@ public sealed class InputManager : IDisposable
 
         if (button == MouseButton.Left)
         {
-            var holdTime = (DateTime.Now - _mouseDownTime).TotalSeconds;
+            _menuEscapeActive = false;
 
             if (_radialMenu.IsOpen)
             {
                 _radialMenu.OnMouseUp(pos);
-            }
-            else if (holdTime > 0.30f && Vector2.Distance(_mouseDownPos, pos) < 20f)
-            {
-                _radialMenu.OpenAt(pos);
             }
             else if (_isDrawing)
             {
@@ -120,8 +144,8 @@ public sealed class InputManager : IDisposable
 
     private void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
     {
-        bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
-        bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
+        bool ctrl  = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
+        bool shift = keyboard.IsKeyPressed(Key.ShiftLeft)   || keyboard.IsKeyPressed(Key.ShiftRight);
 
         if (ctrl && key == Key.Z)
         {
@@ -143,18 +167,13 @@ public sealed class InputManager : IDisposable
             _radialMenu.Close();
             _strokeRenderer.SetDirty();
         }
-        
-        // Сохранение/загрузка без диалогов
+
         if (ctrl && key == Key.S)
-        {
             SaveCanvasAuto();
-        }
         else if (ctrl && key == Key.O)
-        {
             LoadCanvasAuto();
-        }
     }
-    
+
     private void SaveCanvasAuto()
     {
         try
@@ -162,8 +181,6 @@ public sealed class InputManager : IDisposable
             string filename = $"MathBoard_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mathboard";
             _document.SaveToFile(filename);
             Console.WriteLine($"Canvas saved to: {filename}");
-            
-            // Также обновляем last_save.mathboard
             _document.SaveToFile("last_save.mathboard");
         }
         catch (Exception ex)
@@ -199,31 +216,31 @@ public sealed class InputManager : IDisposable
     {
         var screenPos = GetMousePosition(mouse, _window);
 
-        bool ctrlPressed = _keyboard?.IsKeyPressed(Key.ControlLeft) == true ||
-                           _keyboard?.IsKeyPressed(Key.ControlRight) == true;
-        bool shiftPressed = _keyboard?.IsKeyPressed(Key.ShiftLeft) == true ||
-                            _keyboard?.IsKeyPressed(Key.ShiftRight) == true;
+        bool ctrlPressed  = _keyboard?.IsKeyPressed(Key.ControlLeft)  == true ||
+                            _keyboard?.IsKeyPressed(Key.ControlRight) == true;
+        bool shiftPressed = _keyboard?.IsKeyPressed(Key.ShiftLeft)    == true ||
+                            _keyboard?.IsKeyPressed(Key.ShiftRight)   == true;
 
         if (ctrlPressed)
         {
             var worldBefore = _strokeRenderer.ScreenToWorld(screenPos);
-            float zoomFactor = 1.0f + wheel.Y * 0.15f;
-            _camera.Zoom = Math.Clamp(_camera.Zoom * zoomFactor, 0.1f, 30f);
+            float zoomFactor = 1.0f + wheel.Y * Settings.CameraZoomSpeed;
+            _camera.Zoom = Math.Clamp(_camera.Zoom * zoomFactor, Settings.CameraMinZoom, Settings.CameraMaxZoom);
             _camera.Position = screenPos - worldBefore * _camera.Zoom;
         }
         else if (shiftPressed)
         {
-            _camera.Position += new Vector2(wheel.Y * 35f, 0);
+            _camera.Position += new Vector2(wheel.Y * Settings.CameraPanSpeed, 0);
         }
         else
         {
-            _camera.Position += new Vector2(0, wheel.Y * 35f);
+            _camera.Position += new Vector2(0, wheel.Y * Settings.CameraPanSpeed);
         }
 
         _strokeRenderer.SetDirty();
     }
 
-    private Vector2 GetMousePosition(IMouse mouse, IWindow window)
+    private static Vector2 GetMousePosition(IMouse mouse, IWindow window)
     {
         var pos = mouse.Position;
         return new Vector2(pos.X, pos.Y);
@@ -234,9 +251,9 @@ public sealed class InputManager : IDisposable
         if (_mouse != null)
         {
             _mouse.MouseDown -= OnMouseDown;
-            _mouse.MouseUp -= OnMouseUp;
+            _mouse.MouseUp   -= OnMouseUp;
             _mouse.MouseMove -= OnMouseMove;
-            _mouse.Scroll -= OnMouseWheel;
+            _mouse.Scroll    -= OnMouseWheel;
         }
 
         if (_keyboard != null)

@@ -1,5 +1,4 @@
-﻿using Silk.NET.Core.Native;
-using Silk.NET.Vulkan;
+﻿using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
 
 namespace MathBoard.Rendering;
@@ -127,7 +126,7 @@ public sealed unsafe class SwapchainManager : IDisposable
         Console.WriteLine($"ImageViews created: {_imageViews.Length}");
     }
 
-    private SurfaceFormatKHR ChooseSurfaceFormat(SurfaceFormatKHR[] formats)
+    private static SurfaceFormatKHR ChooseSurfaceFormat(SurfaceFormatKHR[] formats)
     {
         foreach (var format in formats)
         {
@@ -140,7 +139,7 @@ public sealed unsafe class SwapchainManager : IDisposable
         return formats[0];
     }
 
-    private PresentModeKHR ChoosePresentMode(PresentModeKHR[] presentModes)
+    private static PresentModeKHR ChoosePresentMode(PresentModeKHR[] presentModes)
     {
         foreach (var mode in presentModes)
         {
