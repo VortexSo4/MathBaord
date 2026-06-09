@@ -112,8 +112,8 @@ public sealed class VulkanRenderer : IDisposable
             RecreateSwapchain();
         }
 
-        _strokeRenderer!.UpdateExtent(_swapchain!.Extent);
-        _strokeRenderer.Flush();
+        _strokeRenderer!.UpdateGeometry();
+        _strokeRenderer.UpdateExtent(_swapchain!.Extent);
 
         _commandManager!.RecordCommandBuffers(
             _framebufferManager!.Framebuffers,

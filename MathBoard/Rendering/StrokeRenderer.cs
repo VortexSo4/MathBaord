@@ -146,7 +146,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
     }
 
     // ==================== SMOOTH VERTEX GENERATION ====================
-    private void RebuildAllVertices()
+        private void RebuildAllVertices()
     {
         _vertices.Clear();
 
@@ -198,14 +198,55 @@ public sealed unsafe class StrokeRenderer : IDisposable
                 _vertices.Add(new Vertex { Position = p2r, Color = color });
             }
         }
+
+        // Добавляем UI-вершины, если меню открыто
+        if (_radialMenu?.IsOpen == true)
+        {
+            _radialMenu.RenderUI(_vertices);
+        }
     }
 
-    public void Flush()
+    public void UpdateGeometry()
     {
-        if (!_dirty) return;
-        RebuildAllVertices();
-        UpdateVertexBuffer();
-        _dirty = false;
+        if (_dirty)
+        {
+            RebuildAllVertices();
+            UpdateVertexBuffer();
+            _dirty = false;
+        }
+    }
+
+    public void Render(CommandBuffer cmd)
+    {
+        if (_vertexCount < 3)
+            return;
+
+        // === Vulkan отрисовка ===
+        var viewport = new Viewport
+        {
+            X = 0, Y = 0,
+            Width = _extent.Width,
+            Height = _extent.Height,
+            MinDepth = 0, MaxDepth = 1
+        };
+        var scissor = new Rect2D { Offset = new Offset2D(0, 0), Extent = _extent };
+
+        _context.Vk.CmdSetViewport(cmd, 0, 1, &viewport);
+        _context.Vk.CmdSetScissor(cmd, 0, 1, &scissor);
+
+        var projection = Matrix4x4.CreateOrthographicOffCenter(
+            0, _extent.Width, 0, _extent.Height, -1f, 1f);
+
+        _context.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Graphics, _pipeline);
+
+        var vb = _vertexBuffer;
+        var offset = 0ul;
+        _context.Vk.CmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
+
+        Matrix4x4* pProj = &projection;
+        _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4), pProj);
+
+        _context.Vk.CmdDraw(cmd, _vertexCount, 1, 0, 0);
     }
 
     // ==================== Vulkan Pipeline & Buffers (оставляем как было) ====================
@@ -486,61 +527,6 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _context.Vk.QueueWaitIdle(_context.GraphicsQueue);
 
         _context.Vk.FreeCommandBuffers(_context.Device, _commandManager.CommandPool, 1, &cmd);
-    }
-
-    public void Render(CommandBuffer cmd)
-    {
-        Flush(); // строим только штрихи
-
-        int uiCount = 0;
-
-        // Добавляем UI только если меню открыто
-        if (_radialMenu?.IsOpen == true)
-        {
-            var uiVertices = new List<Vertex>();
-            _radialMenu.RenderUI(uiVertices);
-
-            if (uiVertices.Count > 0)
-            {
-                uiCount = uiVertices.Count;
-                int originalCount = _vertices.Count;
-                _vertices.AddRange(uiVertices);
-                UpdateVertexBuffer(); // обновляем буфер с UI
-
-                // Убираем UI обратно
-                _vertices.RemoveRange(originalCount, uiCount);
-            }
-        }
-
-        if (_vertexCount < 3)
-            return;
-
-        // === Vulkan отрисовка ===
-        var viewport = new Viewport
-        {
-            X = 0, Y = 0,
-            Width = _extent.Width,
-            Height = _extent.Height,
-            MinDepth = 0, MaxDepth = 1
-        };
-        var scissor = new Rect2D { Offset = new Offset2D(0, 0), Extent = _extent };
-
-        _context.Vk.CmdSetViewport(cmd, 0, 1, &viewport);
-        _context.Vk.CmdSetScissor(cmd, 0, 1, &scissor);
-
-        var projection = Matrix4x4.CreateOrthographicOffCenter(
-            0, _extent.Width, 0, _extent.Height, -1f, 1f);
-
-        _context.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Graphics, _pipeline);
-
-        var vb = _vertexBuffer;
-        var offset = 0ul;
-        _context.Vk.CmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
-
-        Matrix4x4* pProj = &projection;
-        _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4), pProj);
-
-        _context.Vk.CmdDraw(cmd, _vertexCount, 1, 0, 0);
     }
     
     public void ToggleEraser()

@@ -2,7 +2,6 @@
 using System.Numerics;
 using MathBoard.Rendering;
 using Silk.NET.Windowing;
-using System;
 
 namespace MathBoard.Core;
 
@@ -12,7 +11,7 @@ public sealed class InputManager : IDisposable
     private readonly StrokeRenderer _strokeRenderer;
     private readonly Camera _camera;
     private readonly Document _document;
-    private readonly RadialMenu _radialMenu;        // ← новое
+    private readonly RadialMenu _radialMenu;
 
     private IMouse? _mouse;
     private IKeyboard? _keyboard;
@@ -30,7 +29,7 @@ public sealed class InputManager : IDisposable
         _document = document;
         _window = window;
         _input = window.CreateInput();
-        _radialMenu = radialMenu;;
+        _radialMenu = radialMenu;
 
         _mouse = _input.Mice.FirstOrDefault();
         _keyboard = _input.Keyboards.FirstOrDefault();
@@ -143,6 +142,56 @@ public sealed class InputManager : IDisposable
         {
             _radialMenu.Close();
             _strokeRenderer.SetDirty();
+        }
+        
+        // Сохранение/загрузка без диалогов
+        if (ctrl && key == Key.S)
+        {
+            SaveCanvasAuto();
+        }
+        else if (ctrl && key == Key.O)
+        {
+            LoadCanvasAuto();
+        }
+    }
+    
+    private void SaveCanvasAuto()
+    {
+        try
+        {
+            string filename = $"MathBoard_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mathboard";
+            _document.SaveToFile(filename);
+            Console.WriteLine($"Canvas saved to: {filename}");
+            
+            // Также обновляем last_save.mathboard
+            _document.SaveToFile("last_save.mathboard");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Save failed: {ex.Message}");
+        }
+    }
+
+    private void LoadCanvasAuto()
+    {
+        try
+        {
+            string filename = "last_save.mathboard";
+            if (File.Exists(filename))
+            {
+                _document.LoadFromFile(filename);
+                _strokeRenderer.SetDirty();
+                _strokeRenderer.UpdateGeometry();
+                Console.WriteLine($"Canvas loaded from: {filename}");
+            }
+            else
+            {
+                Console.WriteLine("No save file found. Use Ctrl+S to save first.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Load failed: {ex.Message}");
         }
     }
 
