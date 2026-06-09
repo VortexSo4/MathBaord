@@ -107,8 +107,6 @@ public sealed unsafe class CommandManager : IDisposable
             if (endResult != Result.Success)
                 throw new Exception($"EndCommandBuffer failed: {endResult}");
         }
-
-        Console.WriteLine("Command buffers recorded with strokes");
     }
     
     private void FreeCommandBuffers()

@@ -1,4 +1,5 @@
-﻿using MathBoard.Core;
+﻿using System.Numerics;
+using MathBoard.Core;
 using Silk.NET.Windowing;
 
 namespace MathBoard.Rendering;
@@ -14,6 +15,9 @@ public sealed class VulkanRenderer : IDisposable
     private bool _framebufferResized;
     private StrokeRenderer? _strokeRenderer;
     private InputManager? _inputManager;
+
+    private readonly Document _document = new();
+    private readonly Camera _camera = new();
 
     public VulkanRenderer(IWindow window)
     {
@@ -31,6 +35,10 @@ public sealed class VulkanRenderer : IDisposable
 
         _swapchain = new SwapchainManager(_context);
         _swapchain.Initialize();
+        
+        _camera.Position = new Vector2(
+            _swapchain.Extent.Width / 2f,
+            _swapchain.Extent.Height / 2f);
 
         _renderPassManager = new RenderPassManager(_context, _swapchain);
         _renderPassManager.Initialize();
@@ -41,10 +49,16 @@ public sealed class VulkanRenderer : IDisposable
         _commandManager = new CommandManager(_context);
         _commandManager.Initialize((uint)_framebufferManager.Framebuffers.Count);
 
-        _strokeRenderer = new StrokeRenderer(_context, _swapchain!, _renderPassManager!, _commandManager);
+        _strokeRenderer = new StrokeRenderer(
+            _context, 
+            _swapchain!, 
+            _renderPassManager!, 
+            _commandManager!, 
+            _document, 
+            _camera);
         _strokeRenderer.Initialize();
         
-        _inputManager = new InputManager(_context.Window, _strokeRenderer!);
+        _inputManager = new InputManager(_context.Window, _strokeRenderer!, _camera, _document);
 
         _commandManager.RecordCommandBuffers(
             _framebufferManager.Framebuffers,
@@ -55,7 +69,7 @@ public sealed class VulkanRenderer : IDisposable
         _frameSync = new FrameSync(_context);
         _frameSync.Initialize();
 
-        Console.WriteLine("VulkanRenderer initialized successfully - First frame ready!");
+        Console.WriteLine("VulkanRenderer initialized successfully - Infinite Canvas Ready!");
     }
     
     private void RecreateSwapchain()
@@ -95,15 +109,11 @@ public sealed class VulkanRenderer : IDisposable
     {
         if (_framebufferResized)
         {
-            _context.Vk.DeviceWaitIdle(_context.Device);
             RecreateSwapchain();
         }
 
-        _context.Vk.DeviceWaitIdle(_context.Device);
-
-        // Обновляем размер в StrokeRenderer (на случай изменения окна)
         _strokeRenderer!.UpdateExtent(_swapchain!.Extent);
-        _strokeRenderer.Flush();          // безопасное обновление буфера
+        _strokeRenderer.Flush();
 
         _commandManager!.RecordCommandBuffers(
             _framebufferManager!.Framebuffers,
