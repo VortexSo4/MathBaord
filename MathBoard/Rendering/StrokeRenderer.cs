@@ -22,7 +22,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private readonly CommandManager _commandManager;
     private readonly Document _document;
     private readonly Camera _camera;
-
+    
+    private bool _isEraser = false;
+    private float _eraserSize = 8f;
+    
     private Pipeline _pipeline;
     private PipelineLayout _pipelineLayout;
 
@@ -77,12 +80,15 @@ public sealed unsafe class StrokeRenderer : IDisposable
     // ==================== DRAWING ====================
     public void BeginStroke(Vector2 screenPos)
     {
-        var worldPos = ScreenToWorld(screenPos);
-        var stroke = new Stroke
+        if (_isEraser)
         {
-            Width = 2f,
-            Color = new Vector4(0f, 0f, 0f, 1f)
-        };
+            EraseAt(screenPos);
+            return;
+        }
+
+        _document.SaveState();
+        var worldPos = ScreenToWorld(screenPos);
+        var stroke = new Stroke { Width = 2f, Color = new Vector4(0f, 0f, 0f, 1f) };
         stroke.Points.Add(worldPos);
         _document.Strokes.Add(stroke);
         _dirty = true;
@@ -90,10 +96,37 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     public void AddPoint(Vector2 screenPos)
     {
+        if (_isEraser)
+        {
+            EraseAt(screenPos);
+            return;
+        }
+
         if (_document.Strokes.Count == 0) return;
         var worldPos = ScreenToWorld(screenPos);
         _document.Strokes[^1].Points.Add(worldPos);
         _dirty = true;
+    }
+    
+    private void EraseAt(Vector2 screenPos)
+    {
+        var worldPos = ScreenToWorld(screenPos);
+        var radius = _eraserSize / _camera.Zoom;
+
+        for (int i = _document.Strokes.Count - 1; i >= 0; i--)
+        {
+            var stroke = _document.Strokes[i];
+            foreach (var p in stroke.Points)
+            {
+                if (Vector2.Distance(p, worldPos) < radius + stroke.Width * 0.5f)
+                {
+                    _document.SaveState();
+                    _document.Strokes.RemoveAt(i);
+                    _dirty = true;
+                    return; // удаляем один Stroke за раз
+                }
+            }
+        }
     }
 
     public void EndStroke()
@@ -325,22 +358,25 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     private void UpdateVertexBuffer()
     {
+        // Сначала безопасно уничтожаем старый буфер, если он есть
         if (_vertexBuffer.Handle != 0)
         {
-            _context.Vk.DeviceWaitIdle(_context.Device);
+            _context.Vk.DeviceWaitIdle(_context.Device); // важно!
             _context.Vk.DestroyBuffer(_context.Device, _vertexBuffer, null);
             _context.Vk.FreeMemory(_context.Device, _vertexBufferMemory, null);
+        
+            _vertexBuffer = default;
+            _vertexBufferMemory = default;
         }
 
-        if (_vertices.Count == 0) 
-        {
-            _vertexCount = 0;
+        _vertexCount = 0;
+
+        if (_vertices.Count == 0)
             return;
-        }
 
         var bufferSize = (ulong)(sizeof(Vertex) * _vertices.Count);
 
-        // Staging
+        // Staging buffer
         CreateBuffer(bufferSize, BufferUsageFlags.TransferSrcBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             out var stagingBuffer, out var stagingMemory);
@@ -442,7 +478,8 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     public void Render(CommandBuffer cmd)
     {
-        if (_vertexCount < 3) return;
+        if (_vertexCount < 3) 
+            return; // ничего не рисуем, если нет вершин
 
         var viewport = new Viewport
         {
@@ -458,7 +495,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
         var projection = Matrix4x4.CreateOrthographicOffCenter(
             0, _extent.Width,
-            0, _extent.Height,  // bottom=0, top=Height → Y=0 сверху
+            0, _extent.Height,
             -1f, 1f);
 
         _context.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Graphics, _pipeline);
@@ -487,5 +524,23 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
         if (_pipelineLayout.Handle != 0)
             _context.Vk.DestroyPipelineLayout(_context.Device, _pipelineLayout, null);
+    }
+    
+    public void ToggleEraser()
+    {
+        _isEraser = !_isEraser;
+        Console.WriteLine($"Eraser mode: {_isEraser}");
+    }
+
+    public void Undo()
+    {
+        _document.Undo();
+        _dirty = true;
+    }
+
+    public void Redo()
+    {
+        _document.Redo();
+        _dirty = true;
     }
 }

@@ -36,6 +36,11 @@ public sealed class InputManager : IDisposable
             _mouse.MouseMove += OnMouseMove;
             _mouse.Scroll += OnMouseWheel;
         }
+        
+        if (_keyboard != null)
+        {
+            _keyboard.KeyDown += OnKeyDown;
+        }
     }
 
     private void OnMouseDown(IMouse mouse, MouseButton button)
@@ -122,6 +127,29 @@ public sealed class InputManager : IDisposable
             _mouse.MouseUp -= OnMouseUp;
             _mouse.MouseMove -= OnMouseMove;
             _mouse.Scroll -= OnMouseWheel;
+        }
+        if (_keyboard != null)
+            _keyboard.KeyDown -= OnKeyDown;
+    }
+    
+    private void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
+    {
+        bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
+        bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
+
+        if (ctrl && key == Key.Z)
+        {
+            if (shift)
+                _strokeRenderer.Redo();
+            else
+                _strokeRenderer.Undo();
+        
+            _strokeRenderer.SetDirty();
+        }
+
+        if (key == Key.E)
+        {
+            _strokeRenderer.ToggleEraser();
         }
     }
 }
