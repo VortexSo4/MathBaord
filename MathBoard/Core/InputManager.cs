@@ -25,7 +25,6 @@ public sealed class InputManager : IDisposable
     // Новое поведение: меню открывается после долгого нажатия (по таймеру)
     private bool _menuPending = false;
     private DateTime _mouseDownTime;
-    private bool _menuOpenedByTimer = false;
 
     public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document, RadialMenu radialMenu, LibraryManager libraryManager)
     {
@@ -67,7 +66,6 @@ public sealed class InputManager : IDisposable
                 _radialMenu.OpenAt(_mouseDownPos);
                 _radialMenu.OnMouseDown(currentPos);
                 _menuPending = false;
-                _menuOpenedByTimer = true;
                 _strokeRenderer.SetDirty();
             }
         }
@@ -82,7 +80,6 @@ public sealed class InputManager : IDisposable
             _mouseDownPos = pos;
             _mouseDownTime = DateTime.Now;
             _menuPending = true;
-            _menuOpenedByTimer = false;
 
             if (_radialMenu.IsOpen)
             {
@@ -168,7 +165,6 @@ public sealed class InputManager : IDisposable
             }
 
             _menuPending = false;
-            _menuOpenedByTimer = false;
         }
     }
 

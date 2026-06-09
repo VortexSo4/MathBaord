@@ -9,6 +9,7 @@ var options = WindowOptions.DefaultVulkan with
 };
 
 var window = Window.Create(options);
+window.FramebufferResize += size => {};
 
 var renderer = new VulkanRenderer(window);
 
