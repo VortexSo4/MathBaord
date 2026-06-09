@@ -2,6 +2,7 @@
 using System.Numerics;
 using MathBoard.Rendering;
 using Silk.NET.Windowing;
+using System;
 
 namespace MathBoard.Core;
 
@@ -11,20 +12,25 @@ public sealed class InputManager : IDisposable
     private readonly StrokeRenderer _strokeRenderer;
     private readonly Camera _camera;
     private readonly Document _document;
+    private readonly RadialMenu _radialMenu;        // ← новое
+
     private IMouse? _mouse;
     private IKeyboard? _keyboard;
     private readonly IWindow _window;
 
     private bool _isDrawing = false;
     private Vector2 _lastPanPosition;
+    private DateTime _mouseDownTime = DateTime.MinValue;
+    private Vector2 _mouseDownPos;
 
-    public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document)
+    public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document, RadialMenu radialMenu)
     {
         _strokeRenderer = strokeRenderer;
         _camera = camera;
         _document = document;
-        _input = window.CreateInput();
         _window = window;
+        _input = window.CreateInput();
+        _radialMenu = radialMenu;;
 
         _mouse = _input.Mice.FirstOrDefault();
         _keyboard = _input.Keyboards.FirstOrDefault();
@@ -36,7 +42,7 @@ public sealed class InputManager : IDisposable
             _mouse.MouseMove += OnMouseMove;
             _mouse.Scroll += OnMouseWheel;
         }
-        
+
         if (_keyboard != null)
         {
             _keyboard.KeyDown += OnKeyDown;
@@ -49,8 +55,14 @@ public sealed class InputManager : IDisposable
 
         if (button == MouseButton.Left)
         {
-            _strokeRenderer.BeginStroke(pos);
-            _isDrawing = true;
+            _mouseDownTime = DateTime.Now;
+            _mouseDownPos = pos;
+
+            if (!_radialMenu.IsOpen)
+            {
+                _strokeRenderer.BeginStroke(pos);
+                _isDrawing = true;
+            }
         }
         else if (button == MouseButton.Right || button == MouseButton.Middle)
         {
@@ -61,6 +73,13 @@ public sealed class InputManager : IDisposable
     private void OnMouseMove(IMouse mouse, Vector2 position)
     {
         var pos = GetMousePosition(mouse, _window);
+
+        if (_radialMenu.IsOpen)
+        {
+            _radialMenu.OnMouseMove(pos);
+            _strokeRenderer.SetDirty();
+            return;
+        }
 
         if (_isDrawing)
         {
@@ -78,10 +97,52 @@ public sealed class InputManager : IDisposable
 
     private void OnMouseUp(IMouse mouse, MouseButton button)
     {
+        var pos = GetMousePosition(mouse, _window);
+
         if (button == MouseButton.Left)
         {
-            _strokeRenderer.EndStroke();
-            _isDrawing = false;
+            var holdTime = (DateTime.Now - _mouseDownTime).TotalSeconds;
+
+            if (_radialMenu.IsOpen)
+            {
+                _radialMenu.OnMouseUp(pos);
+            }
+            else if (holdTime > 0.30f && Vector2.Distance(_mouseDownPos, pos) < 20f)
+            {
+                _radialMenu.OpenAt(pos);
+            }
+            else if (_isDrawing)
+            {
+                _strokeRenderer.EndStroke();
+                _isDrawing = false;
+            }
+        }
+    }
+
+    private void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
+    {
+        bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
+        bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
+
+        if (ctrl && key == Key.Z)
+        {
+            if (shift)
+                _strokeRenderer.Redo();
+            else
+                _strokeRenderer.Undo();
+            _strokeRenderer.SetDirty();
+        }
+
+        if (key == Key.E)
+        {
+            _strokeRenderer.ToggleEraser();
+            _strokeRenderer.SetDirty();
+        }
+
+        if (key == Key.Escape && _radialMenu.IsOpen)
+        {
+            _radialMenu.Close();
+            _strokeRenderer.SetDirty();
         }
     }
 
@@ -128,28 +189,8 @@ public sealed class InputManager : IDisposable
             _mouse.MouseMove -= OnMouseMove;
             _mouse.Scroll -= OnMouseWheel;
         }
+
         if (_keyboard != null)
             _keyboard.KeyDown -= OnKeyDown;
-    }
-    
-    private void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
-    {
-        bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
-        bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
-
-        if (ctrl && key == Key.Z)
-        {
-            if (shift)
-                _strokeRenderer.Redo();
-            else
-                _strokeRenderer.Undo();
-        
-            _strokeRenderer.SetDirty();
-        }
-
-        if (key == Key.E)
-        {
-            _strokeRenderer.ToggleEraser();
-        }
     }
 }

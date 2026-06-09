@@ -15,7 +15,8 @@ public sealed class VulkanRenderer : IDisposable
     private bool _framebufferResized;
     private StrokeRenderer? _strokeRenderer;
     private InputManager? _inputManager;
-
+    private RadialMenu? _radialMenu;
+    
     private readonly Document _document = new();
     private readonly Camera _camera = new();
 
@@ -35,7 +36,7 @@ public sealed class VulkanRenderer : IDisposable
 
         _swapchain = new SwapchainManager(_context);
         _swapchain.Initialize();
-        
+    
         _camera.Position = new Vector2(
             _swapchain.Extent.Width / 2f,
             _swapchain.Extent.Height / 2f);
@@ -50,15 +51,14 @@ public sealed class VulkanRenderer : IDisposable
         _commandManager.Initialize((uint)_framebufferManager.Framebuffers.Count);
 
         _strokeRenderer = new StrokeRenderer(
-            _context, 
-            _swapchain!, 
-            _renderPassManager!, 
-            _commandManager!, 
-            _document, 
-            _camera);
+            _context, _swapchain!, _renderPassManager!, _commandManager!, _document, _camera);
+
         _strokeRenderer.Initialize();
-        
-        _inputManager = new InputManager(_context.Window, _strokeRenderer!, _camera, _document);
+
+        _radialMenu = new RadialMenu(_strokeRenderer!);
+        _strokeRenderer.SetRadialMenu(_radialMenu);
+
+        _inputManager = new InputManager(_context.Window, _strokeRenderer!, _camera, _document, _radialMenu);
 
         _commandManager.RecordCommandBuffers(
             _framebufferManager.Framebuffers,

@@ -26,6 +26,9 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private bool _isEraser = false;
     private float _eraserSize = 8f;
     
+    private Vector4 _currentColor = new Vector4(0.0f, 0.0f, 0.0f, 1.0f);
+    private float _currentBrushWidth = 22f;
+    
     private Pipeline _pipeline;
     private PipelineLayout _pipelineLayout;
 
@@ -37,6 +40,8 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private bool _dirty = true;
 
     private Extent2D _extent;
+    
+    private RadialMenu? _radialMenu;
 
     public StrokeRenderer(
         VulkanContext context,
@@ -54,8 +59,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _camera = camera;
         _extent = _swapchain.Extent;
     }
-
+    
+    public void SetRadialMenu(RadialMenu menu) => _radialMenu = menu;
     public Camera Camera => _camera;
+    public float CurrentBrushWidth { get => _currentBrushWidth; set => _currentBrushWidth = value; }
 
     public void Initialize()
     {
@@ -88,7 +95,11 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
         _document.SaveState();
         var worldPos = ScreenToWorld(screenPos);
-        var stroke = new Stroke { Width = 2f, Color = new Vector4(0f, 0f, 0f, 1f) };
+        var stroke = new Stroke
+        {
+            Width = _currentBrushWidth,
+            Color = _currentColor
+        };
         stroke.Points.Add(worldPos);
         _document.Strokes.Add(stroke);
         _dirty = true;
@@ -194,6 +205,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         if (!_dirty) return;
         RebuildAllVertices();
         UpdateVertexBuffer();
+        _dirty = false;
     }
 
     // ==================== Vulkan Pipeline & Buffers (оставляем как было) ====================
@@ -478,9 +490,32 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     public void Render(CommandBuffer cmd)
     {
-        if (_vertexCount < 3) 
-            return; // ничего не рисуем, если нет вершин
+        Flush(); // строим только штрихи
 
+        int uiCount = 0;
+
+        // Добавляем UI только если меню открыто
+        if (_radialMenu?.IsOpen == true)
+        {
+            var uiVertices = new List<Vertex>();
+            _radialMenu.RenderUI(uiVertices);
+
+            if (uiVertices.Count > 0)
+            {
+                uiCount = uiVertices.Count;
+                int originalCount = _vertices.Count;
+                _vertices.AddRange(uiVertices);
+                UpdateVertexBuffer(); // обновляем буфер с UI
+
+                // Убираем UI обратно
+                _vertices.RemoveRange(originalCount, uiCount);
+            }
+        }
+
+        if (_vertexCount < 3)
+            return;
+
+        // === Vulkan отрисовка ===
         var viewport = new Viewport
         {
             X = 0, Y = 0,
@@ -494,9 +529,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _context.Vk.CmdSetScissor(cmd, 0, 1, &scissor);
 
         var projection = Matrix4x4.CreateOrthographicOffCenter(
-            0, _extent.Width,
-            0, _extent.Height,
-            -1f, 1f);
+            0, _extent.Width, 0, _extent.Height, -1f, 1f);
 
         _context.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Graphics, _pipeline);
 
@@ -508,6 +541,44 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4), pProj);
 
         _context.Vk.CmdDraw(cmd, _vertexCount, 1, 0, 0);
+    }
+    
+    public void ToggleEraser()
+    {
+        _isEraser = !_isEraser;
+        Console.WriteLine($"Eraser mode: {_isEraser}");
+    }
+
+    public void ToggleEraser(bool enable)
+    {
+        _isEraser = enable;
+        Console.WriteLine($"Eraser mode: {_isEraser}");
+    }
+
+    public void SetColor(Vector4 color)
+    {
+        _currentColor = color;
+        Console.WriteLine($"Color changed to: {color}");
+    }
+
+    public void ClearAll()
+    {
+        _document.SaveState();
+        _document.Strokes.Clear();
+        _dirty = true;
+        Console.WriteLine("Canvas cleared");
+    }
+
+    public void Undo()
+    {
+        _document.Undo();
+        _dirty = true;
+    }
+
+    public void Redo()
+    {
+        _document.Redo();
+        _dirty = true;
     }
 
     public void Dispose()
@@ -524,23 +595,5 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
         if (_pipelineLayout.Handle != 0)
             _context.Vk.DestroyPipelineLayout(_context.Device, _pipelineLayout, null);
-    }
-    
-    public void ToggleEraser()
-    {
-        _isEraser = !_isEraser;
-        Console.WriteLine($"Eraser mode: {_isEraser}");
-    }
-
-    public void Undo()
-    {
-        _document.Undo();
-        _dirty = true;
-    }
-
-    public void Redo()
-    {
-        _document.Redo();
-        _dirty = true;
     }
 }
