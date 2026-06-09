@@ -29,12 +29,7 @@ public class LibraryManager
         string name = customName ?? $"Untitled_{DateTime.Now:yyyy-MM-dd_HH-mm}";
         string path = Path.Combine(Settings.LibraryRootPath, $"{name}.mathboard");
 
-        int counter = 1;
-        while (File.Exists(path))
-        {
-            path = Path.Combine(Settings.LibraryRootPath, $"{name}_{counter}.mathboard");
-            counter++;
-        }
+        path = Path.Combine(Settings.LibraryRootPath, $"{name}.mathboard");
 
         _document.SaveToFile(path);
         Console.WriteLine($"Saved: {path}");

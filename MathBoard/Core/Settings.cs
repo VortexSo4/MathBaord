@@ -26,8 +26,8 @@ public static class Settings
         public const float RadialMenuLongPressThreshold = 1.0f;
         public const float RadialMenuOpenThreshold = 0.3f;
         public const float RadialMenuEscapeTime = 0.12f;
-        public const float RadialMenuEscapeDistance = 12f;
-        public const bool RadialMenuCloseOnToolSelect = true;
+        public const float RadialMenuEscapeDistance = 2f;
+        public const bool RadialMenuCloseOnToolSelect = false;
 
         public const float CameraZoomSpeed = 0.15f;
         public const float CameraMinZoom = 0.1f;

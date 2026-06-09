@@ -25,7 +25,8 @@ public class RadialMenu
     private float _pickerHue = 0f;
     private float _pickerSaturation = 1f;
     private float _pickerValue = 1f;
-    private int _activePickerRing = -1; // 0=Hue, 1=Saturation, 2=Value
+    private int _activePickerRing = -1;
+
     private const float PickerOuterRadius = 130f;
     private const float PickerRingWidth = 28f;
     private const float PickerCenterRadius = 18f;
@@ -85,7 +86,6 @@ public class RadialMenu
             var dir = screenPos - Position;
             float dist = dir.Length();
 
-            // Если нажали по центру — не захватываем кольцо
             if (dist <= PickerCenterRadius)
             {
                 _activePickerRing = -1;
@@ -98,14 +98,10 @@ public class RadialMenu
             float r3 = r2 + gap + PickerRingWidth;
             float r4 = r3 + gap + PickerRingWidth;
 
-            if (dist >= r1 && dist <= r2)
-                _activePickerRing = 0;
-            else if (dist >= r2 + gap && dist <= r3)
-                _activePickerRing = 1;
-            else if (dist >= r3 + gap && dist <= r4)
-                _activePickerRing = 2;
-            else
-                _activePickerRing = -1;
+            if (dist >= r1 && dist <= r2) _activePickerRing = 0;
+            else if (dist >= r2 + gap && dist <= r3) _activePickerRing = 1;
+            else if (dist >= r3 + gap && dist <= r4) _activePickerRing = 2;
+            else _activePickerRing = -1;
 
             if (_activePickerRing >= 0)
                 HandlePickerMove(screenPos);
@@ -126,7 +122,6 @@ public class RadialMenu
 
         if (_isPickingColor)
         {
-            // Крутим только при зажатой кнопке и захваченном кольце
             if (_isMouseDown && _activePickerRing >= 0)
                 HandlePickerMove(screenPos);
             return;
@@ -153,26 +148,24 @@ public class RadialMenu
 
         _isMouseDown = false;
 
+        // 1. Режим выбора цвета
         if (_isPickingColor)
         {
             var dir = screenPos - Position;
             float dist = dir.Length();
 
-            // Если отпустили над центром — подтверждаем выбор цвета
             if (dist <= PickerCenterRadius)
-            {
                 ApplyPickerColor();
-            }
 
             _activePickerRing = -1;
             return;
         }
 
-        var timeHeld = (DateTime.Now - _pressStartTime).TotalSeconds;
-
+        // 2. Режим изменения толщины – применяем и закрываем
         if (_isAdjustingThickness)
         {
             _renderer.CurrentBrushWidth = _previewThickness;
+            _isAdjustingThickness = false;
             if (Settings.RadialMenuCloseOnToolSelect)
                 Close();
             else
@@ -180,39 +173,52 @@ public class RadialMenu
             return;
         }
 
-        if (_selectedIndex == -1)
+        var dirCenter = screenPos - Position;
+        bool isCenterClick = dirCenter.Length() <= CenterRadius + 10f;
+
+        // 3. Режим подтверждения очистки
+        if (_isConfirmingClear)
         {
-            if (_isConfirmingClear)
+            if (isCenterClick)
+            {
                 _renderer.ClearAll();
+                Close();
+            }
+            else
+            {
+                // отмена подтверждения
+                _isConfirmingClear = false;
+                _renderer.SetDirty();
+            }
+            return;
+        }
+
+        // 4. Обычный клик по центру – закрыть меню (крестик)
+        if (isCenterClick)
+        {
             Close();
             return;
         }
 
+        // 5. Выбор инструмента / цвета
+        if (_selectedIndex == -1)
+            return; // никуда не нажали – меню остаётся
+
         if (_selectedIndex <= 3)
-        {
             HandleToolSelection(_selectedIndex);
-        }
         else
         {
             int colorIdx = _selectedIndex - 4;
             if (colorIdx >= 0 && colorIdx < Settings.Colors.Count)
             {
-                if (timeHeld > Settings.RadialMenuLongPressThreshold)
-                {
+                if ((DateTime.Now - _pressStartTime).TotalSeconds > Settings.RadialMenuLongPressThreshold)
                     OpenColorPicker(colorIdx);
-                }
                 else
                 {
                     _renderer.SetColor(Settings.Colors[colorIdx]);
                     if (Settings.RadialMenuCloseOnToolSelect)
                         Close();
-                    else
-                        _renderer.SetDirty();
                 }
-            }
-            else
-            {
-                Close();
             }
         }
     }
@@ -220,9 +226,7 @@ public class RadialMenu
     private void HandlePickerMove(Vector2 screenPos)
     {
         var dir = screenPos - Position;
-        // Угол: atan2 даёт 0 справа, PI/2 вниз и т.д.
         float angle = MathF.Atan2(dir.Y, dir.X);
-        // Сдвиг, чтобы value=0 соответствовало направлению вверх (как в DrawRingIndicator)
         float raw = (angle + MathF.PI * 0.5f) / (MathF.PI * 2f);
         float value = raw < 0f ? raw + 1f : raw;
 
@@ -270,13 +274,13 @@ public class RadialMenu
                 _renderer.ToggleEraser(true);
                 if (Settings.RadialMenuCloseOnToolSelect) Close();
                 break;
-            case 2: // толщина
+            case 2:
                 _isAdjustingThickness = true;
                 _previewThickness = _renderer.CurrentBrushWidth;
                 _thicknessBaseWidth = _renderer.CurrentBrushWidth;
                 _renderer.SetDirty();
                 break;
-            case 3: // очистка
+            case 3:
                 _isConfirmingClear = true;
                 _renderer.SetDirty();
                 break;
@@ -305,7 +309,7 @@ public class RadialMenu
         if (_isAdjustingThickness)
         {
             DrawThicknessPreview(vertices);
-            DrawCenterButton(vertices, centerColor, outlineColor);
+            // Убираем крестик, чтобы не перекрывал круг выбора толщины
             return;
         }
 
@@ -346,7 +350,6 @@ public class RadialMenu
         var outlineColor = new Vector4(0.85f, 0.85f, 0.90f, 0.4f);
         var previewColor = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
 
-        // Фоновый круг
         DrawCircle(vertices, Position, PickerOuterRadius + 8f, bgColor, 64);
 
         float r1 = PickerCenterRadius + 6f;
@@ -355,28 +358,23 @@ public class RadialMenu
         float r3 = r2 + gap + PickerRingWidth;
         float r4 = r3 + gap + PickerRingWidth;
 
-        // Кольцо Hue (радуга)
         DrawHueRing(vertices, Position, r1, r2, 128);
         if (_activePickerRing == 0)
             DrawRingBorder(vertices, Position, r1, r2, new Vector4(1, 1, 1, 0.8f), 3f);
         DrawRingIndicator(vertices, Position, (r1 + r2) * 0.5f, _pickerHue);
 
-        // Кольцо Saturation (серый → полный цвет)
         DrawSatValRing(vertices, Position, r2 + gap, r3, _pickerHue, true, 128);
         if (_activePickerRing == 1)
             DrawRingBorder(vertices, Position, r2 + gap, r3, new Vector4(1, 1, 1, 0.8f), 3f);
         DrawRingIndicator(vertices, Position, (r2 + gap + r3) * 0.5f, _pickerSaturation);
 
-        // Кольцо Value (чёрный → полный цвет)
         DrawSatValRing(vertices, Position, r3 + gap, r4, _pickerHue, false, 128);
         if (_activePickerRing == 2)
             DrawRingBorder(vertices, Position, r3 + gap, r4, new Vector4(1, 1, 1, 0.8f), 3f);
         DrawRingIndicator(vertices, Position, (r3 + gap + r4) * 0.5f, _pickerValue);
 
-        // Центральная кнопка с превью цвета
         DrawCircle(vertices, Position, PickerCenterRadius + 3f, outlineColor, 48);
         DrawCircle(vertices, Position, PickerCenterRadius, previewColor, 48);
-        // Галочка OK
         DrawCheckmark(vertices, Position);
     }
 
@@ -408,11 +406,10 @@ public class RadialMenu
     }
 
     private static void DrawSatValRing(List<Vertex> vertices, Vector2 center, float r1, float r2, float hue,
-        bool isSaturation,
-        int segments)
+        bool isSaturation, int segments)
     {
         float step = MathF.PI * 2f / segments;
-        float startAngle = -MathF.PI * 0.5f; // начало сверху
+        float startAngle = -MathF.PI * 0.5f;
         for (int i = 0; i < segments; i++)
         {
             float a1 = startAngle + i * step;
@@ -456,9 +453,7 @@ public class RadialMenu
         {
             float a1 = i * step;
             float a2 = (i + 1) * step;
-            // Внешняя граница
             DrawLineSegment(vertices, center, r2 - thickness * 0.5f, r2 + thickness * 0.5f, a1, a2, color);
-            // Внутренняя граница
             DrawLineSegment(vertices, center, r1 - thickness * 0.5f, r1 + thickness * 0.5f, a1, a2, color);
         }
     }
@@ -482,7 +477,7 @@ public class RadialMenu
 
     private void DrawRingIndicator(List<Vertex> vertices, Vector2 center, float radius, float normalizedValue)
     {
-        float angle = normalizedValue * MathF.PI * 2f - MathF.PI * 0.5f; // начинаем сверху
+        float angle = normalizedValue * MathF.PI * 2f - MathF.PI * 0.5f;
         var pos = center + new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * radius;
         DrawCircle(vertices, pos, 7f, new Vector4(1, 1, 1, 0.95f), 20);
         DrawCircle(vertices, pos, 4f, new Vector4(0.05f, 0.05f, 0.08f, 0.9f), 16);

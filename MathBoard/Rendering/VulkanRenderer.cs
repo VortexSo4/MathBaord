@@ -113,6 +113,7 @@ public sealed class VulkanRenderer : IDisposable
         {
             RecreateSwapchain();
         }
+        _inputManager?.Update();
         
         _libraryManager.AutoSaveIfNeeded();
 

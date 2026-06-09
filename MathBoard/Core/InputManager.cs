@@ -22,9 +22,10 @@ public sealed class InputManager : IDisposable
     private Vector2 _lastPanPosition;
     private Vector2 _mouseDownPos;
 
-    // Новое поведение: меню открывается только после долгого нажатия
+    // Новое поведение: меню открывается после долгого нажатия (по таймеру)
     private bool _menuPending = false;
     private DateTime _mouseDownTime;
+    private bool _menuOpenedByTimer = false;
 
     public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document, RadialMenu radialMenu, LibraryManager libraryManager)
     {
@@ -53,6 +54,25 @@ public sealed class InputManager : IDisposable
         }
     }
 
+    // Вызывается каждый кадр из VulkanRenderer.Render
+    public void Update()
+    {
+        if (_menuPending && !_radialMenu.IsOpen)
+        {
+            double elapsed = (DateTime.Now - _mouseDownTime).TotalSeconds;
+            if (elapsed >= Settings.RadialMenuOpenThreshold)
+            {
+                // Открываем меню по таймеру (мышь не двигалась или двигалась слишком мало)
+                var currentPos = GetMousePosition(_mouse!, _window);
+                _radialMenu.OpenAt(_mouseDownPos);
+                _radialMenu.OnMouseDown(currentPos);
+                _menuPending = false;
+                _menuOpenedByTimer = true;
+                _strokeRenderer.SetDirty();
+            }
+        }
+    }
+
     private void OnMouseDown(IMouse mouse, MouseButton button)
     {
         var pos = GetMousePosition(mouse, _window);
@@ -62,6 +82,7 @@ public sealed class InputManager : IDisposable
             _mouseDownPos = pos;
             _mouseDownTime = DateTime.Now;
             _menuPending = true;
+            _menuOpenedByTimer = false;
 
             if (_radialMenu.IsOpen)
             {
@@ -86,13 +107,13 @@ public sealed class InputManager : IDisposable
             return;
         }
 
-        // Проверка отмены открытия меню при быстром движении
+        // Проверяем, не нужно ли отменить открытие меню из-за быстрого движения
         if (_menuPending)
         {
             float elapsed = (float)(DateTime.Now - _mouseDownTime).TotalSeconds;
             float dist = Vector2.Distance(_mouseDownPos, pos);
 
-            // Отмена меню при быстром движении
+            // Отмена меню при быстром движении (ещё не открыто)
             if (dist > Settings.RadialMenuEscapeDistance && elapsed < Settings.RadialMenuEscapeTime)
             {
                 _menuPending = false;
@@ -102,14 +123,8 @@ public sealed class InputManager : IDisposable
                 return;
             }
 
-            if (elapsed >= Settings.RadialMenuOpenThreshold)
-            {
-                _menuPending = false;
-                _radialMenu.OpenAt(_mouseDownPos);
-                _radialMenu.OnMouseDown(pos);
-                _strokeRenderer.SetDirty();
-                return;
-            }
+            // Если время уже превысило порог, но меню ещё не открыто – доверимся таймеру в Update()
+            // Ничего не делаем, ждём следующий кадр.
         }
 
         if (_isDrawing)
@@ -141,8 +156,19 @@ public sealed class InputManager : IDisposable
                 _strokeRenderer.EndStroke();
                 _isDrawing = false;
             }
+            else if (_menuPending && !_radialMenu.IsOpen)
+            {
+                // Не дождались открытия меню – начинаем рисование
+                _strokeRenderer.BeginStroke(_mouseDownPos);
+                _strokeRenderer.AddPoint(pos);
+                _isDrawing = true;
+                _strokeRenderer.EndStroke();
+                _isDrawing = false;
+                _menuPending = false;
+            }
 
             _menuPending = false;
+            _menuOpenedByTimer = false;
         }
     }
 
