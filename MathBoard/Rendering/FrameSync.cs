@@ -34,44 +34,44 @@ public sealed unsafe class FrameSync : IDisposable
         _context.Vk.CreateFence(_context.Device, &fenceInfo, null, out _inFlightFence);
     }
 
-    public bool DrawFrame(SwapchainManager swapchain, CommandManager commandManager)
+    public DrawFrameResult DrawFrame(SwapchainManager swapchain, CommandManager commandManager)
     {
-        // 1. Wait for fence with timeout
         fixed (Fence* fencePtr = &_inFlightFence)
         {
-            var waitResult = _context.Vk.WaitForFences(_context.Device, 1, fencePtr, true, 500_000_000); // 500ms
-
+            var waitResult = _context.Vk.WaitForFences(_context.Device, 1, fencePtr, true, 500_000_000);
             if (waitResult == Result.Timeout)
             {
-                Console.WriteLine("WARNING: WaitForFences timeout → forcing recreate");
-                return false;
+                Console.WriteLine("WARNING: WaitForFences timeout — skipping frame");
+                return DrawFrameResult.SkipFrame;
             }
 
             if (waitResult != Result.Success)
                 throw new Exception($"WaitForFences failed: {waitResult}");
         }
 
-        // 2. Acquire next image
         uint imageIndex = 0;
         var acquireResult = swapchain.KhrSwapchain.AcquireNextImage(
             _context.Device,
             swapchain.Swapchain,
-            1_000_000_000, // 1 second timeout
+            1_000_000_000,
             _imageAvailableSemaphore,
             default,
             &imageIndex);
 
-        if (acquireResult is Result.ErrorOutOfDateKhr or Result.SuboptimalKhr || acquireResult == Result.Timeout)
-            return false;
+        if (acquireResult == Result.ErrorOutOfDateKhr)
+            return DrawFrameResult.NeedsRecreation;
 
-        if (acquireResult != Result.Success)
+        if (acquireResult == Result.Timeout)
+            return DrawFrameResult.SkipFrame;
+
+        if (acquireResult != Result.Success && acquireResult != Result.SuboptimalKhr)
             throw new Exception($"AcquireNextImage failed: {acquireResult}");
 
-        // 3. Reset fence
+        bool needsRecreationAfter = acquireResult == Result.SuboptimalKhr;
+
         fixed (Fence* fencePtr = &_inFlightFence)
             _context.Vk.ResetFences(_context.Device, 1, fencePtr);
 
-        // 4. Submit — исправлено: используем fixed для семафоров
         var commandBuffer = commandManager.CommandBuffers[imageIndex];
         PipelineStageFlags waitStage = PipelineStageFlags.ColorAttachmentOutputBit;
 
@@ -95,33 +95,45 @@ public sealed unsafe class FrameSync : IDisposable
                 throw new Exception($"QueueSubmit failed: {submitResult}");
         }
 
-        // 5. Present — исправлено
         fixed (Silk.NET.Vulkan.Semaphore* pWaitSemaphore = &_renderFinishedSemaphore)
         {
             var swapchainHandle = swapchain.Swapchain;
             SwapchainKHR* pSwapchain = &swapchainHandle;
+
+            PresentInfoKHR presentInfo = new()
             {
-                PresentInfoKHR presentInfo = new()
-                {
-                    SType = StructureType.PresentInfoKhr,
-                    WaitSemaphoreCount = 1,
-                    PWaitSemaphores = pWaitSemaphore,
-                    SwapchainCount = 1,
-                    PSwapchains = pSwapchain,
-                    PImageIndices = &imageIndex
-                };
+                SType = StructureType.PresentInfoKhr,
+                WaitSemaphoreCount = 1,
+                PWaitSemaphores = pWaitSemaphore,
+                SwapchainCount = 1,
+                PSwapchains = pSwapchain,
+                PImageIndices = &imageIndex
+            };
 
-                var presentResult = swapchain.KhrSwapchain.QueuePresent(_context.PresentQueue, &presentInfo);
+            var presentResult = swapchain.KhrSwapchain.QueuePresent(_context.PresentQueue, &presentInfo);
 
-                if (presentResult is Result.ErrorOutOfDateKhr or Result.SuboptimalKhr)
-                    return false;
+            if (presentResult is Result.ErrorOutOfDateKhr or Result.SuboptimalKhr)
+                return DrawFrameResult.NeedsRecreation;
 
-                if (presentResult != Result.Success)
-                    throw new Exception($"QueuePresent failed: {presentResult}");
-            }
+            if (presentResult != Result.Success)
+                throw new Exception($"QueuePresent failed: {presentResult}");
         }
 
-        return true;
+        return needsRecreationAfter ? DrawFrameResult.NeedsRecreation : DrawFrameResult.Success;
+    }
+
+    public void Recreate()
+    {
+        _context.Vk.DeviceWaitIdle(_context.Device);
+        if (_inFlightFence.Handle != 0)
+            _context.Vk.DestroyFence(_context.Device, _inFlightFence, null);
+        if (_imageAvailableSemaphore.Handle != 0)
+            _context.Vk.DestroySemaphore(_context.Device, _imageAvailableSemaphore, null);
+        if (_renderFinishedSemaphore.Handle != 0)
+            _context.Vk.DestroySemaphore(_context.Device, _renderFinishedSemaphore, null);
+
+        // Создаём заново
+        CreateSyncObjects();
     }
 
     public void Dispose()

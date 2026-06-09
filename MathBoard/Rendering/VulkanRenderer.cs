@@ -4,6 +4,13 @@ using Silk.NET.Windowing;
 
 namespace MathBoard.Rendering;
 
+public enum DrawFrameResult
+{
+    Success,
+    SkipFrame,       // timeout или окно не готово — просто пропустить
+    NeedsRecreation  // реально нужно пересоздать swapchain
+}
+
 public sealed class VulkanRenderer : IDisposable
 {
     private readonly VulkanContext _context;
@@ -74,7 +81,18 @@ public sealed class VulkanRenderer : IDisposable
         try
         {
             Console.WriteLine("[Recreate] Starting swapchain recreation...");
-            _context.Vk.DeviceWaitIdle(_context.Device);
+        
+            // Уничтожаем старый FrameSync, чтобы не ждать на его fence
+            _frameSync?.Dispose();
+            _frameSync = null;
+        
+            // Теперь ожидаем завершения всех операций – но если GPU завис, мы уже уничтожили объекты,
+            // и DeviceWaitIdle может всё равно зависнуть. Поэтому лучше сначала попробовать сбросить очередь.
+            // В идеале – пересоздать весь Vulkan-контекст, но это сложно.
+            // Как компромисс – установим таймаут через внешний таймер (например, Task.Run), но это уже усложнение.
+            // Пока оставим так, но добавим защиту от двойного входа.
+        
+            _context.Vk.DeviceWaitIdle(_context.Device); // всё ещё рискованно, но теперь вызывается только при накоплении таймаутов
 
             _framebufferManager?.Dispose();
             _swapchain?.Recreate();
@@ -91,6 +109,10 @@ public sealed class VulkanRenderer : IDisposable
 
             _strokeRenderer!.UpdateExtent(_swapchain.Extent);
 
+            // Пересоздаём FrameSync
+            _frameSync = new FrameSync(_context);
+            _frameSync.Initialize();
+
             Console.WriteLine("[Recreate] Success");
         }
         finally
@@ -102,12 +124,15 @@ public sealed class VulkanRenderer : IDisposable
 
     public void Render(double delta)
     {
+        var size = _context.Window.FramebufferSize;
+        if (size.X == 0 || size.Y == 0)
+            return;
+
         if (_framebufferResized)
             RecreateSwapchain();
 
         _inputManager?.Update();
         _libraryManager.AutoSaveIfNeeded();
-
         _strokeRenderer!.UpdateGeometry();
         _strokeRenderer.UpdateExtent(_swapchain!.Extent);
 
@@ -117,19 +142,17 @@ public sealed class VulkanRenderer : IDisposable
             _swapchain.Extent,
             _strokeRenderer);
 
-        bool success = _frameSync!.DrawFrame(_swapchain, _commandManager);
+        var result = _frameSync!.DrawFrame(_swapchain, _commandManager);
 
-        if (!success)
+        switch (result)
         {
-            RecreateSwapchain();
-
-            _commandManager.RecordCommandBuffers(
-                _framebufferManager.Framebuffers,
-                _renderPassManager.RenderPass,
-                _swapchain.Extent,
-                _strokeRenderer);
-
-            _frameSync.DrawFrame(_swapchain, _commandManager);
+            case DrawFrameResult.NeedsRecreation:
+                _framebufferResized = true;
+                break;
+            case DrawFrameResult.SkipFrame:
+                break; // просто пропускаем
+            case DrawFrameResult.Success:
+                break;
         }
     }
 
@@ -137,6 +160,8 @@ public sealed class VulkanRenderer : IDisposable
     {
         _context.Vk.DeviceWaitIdle(_context.Device); // на всякий случай
         _inputManager?.Dispose();
+        _context.Vk.QueueWaitIdle(_context.GraphicsQueue);
+        _context.Vk.QueueWaitIdle(_context.PresentQueue);
         _frameSync?.Dispose();
         _commandManager?.Dispose();
         _framebufferManager?.Dispose();

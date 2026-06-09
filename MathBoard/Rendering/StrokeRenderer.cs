@@ -130,7 +130,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private void EraseAt(Vector2 screenPos)
     {
         var worldPos = ScreenToWorld(screenPos);
-        var radius = _eraserSize / _camera.Zoom;
+        var radius = _eraserSize;
 
         for (int i = _document.Strokes.Count - 1; i >= 0; i--)
         {
@@ -166,7 +166,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             if (stroke.Points.Count == 0) continue;
 
             var color = stroke.Color;
-            var radius = stroke.Width * 0.5f;
+            var radius = (stroke.Width * 0.5f) * _camera.Zoom;
 
             // Круги в каждой точке (плавные стыки)
             foreach (var p in stroke.Points)

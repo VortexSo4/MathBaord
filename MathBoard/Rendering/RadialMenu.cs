@@ -504,9 +504,10 @@ public class RadialMenu
 
     private void DrawThicknessPreview(List<Vertex> vertices)
     {
-        float r = _previewThickness * 0.5f;
-        DrawCircle(vertices, Position, r + 4f, new Vector4(0.15f, 0.15f, 0.18f, 0.9f), 56);
-        DrawCircle(vertices, Position, Math.Max(r - 4f, 1f), new Vector4(0.97f, 0.97f, 0.98f, 1.0f), 56);
+        var zoom = _renderer.Camera.Zoom;
+        float screenRadius = _previewThickness * zoom;
+        DrawCircle(vertices, Position, screenRadius + 4f, new Vector4(0.15f, 0.15f, 0.18f, 0.9f), 56);
+        DrawCircle(vertices, Position, Math.Max(screenRadius - 4f, 1f), new Vector4(0.97f, 0.97f, 0.98f, 1.0f), 56);
     }
 
     private void DrawIcon(List<Vertex> vertices, int sectorIndex, bool isSelected)
