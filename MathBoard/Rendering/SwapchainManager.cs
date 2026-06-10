@@ -130,11 +130,7 @@ public sealed unsafe class SwapchainManager : IDisposable
     {
         foreach (var format in formats)
         {
-            if (format.Format == Format.B8G8R8A8Srgb &&
-                format.ColorSpace == ColorSpaceKHR.PaceSrgbNonlinearKhr)
-            {
-                return format;
-            }
+            if (format is { Format: Format.B8G8R8A8Unorm, ColorSpace: ColorSpaceKHR.SpaceSrgbNonlinearKhr }) return format;
         }
         return formats[0];
     }

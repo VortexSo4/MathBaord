@@ -1,4 +1,5 @@
-﻿using System.Numerics;
+﻿using System.Globalization;
+using System.Numerics;
 using System.Text.Json;
 using System.Reflection;
 
@@ -11,14 +12,14 @@ public static class Settings
     // ====================== ОДИН ИСТОЧНИК ПРАВДЫ ======================
     private static class Defaults
     {
-        public static readonly List<Vector4> Colors = 
+        public static readonly List<string> Colors = 
         [
-            new(0.0f, 0.3f, 0.8f, 1.0f),
-            new(0.8f, 0.1f, 0.1f, 1.0f),
-            new(0.1f, 0.7f, 0.1f, 1.0f)
+            "#D3D3D3",
+            "#FF8383",
+            "#3A994C"
         ];
-        
-        public static readonly Vector4 DefaultBackgroundColor = new(0.98f, 0.98f, 0.99f, 1.0f);
+
+        public static readonly string DefaultBackgroundColor = "#121212";
 
         public const string LibraryRootPath = "Lessons";
         public const int AutoSaveIntervalMinutes = 1;
@@ -35,7 +36,7 @@ public static class Settings
         public const float CameraMaxZoom = 30f;
         public const float CameraPanSpeed = 35f;
 
-        public const float DefaultBrushWidth = 22f;
+        public const float DefaultBrushWidth = 8f;
         public const float DefaultEraserSize = 8f;
         public const float MinBrushWidth = 4f;
         public const float MaxBrushWidth = 90f;
@@ -49,10 +50,11 @@ public static class Settings
     }
 
     // ====================== Настройки ======================
-    public static List<Vector4> Colors { get; private set; } = [..Defaults.Colors];
-    public static Setting<Vector4> BackgroundColor { get; } = new(Defaults.DefaultBackgroundColor);
+    public static List<Vector4> Colors { get; private set; } = Defaults.Colors.Select(HexToVector4).ToList();
+    
+    public static Setting<Vector4> BackgroundColor { get; } = 
+        new(HexToVector4(Defaults.DefaultBackgroundColor));
 
-    // ←←← Добавляешь новую настройку **только здесь** (одна строка):
     public static Setting<string> LibraryRootPath { get; } = new(Defaults.LibraryRootPath);
     public static Setting<int> AutoSaveIntervalMinutes { get; } = new(Defaults.AutoSaveIntervalMinutes);
     public static Setting<bool> LibraryPanelOnTop { get; } = new(Defaults.LibraryPanelOnTop);
@@ -157,7 +159,7 @@ public static class Settings
 
             var data = new SettingsData
             {
-                Colors = Colors,
+                Colors = Colors.Select(Vector4ToHex).ToList(),
                 Values = values
             };
 
@@ -166,10 +168,35 @@ public static class Settings
         }
         catch { }
     }
+    
+    private static Vector4 HexToVector4(string hex)
+    {
+        if (string.IsNullOrWhiteSpace(hex))
+            return new Vector4(1, 1, 1, 1);
+
+        hex = hex.TrimStart('#');
+        if (hex.Length == 6)
+        {
+            byte r = byte.Parse(hex.Substring(0, 2), NumberStyles.HexNumber);
+            byte g = byte.Parse(hex.Substring(2, 2), NumberStyles.HexNumber);
+            byte b = byte.Parse(hex.Substring(4, 2), NumberStyles.HexNumber);
+            return new Vector4(r / 255f, g / 255f, b / 255f, 1f);
+        }
+        return new Vector4(1, 1, 1, 1); // fallback
+    }
+
+    private static string Vector4ToHex(Vector4 color)
+    {
+        byte r = (byte)Math.Clamp(color.X * 255, 0, 255);
+        byte g = (byte)Math.Clamp(color.Y * 255, 0, 255);
+        byte b = (byte)Math.Clamp(color.Z * 255, 0, 255);
+        return $"#{r:X2}{g:X2}{b:X2}";
+    }
 
     public static void ResetToDefaults()
     {
-        Colors = new(Defaults.Colors);
+        Colors = Defaults.Colors.Select(HexToVector4).ToList();
+        BackgroundColor.Value = HexToVector4(Defaults.DefaultBackgroundColor);
 
         foreach (var kvp in _settingProperties)
         {
@@ -186,7 +213,7 @@ public static class Settings
 
     private class SettingsData
     {
-        public List<Vector4> Colors { get; set; } = new(Defaults.Colors);
+        public List<string> Colors { get; set; } = [];
         public Dictionary<string, object> Values { get; set; } = new();
     }
 }

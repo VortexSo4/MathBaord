@@ -26,7 +26,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private bool _isEraser;
     private float _eraserSize = 8f;
 
-    private Vector4 _currentColor = new(0.0f, 0.0f, 0.0f, 1.0f);
+    private Vector4 _currentColor = Settings.Colors[0];
     private float _currentBrushWidth = 22f;
 
     private Pipeline _pipeline;
