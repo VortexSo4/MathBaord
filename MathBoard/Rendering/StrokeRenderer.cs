@@ -23,7 +23,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private readonly Document _document;
     private readonly Camera _camera;
 
-    private bool _isEraser = false;
+    private bool _isEraser;
     private float _eraserSize = 8f;
 
     private Vector4 _currentColor = new(0.0f, 0.0f, 0.0f, 1.0f);
@@ -433,19 +433,17 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     private void UpdateVertexBuffer()
     {
-        // Сначала безопасно уничтожаем старый буфер, если он есть
+        // DeviceWaitIdle убран: к этому моменту WaitForPreviousFrame() в Render() уже
+        // подтвердил что GPU завершил предыдущий кадр и буфер больше не используется
         if (_vertexBuffer.Handle != 0)
         {
-            _context.Vk.DeviceWaitIdle(_context.Device); // важно!
             _context.Vk.DestroyBuffer(_context.Device, _vertexBuffer, null);
             _context.Vk.FreeMemory(_context.Device, _vertexBufferMemory, null);
-
             _vertexBuffer = default;
             _vertexBufferMemory = default;
         }
 
         _vertexCount = 0;
-
         if (_vertices.Count == 0)
             return;
 

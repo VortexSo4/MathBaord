@@ -11,21 +11,20 @@ public class RadialMenu
     private readonly StrokeRenderer _renderer;
 
     private DateTime _pressStartTime;
-    public static float ColorLongPressThreshold => Settings.RadialMenuLongPressThreshold;
 
     private int _selectedIndex = -1;
-    private bool _isConfirmingClear = false;
-    private bool _isAdjustingThickness = false;
+    private bool _isConfirmingClear;
+    private bool _isAdjustingThickness;
     private float _previewThickness = 22f;
     private float _thicknessBaseWidth = 22f;
-    
-    private bool _isPickingBackground = false;
+
+    private bool _isPickingBackground;
     private Vector4 _tempBackgroundColor;
 
     // HSV пикер
-    private bool _isPickingColor = false;
+    private bool _isPickingColor;
     private int _colorEditIndex = -1;
-    private float _pickerHue = 0f;
+    private float _pickerHue;
     private float _pickerSaturation = 1f;
     private float _pickerValue = 1f;
     private int _activePickerRing = -1;
@@ -41,7 +40,7 @@ public class RadialMenu
     private float IconRadius => (OuterRadius + InnerRadius) * 0.55f;
 
     private const float RenderAngleOffset = MathF.PI;
-    private bool _isMouseDown = false;
+    private bool _isMouseDown;
 
     public RadialMenu(StrokeRenderer renderer)
     {
@@ -74,6 +73,7 @@ public class RadialMenu
         _isConfirmingClear = false;
         _isAdjustingThickness = false;
         _isPickingColor = false;
+        _isPickingBackground = false;
         _activePickerRing = -1;
         _isMouseDown = false;
         _selectedIndex = -1;
@@ -85,7 +85,7 @@ public class RadialMenu
         if (!IsOpen) return;
         _isMouseDown = true;
 
-        if (_isPickingColor)
+        if (_isPickingColor || _isPickingBackground)
         {
             var dir = screenPos - Position;
             float dist = dir.Length();
@@ -124,7 +124,7 @@ public class RadialMenu
             return;
         }
 
-        if (_isPickingColor)
+        if (_isPickingColor || _isPickingBackground)
         {
             if (_isMouseDown && _activePickerRing >= 0)
                 HandlePickerMove(screenPos);
@@ -149,23 +149,34 @@ public class RadialMenu
     public void OnMouseUp(Vector2 screenPos)
     {
         if (!IsOpen) return;
-
         _isMouseDown = false;
 
-        // 1. Режим выбора цвета
         if (_isPickingColor)
         {
             var dir = screenPos - Position;
-            float dist = dir.Length();
-
-            if (dist <= PickerCenterRadius)
+            if (dir.Length() <= PickerCenterRadius)
                 ApplyPickerColor();
-
             _activePickerRing = -1;
             return;
         }
 
-        // 2. Режим изменения толщины – применяем и закрываем
+        // Фоновый пикер: центр — применить, иначе — отменить и восстановить
+        if (_isPickingBackground)
+        {
+            var dir = screenPos - Position;
+            if (dir.Length() <= PickerCenterRadius)
+            {
+                ApplyBackgroundPicker();   // применить + закрыть
+            }
+            else
+            {
+                // Просто заканчиваем drag, НЕ откатываем цвет и НЕ выходим из режима
+                _activePickerRing = -1;
+                // _isPickingBackground остаётся true — пикер продолжает работать
+            }
+            return;
+        }
+
         if (_isAdjustingThickness)
         {
             _renderer.CurrentBrushWidth = _previewThickness;
@@ -180,7 +191,6 @@ public class RadialMenu
         var dirCenter = screenPos - Position;
         bool isCenterClick = dirCenter.Length() <= CenterRadius + 10f;
 
-        // 3. Режим подтверждения очистки
         if (_isConfirmingClear)
         {
             if (isCenterClick)
@@ -190,29 +200,29 @@ public class RadialMenu
             }
             else
             {
-                // отмена подтверждения
                 _isConfirmingClear = false;
                 _renderer.SetDirty();
             }
+
             return;
         }
 
-        // 4. Обычный клик по центру – закрыть меню (крестик)
         if (isCenterClick)
         {
             Close();
             return;
         }
 
-        // 5. Выбор инструмента / цвета
         if (_selectedIndex == -1)
-            return; // никуда не нажали – меню остаётся
+            return;
 
         if (_selectedIndex <= 3)
             HandleToolSelection(_selectedIndex);
+        else if (_selectedIndex == 4)
+            OpenBackgroundPicker(); // сектор 4 всегда открывает фоновый пикер
         else
         {
-            int colorIdx = _selectedIndex - 4;
+            int colorIdx = _selectedIndex - 5; // цвета теперь с 5-го сектора
             if (colorIdx >= 0 && colorIdx < Settings.Colors.Count)
             {
                 if ((DateTime.Now - _pressStartTime).TotalSeconds > Settings.RadialMenuLongPressThreshold)
@@ -240,17 +250,17 @@ public class RadialMenu
             case 1: _pickerSaturation = value; break;
             case 2: _pickerValue = value; break;
         }
-        
+
+        var newColor = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
+
         if (_isPickingBackground)
         {
-            var newColor = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
-            _tempBackgroundColor = newColor;
             Settings.BackgroundColor.Value = newColor;
             _renderer.SetDirty();
+            return;
         }
 
-        var previewColor = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
-        _renderer.SetColor(previewColor);
+        _renderer.SetColor(newColor);
         _renderer.SetDirty();
     }
 
@@ -317,7 +327,7 @@ public class RadialMenu
             RenderColorPicker(vertices);
             return;
         }
-        
+
         if (_isPickingBackground)
         {
             RenderColorPicker(vertices);
@@ -342,9 +352,15 @@ public class RadialMenu
             float end = centerAngle + sectorAngle * 0.5f - gap;
 
             Vector4 fillColor;
-            if (i >= 4)
+            if (i == 4)
             {
-                int idx = i - 4;
+                fillColor = Settings.BackgroundColor.Value;
+                if (isSelected)
+                    fillColor = Vector4.Lerp(fillColor, Vector4.One, 0.35f);
+            }
+            else if (i >= 5)
+            {
+                int idx = i - 5;
                 fillColor = idx < Settings.Colors.Count ? Settings.Colors[idx] : bgColor;
                 if (isSelected)
                     fillColor = Vector4.Lerp(fillColor, Vector4.One, 0.35f);
@@ -519,22 +535,24 @@ public class RadialMenu
         DrawLine(vertices, Position + new Vector2(-11, -11), Position + new Vector2(11, 11), cross, 5f);
         DrawLine(vertices, Position + new Vector2(11, -11), Position + new Vector2(-11, 11), cross, 5f);
     }
-    
+
     private void OpenBackgroundPicker()
     {
         _isPickingBackground = true;
         _isPickingColor = false;
         _isAdjustingThickness = false;
         _isConfirmingClear = false;
-        _tempBackgroundColor = Settings.BackgroundColor;
+        _tempBackgroundColor = Settings.BackgroundColor.Value;
+        RgbToHsv(Settings.BackgroundColor.Value, out _pickerHue, out _pickerSaturation, out _pickerValue);
         _activePickerRing = -1;
+        _selectedIndex = -1;
         _renderer.SetDirty();
     }
 
     private void ApplyBackgroundPicker()
     {
-        Settings.BackgroundColor.Value = _tempBackgroundColor;
         Settings.Save();
+        _isPickingBackground = false;
         Close();
     }
 

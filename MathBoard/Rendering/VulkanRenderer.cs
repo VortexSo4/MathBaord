@@ -133,6 +133,11 @@ public sealed class VulkanRenderer : IDisposable
 
         _inputManager?.Update();
         _libraryManager.AutoSaveIfNeeded();
+
+        // Ждём завершения предыдущего кадра ПЕРЕД любой работой с GPU-ресурсами
+        if (!_frameSync!.WaitForPreviousFrame())
+            return; // GPU завис или timeout — пропускаем кадр без краша
+
         _strokeRenderer!.UpdateGeometry();
         _strokeRenderer.UpdateExtent(_swapchain!.Extent);
 
@@ -142,18 +147,10 @@ public sealed class VulkanRenderer : IDisposable
             _swapchain.Extent,
             _strokeRenderer);
 
-        var result = _frameSync!.DrawFrame(_swapchain, _commandManager);
+        var result = _frameSync.SubmitFrame(_swapchain, _commandManager);
 
-        switch (result)
-        {
-            case DrawFrameResult.NeedsRecreation:
-                _framebufferResized = true;
-                break;
-            case DrawFrameResult.SkipFrame:
-                break; // просто пропускаем
-            case DrawFrameResult.Success:
-                break;
-        }
+        if (result == DrawFrameResult.NeedsRecreation)
+            _framebufferResized = true;
     }
 
     public void Dispose()
