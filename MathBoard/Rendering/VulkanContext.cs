@@ -173,10 +173,18 @@ public sealed unsafe class VulkanContext : IDisposable
 
     private void CreateLogicalDevice()
     {
+        PhysicalDeviceFeatures supportedFeatures;
+        _vk.GetPhysicalDeviceFeatures(_physicalDevice, &supportedFeatures);
+
+        PhysicalDeviceFeatures enabledFeatures = new();
+        if (supportedFeatures.SampleRateShading)
+        {
+            enabledFeatures.SampleRateShading = true;
+        }
+
         const float queuePriority = 1.0f;
         var queuePriorities = stackalloc float[1] { queuePriority };
 
-        // Создаём два отдельных запроса на queue, даже если индексы совпадают
         var queueCreateInfos = stackalloc DeviceQueueCreateInfo[2];
         uint queueCreateInfoCount = 1;
 
@@ -212,7 +220,8 @@ public sealed unsafe class VulkanContext : IDisposable
                 QueueCreateInfoCount = queueCreateInfoCount,
                 PQueueCreateInfos = queueCreateInfos,
                 EnabledExtensionCount = 1,
-                PpEnabledExtensionNames = extensions
+                PpEnabledExtensionNames = extensions,
+                PEnabledFeatures = &enabledFeatures // <- важная строка
             };
 
             var result = _vk.CreateDevice(_physicalDevice, &createInfo, null, out _device);
@@ -287,5 +296,34 @@ public sealed unsafe class VulkanContext : IDisposable
             _vk.DestroyInstance(_instance, null);
 
         _vk?.Dispose();
+    }
+    
+    public SampleCountFlags GetMaxUsableSampleCount()
+    {
+        PhysicalDeviceProperties props;
+        _vk.GetPhysicalDeviceProperties(_physicalDevice, &props);
+        var limits = props.Limits;
+
+        var colorSamples = limits.FramebufferColorSampleCounts;
+        var depthSamples = limits.FramebufferDepthSampleCounts;
+        var maxSamples = (SampleCountFlags)Math.Min((uint)colorSamples, (uint)depthSamples);
+
+        if (maxSamples.HasFlag(SampleCountFlags.Count64Bit)) return SampleCountFlags.Count64Bit;
+        if (maxSamples.HasFlag(SampleCountFlags.Count32Bit)) return SampleCountFlags.Count32Bit;
+        if (maxSamples.HasFlag(SampleCountFlags.Count16Bit)) return SampleCountFlags.Count16Bit;
+        if (maxSamples.HasFlag(SampleCountFlags.Count8Bit))  return SampleCountFlags.Count8Bit;
+        if (maxSamples.HasFlag(SampleCountFlags.Count4Bit))  return SampleCountFlags.Count4Bit;
+        if (maxSamples.HasFlag(SampleCountFlags.Count2Bit))  return SampleCountFlags.Count2Bit;
+        return SampleCountFlags.Count1Bit;
+    }
+    
+    public SampleCountFlags GetSampleCount()
+    {
+        var maxSamples = GetMaxUsableSampleCount();
+        if (maxSamples >= SampleCountFlags.Count4Bit)
+            return SampleCountFlags.Count4Bit;
+        if (maxSamples >= SampleCountFlags.Count2Bit)
+            return SampleCountFlags.Count2Bit;
+        return SampleCountFlags.Count1Bit;
     }
 }

@@ -23,49 +23,66 @@ public sealed unsafe class RenderPassManager : IDisposable
 
     private void CreateRenderPass()
     {
+        SampleCountFlags samples = _context.GetSampleCount();
+        // Принудительно используем 4 сэмпла, если поддерживается, иначе 2 или 1
+        if (samples >= SampleCountFlags.Count4Bit)
+            samples = SampleCountFlags.Count4Bit;
+        else if (samples >= SampleCountFlags.Count2Bit)
+            samples = SampleCountFlags.Count2Bit;
+        else
+            samples = SampleCountFlags.Count1Bit;
+
+        // 1. Мультисэмпловый цветовой аттачмент
         AttachmentDescription colorAttachment = new()
         {
             Format = _swapchain.ImageFormat,
-            Samples = SampleCountFlags.Count1Bit,
-
+            Samples = samples,
             LoadOp = AttachmentLoadOp.Clear,
-            StoreOp = AttachmentStoreOp.Store,
-
+            StoreOp = AttachmentStoreOp.DontCare, // не сохраняем, только resolve
             StencilLoadOp = AttachmentLoadOp.DontCare,
             StencilStoreOp = AttachmentStoreOp.DontCare,
+            InitialLayout = ImageLayout.Undefined,
+            FinalLayout = ImageLayout.ColorAttachmentOptimal
+        };
 
+        // 2. Resolve аттачмент (обычный, один сэмпл) – это swapchain изображение
+        AttachmentDescription resolveAttachment = new()
+        {
+            Format = _swapchain.ImageFormat,
+            Samples = SampleCountFlags.Count1Bit,
+            LoadOp = AttachmentLoadOp.DontCare,
+            StoreOp = AttachmentStoreOp.Store,
+            StencilLoadOp = AttachmentLoadOp.DontCare,
+            StencilStoreOp = AttachmentStoreOp.DontCare,
             InitialLayout = ImageLayout.Undefined,
             FinalLayout = ImageLayout.PresentSrcKhr
         };
 
-        AttachmentReference colorAttachmentRef = new()
-        {
-            Attachment = 0,
-            Layout = ImageLayout.ColorAttachmentOptimal
-        };
+        AttachmentReference colorRef = new() { Attachment = 0, Layout = ImageLayout.ColorAttachmentOptimal };
+        AttachmentReference resolveRef = new() { Attachment = 1, Layout = ImageLayout.ColorAttachmentOptimal };
 
         SubpassDescription subpass = new()
         {
             PipelineBindPoint = PipelineBindPoint.Graphics,
             ColorAttachmentCount = 1,
-            PColorAttachments = &colorAttachmentRef
+            PColorAttachments = &colorRef,
+            PResolveAttachments = &resolveRef
         };
+
+        var attachments = stackalloc AttachmentDescription[2];
+        attachments[0] = colorAttachment;
+        attachments[1] = resolveAttachment;
 
         RenderPassCreateInfo createInfo = new()
         {
             SType = StructureType.RenderPassCreateInfo,
-            AttachmentCount = 1,
-            PAttachments = &colorAttachment,
+            AttachmentCount = 2,
+            PAttachments = attachments,
             SubpassCount = 1,
             PSubpasses = &subpass
         };
 
-        var result = _context.Vk.CreateRenderPass(
-            _context.Device,
-            &createInfo,
-            null,
-            out _renderPass);
-
+        var result = _context.Vk.CreateRenderPass(_context.Device, &createInfo, null, out _renderPass);
         if (result != Result.Success)
             throw new Exception($"CreateRenderPass failed: {result}");
     }

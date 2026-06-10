@@ -352,7 +352,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         var multisampling = new PipelineMultisampleStateCreateInfo
         {
             SType = StructureType.PipelineMultisampleStateCreateInfo,
-            RasterizationSamples = SampleCountFlags.Count1Bit
+            RasterizationSamples = _context.GetSampleCount()
         };
 
         var colorBlendAttachment = new PipelineColorBlendAttachmentState

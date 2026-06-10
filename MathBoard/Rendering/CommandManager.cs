@@ -1,4 +1,5 @@
-﻿using Silk.NET.Vulkan;
+﻿using MathBoard.Core;
+using Silk.NET.Vulkan;
 
 namespace MathBoard.Rendering;
 
@@ -90,7 +91,13 @@ public sealed unsafe class CommandManager : IDisposable
 
             ClearValue clearColor = new()
             {
-                Color = new ClearColorValue { Float32_0 = 0.98f, Float32_1 = 0.98f, Float32_2 = 0.99f, Float32_3 = 1.0f }
+                Color = new ClearColorValue 
+                { 
+                    Float32_0 = Settings.BackgroundColor.Value.X,
+                    Float32_1 = Settings.BackgroundColor.Value.Y,
+                    Float32_2 = Settings.BackgroundColor.Value.Z,
+                    Float32_3 = Settings.BackgroundColor.Value.W
+                }
             };
 
             renderPassInfo.ClearValueCount = 1;

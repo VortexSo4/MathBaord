@@ -13,11 +13,12 @@ public static class Settings
     {
         public static readonly List<Vector4> Colors = 
         [
-            new(0.0f, 0.0f, 0.0f, 1.0f),
             new(0.0f, 0.3f, 0.8f, 1.0f),
             new(0.8f, 0.1f, 0.1f, 1.0f),
             new(0.1f, 0.7f, 0.1f, 1.0f)
         ];
+        
+        public static readonly Vector4 DefaultBackgroundColor = new(0.98f, 0.98f, 0.99f, 1.0f);
 
         public const string LibraryRootPath = "Lessons";
         public const int AutoSaveIntervalMinutes = 1;
@@ -48,7 +49,8 @@ public static class Settings
     }
 
     // ====================== Настройки ======================
-    public static List<Vector4> Colors { get; private set; } = new(Defaults.Colors);
+    public static List<Vector4> Colors { get; private set; } = [..Defaults.Colors];
+    public static Setting<Vector4> BackgroundColor { get; } = new(Defaults.DefaultBackgroundColor);
 
     // ←←← Добавляешь новую настройку **только здесь** (одна строка):
     public static Setting<string> LibraryRootPath { get; } = new(Defaults.LibraryRootPath);
@@ -134,8 +136,8 @@ public static class Settings
                 }
             }
 
-            if (data?.Colors?.Count > 0)
-                Colors = data.Colors;
+            if (data?.Colors?.Count > 3)
+                data.Colors = data.Colors.Take(3).ToList();
         }
         catch { /* fallback */ }
     }

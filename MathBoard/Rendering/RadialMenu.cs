@@ -18,6 +18,9 @@ public class RadialMenu
     private bool _isAdjustingThickness = false;
     private float _previewThickness = 22f;
     private float _thicknessBaseWidth = 22f;
+    
+    private bool _isPickingBackground = false;
+    private Vector4 _tempBackgroundColor;
 
     // HSV пикер
     private bool _isPickingColor = false;
@@ -62,6 +65,7 @@ public class RadialMenu
         _previewThickness = _renderer.CurrentBrushWidth;
         _thicknessBaseWidth = _renderer.CurrentBrushWidth;
         _renderer.SetDirty();
+        _isPickingBackground = false;
     }
 
     public void Close()
@@ -236,6 +240,14 @@ public class RadialMenu
             case 1: _pickerSaturation = value; break;
             case 2: _pickerValue = value; break;
         }
+        
+        if (_isPickingBackground)
+        {
+            var newColor = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
+            _tempBackgroundColor = newColor;
+            Settings.BackgroundColor.Value = newColor;
+            _renderer.SetDirty();
+        }
 
         var previewColor = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
         _renderer.SetColor(previewColor);
@@ -301,6 +313,12 @@ public class RadialMenu
             : bgColor;
 
         if (_isPickingColor)
+        {
+            RenderColorPicker(vertices);
+            return;
+        }
+        
+        if (_isPickingBackground)
         {
             RenderColorPicker(vertices);
             return;
@@ -501,6 +519,24 @@ public class RadialMenu
         DrawLine(vertices, Position + new Vector2(-11, -11), Position + new Vector2(11, 11), cross, 5f);
         DrawLine(vertices, Position + new Vector2(11, -11), Position + new Vector2(-11, 11), cross, 5f);
     }
+    
+    private void OpenBackgroundPicker()
+    {
+        _isPickingBackground = true;
+        _isPickingColor = false;
+        _isAdjustingThickness = false;
+        _isConfirmingClear = false;
+        _tempBackgroundColor = Settings.BackgroundColor;
+        _activePickerRing = -1;
+        _renderer.SetDirty();
+    }
+
+    private void ApplyBackgroundPicker()
+    {
+        Settings.BackgroundColor.Value = _tempBackgroundColor;
+        Settings.Save();
+        Close();
+    }
 
     private void DrawThicknessPreview(List<Vertex> vertices)
     {
@@ -534,6 +570,9 @@ public class RadialMenu
             case 3:
                 DrawLine(vertices, iconCenter + new Vector2(-11, -11), iconCenter + new Vector2(11, 11), iconColor, 7f);
                 DrawLine(vertices, iconCenter + new Vector2(11, -11), iconCenter + new Vector2(-11, 11), iconColor, 7f);
+                break;
+            case 4:
+                DrawRect(vertices, iconCenter, 24, 24, Settings.BackgroundColor);
                 break;
             default:
                 DrawCircle(vertices, iconCenter, 9, new Vector4(1, 1, 1, 0.85f), 18);
