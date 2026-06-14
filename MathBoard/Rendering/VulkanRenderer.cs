@@ -24,6 +24,7 @@ public sealed class VulkanRenderer : IDisposable
     private InputManager? _inputManager;
     private RadialMenu? _radialMenu;
     private LibraryManager _libraryManager;
+    private LibraryPanel? _libraryPanel;
 
     private readonly Document _document = new();
     private readonly Camera _camera = new();
@@ -62,8 +63,11 @@ public sealed class VulkanRenderer : IDisposable
         _strokeRenderer.SetRadialMenu(_radialMenu);
 
         _libraryManager = new LibraryManager(_document, _strokeRenderer!);
+        
+        _libraryPanel = new LibraryPanel(_strokeRenderer!, _libraryManager);
+        _strokeRenderer.SetLibraryPanel(_libraryPanel);
 
-        _inputManager = new InputManager(_context.Window, _strokeRenderer!, _camera, _document, _radialMenu, _libraryManager);
+        _inputManager = new InputManager(_context.Window, _strokeRenderer!, _camera, _document, _radialMenu, _libraryManager, _libraryPanel);
 
         _commandManager.RecordCommandBuffers(_framebufferManager.Framebuffers, _renderPassManager.RenderPass, _swapchain.Extent, _strokeRenderer);
 

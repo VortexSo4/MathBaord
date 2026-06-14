@@ -62,4 +62,21 @@ public class LibraryManager
             _renderer.UpdateGeometry();
         }
     }
+    
+    public void LoadFile(string path)
+    {
+        if (!File.Exists(path)) return;
+    
+        try
+        {
+            _document.LoadFromFile(path);
+            _renderer.SetDirty();
+            _renderer.UpdateGeometry();
+            Console.WriteLine($"Loaded: {path}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Load failed: {ex.Message}");
+        }
+    }
 }

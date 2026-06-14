@@ -13,6 +13,7 @@ public sealed class InputManager : IDisposable
     private readonly Document _document;
     private readonly RadialMenu _radialMenu;
     private readonly LibraryManager? _libraryManager;
+    private readonly LibraryPanel? _libraryPanel;
     
     private IMouse? _mouse;
     private IKeyboard? _keyboard;
@@ -26,7 +27,7 @@ public sealed class InputManager : IDisposable
     private bool _menuPending = false;
     private DateTime _mouseDownTime;
 
-    public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document, RadialMenu radialMenu, LibraryManager libraryManager)
+    public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document, RadialMenu radialMenu, LibraryManager libraryManager, LibraryPanel? libraryPanel)
     {
         _strokeRenderer = strokeRenderer;
         _camera = camera;
@@ -35,6 +36,7 @@ public sealed class InputManager : IDisposable
         _input = window.CreateInput();
         _radialMenu = radialMenu;
         _libraryManager = libraryManager;
+        _libraryPanel = libraryPanel;
 
         _mouse = _input.Mice.FirstOrDefault();
         _keyboard = _input.Keyboards.FirstOrDefault();
@@ -74,6 +76,12 @@ public sealed class InputManager : IDisposable
     private void OnMouseDown(IMouse mouse, MouseButton button)
     {
         var pos = GetMousePosition(mouse, _window);
+        
+        if (_libraryPanel?.IsOpen == true && pos.X < _libraryPanel.Width)
+        {
+            if (_libraryPanel.HandleClick(pos))
+                return;
+        }
 
         if (button == MouseButton.Left)
         {
@@ -193,6 +201,12 @@ public sealed class InputManager : IDisposable
             _radialMenu.Close();
             _strokeRenderer.SetDirty();
         }
+        
+        if (key == Key.L && ctrl) // Ctrl+L — открыть/закрыть библиотеку
+        {
+            _libraryPanel?.Toggle();
+            _strokeRenderer.SetDirty();
+        }
 
         if (ctrl && key == Key.S)
             _libraryManager?.SaveCanvas();
@@ -209,6 +223,13 @@ public sealed class InputManager : IDisposable
         bool shiftPressed = _keyboard?.IsKeyPressed(Key.ShiftLeft)    == true ||
                             _keyboard?.IsKeyPressed(Key.ShiftRight)   == true;
 
+        if (_libraryPanel?.IsOpen == true && screenPos.X < _libraryPanel.Width)
+        {
+            _libraryPanel.HandleScroll(wheel.Y);
+            _strokeRenderer.SetDirty();
+            return;
+        }
+        
         if (ctrlPressed)
         {
             var worldBefore = _strokeRenderer.ScreenToWorld(screenPos);

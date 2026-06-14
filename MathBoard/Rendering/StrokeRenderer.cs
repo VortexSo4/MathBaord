@@ -22,6 +22,9 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private readonly CommandManager _commandManager;
     private readonly Document _document;
     private readonly Camera _camera;
+    
+    private LibraryPanel? _libraryPanel;
+    public void SetLibraryPanel(LibraryPanel panel) => _libraryPanel = panel;
 
     private bool _isEraser;
     private float _eraserSize = 8f;
@@ -213,6 +216,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
         if (_radialMenu?.IsOpen == true)
         {
             _radialMenu.RenderUI(_vertices);
+        }
+        if (_libraryPanel?.IsOpen == true)
+        {
+            _libraryPanel.RenderToVertices(_vertices, new Vector2(_extent.Width, _extent.Height));
         }
     }
 
