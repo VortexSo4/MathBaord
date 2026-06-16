@@ -14,12 +14,13 @@ public sealed class InputManager : IDisposable
     private readonly RadialMenu _radialMenu;
     private readonly LibraryManager? _libraryManager;
     private readonly LibraryPanel? _libraryPanel;
-    
+
     private IMouse? _mouse;
     private IKeyboard? _keyboard;
     private readonly IWindow _window;
 
     private bool _isDrawing = false;
+    private bool _isErasing = false;
     private Vector2 _lastPanPosition;
     private Vector2 _mouseDownPos;
 
@@ -27,7 +28,8 @@ public sealed class InputManager : IDisposable
     private bool _menuPending = false;
     private DateTime _mouseDownTime;
 
-    public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document, RadialMenu radialMenu, LibraryManager libraryManager, LibraryPanel? libraryPanel)
+    public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document,
+        RadialMenu radialMenu, LibraryManager libraryManager, LibraryPanel? libraryPanel)
     {
         _strokeRenderer = strokeRenderer;
         _camera = camera;
@@ -76,33 +78,52 @@ public sealed class InputManager : IDisposable
     private void OnMouseDown(IMouse mouse, MouseButton button)
     {
         var pos = GetMousePosition(mouse, _window);
-        
+
         if (_libraryPanel?.IsOpen == true && pos.X < _libraryPanel.Width)
         {
             if (_libraryPanel.HandleClick(pos))
                 return;
         }
 
-        if (button == MouseButton.Left)
+        switch (button)
         {
-            _mouseDownPos = pos;
-            _mouseDownTime = DateTime.Now;
-            _menuPending = true;
-
-            if (_radialMenu.IsOpen)
+            case MouseButton.Left:
             {
-                _radialMenu.OnMouseDown(pos);
+                _mouseDownPos = pos;
+                _mouseDownTime = DateTime.Now;
+                _menuPending = true;
+
+                if (_radialMenu.IsOpen)
+                {
+                    _radialMenu.OnMouseDown(pos);
+                }
+
+                break;
             }
-        }
-        else if (button == MouseButton.Right || button == MouseButton.Middle)
-        {
-            _lastPanPosition = pos;
+            case MouseButton.Right:
+                // Начинаем стирание правой кнопкой
+                _isErasing = true;
+                _document.SaveState(); // сохраняем состояние перед серией стираний
+                _strokeRenderer.EraseAt(pos, saveState: false);
+                break;
+            case MouseButton.Middle:
+                // Только средняя кнопка для панорамирования
+                _lastPanPosition = pos;
+                break;
         }
     }
 
     private void OnMouseMove(IMouse mouse, Vector2 position)
     {
         var pos = GetMousePosition(mouse, _window);
+
+        // Если активно стирание правой кнопкой
+        if (_isErasing)
+        {
+            _strokeRenderer.EraseAt(pos, saveState: false);
+            _strokeRenderer.SetDirty();
+            return;
+        }
 
         // Если меню уже открыто — передаём движение в меню
         if (_radialMenu.IsOpen)
@@ -127,18 +148,15 @@ public sealed class InputManager : IDisposable
                 _isDrawing = true;
                 return;
             }
-
-            // Если время уже превысило порог, но меню ещё не открыто – доверимся таймеру в Update()
-            // Ничего не делаем, ждём следующий кадр.
         }
 
         if (_isDrawing)
         {
             _strokeRenderer.AddPoint(pos);
         }
-        else if (_mouse?.IsButtonPressed(MouseButton.Right) == true ||
-                 _mouse?.IsButtonPressed(MouseButton.Middle) == true)
+        else if (_mouse?.IsButtonPressed(MouseButton.Middle) == true)
         {
+            // Панорамирование только при зажатой средней кнопке
             var delta = pos - _lastPanPosition;
             _camera.Position += delta;
             _lastPanPosition = pos;
@@ -174,6 +192,11 @@ public sealed class InputManager : IDisposable
 
             _menuPending = false;
         }
+        else if (button == MouseButton.Right)
+        {
+            _isErasing = false;
+        }
+        // Для средней кнопки ничего не делаем, панорамирование останавливается само
     }
 
     private void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
@@ -201,7 +224,7 @@ public sealed class InputManager : IDisposable
             _radialMenu.Close();
             _strokeRenderer.SetDirty();
         }
-        
+
         if (key == Key.L && ctrl) // Ctrl+L — открыть/закрыть библиотеку
         {
             _libraryPanel?.Toggle();
@@ -218,10 +241,10 @@ public sealed class InputManager : IDisposable
     {
         var screenPos = GetMousePosition(mouse, _window);
 
-        bool ctrlPressed  = _keyboard?.IsKeyPressed(Key.ControlLeft)  == true ||
-                            _keyboard?.IsKeyPressed(Key.ControlRight) == true;
-        bool shiftPressed = _keyboard?.IsKeyPressed(Key.ShiftLeft)    == true ||
-                            _keyboard?.IsKeyPressed(Key.ShiftRight)   == true;
+        bool ctrlPressed = _keyboard?.IsKeyPressed(Key.ControlLeft) == true ||
+                           _keyboard?.IsKeyPressed(Key.ControlRight) == true;
+        bool shiftPressed = _keyboard?.IsKeyPressed(Key.ShiftLeft) == true ||
+                            _keyboard?.IsKeyPressed(Key.ShiftRight) == true;
 
         if (_libraryPanel?.IsOpen == true && screenPos.X < _libraryPanel.Width)
         {
@@ -229,7 +252,7 @@ public sealed class InputManager : IDisposable
             _strokeRenderer.SetDirty();
             return;
         }
-        
+
         if (ctrlPressed)
         {
             var worldBefore = _strokeRenderer.ScreenToWorld(screenPos);
@@ -260,9 +283,9 @@ public sealed class InputManager : IDisposable
         if (_mouse != null)
         {
             _mouse.MouseDown -= OnMouseDown;
-            _mouse.MouseUp   -= OnMouseUp;
+            _mouse.MouseUp -= OnMouseUp;
             _mouse.MouseMove -= OnMouseMove;
-            _mouse.Scroll    -= OnMouseWheel;
+            _mouse.Scroll -= OnMouseWheel;
         }
 
         if (_keyboard != null)

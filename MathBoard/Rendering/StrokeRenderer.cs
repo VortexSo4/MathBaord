@@ -100,6 +100,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
     {
         if (_isEraser)
         {
+            _document.SaveState();
             EraseAt(screenPos);
             return;
         }
@@ -130,25 +131,37 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _dirty = true;
     }
 
-    private void EraseAt(Vector2 screenPos)
+    public void EraseAt(Vector2 screenPos, bool saveState = false)
     {
         var worldPos = ScreenToWorld(screenPos);
         var radius = _eraserSize;
 
-        for (int i = _document.Strokes.Count - 1; i >= 0; i--)
+        // Собираем индексы штрихов, которые нужно удалить
+        var toRemove = new List<int>();
+        for (int i = 0; i < _document.Strokes.Count; i++)
         {
             var stroke = _document.Strokes[i];
             foreach (var p in stroke.Points)
             {
                 if (Vector2.Distance(p, worldPos) < radius + stroke.Width * 0.5f)
                 {
-                    _document.SaveState();
-                    _document.Strokes.RemoveAt(i);
-                    _dirty = true;
-                    return; // удаляем один Stroke за раз
+                    toRemove.Add(i);
+                    break; // штрих уже помечен, дальше не проверяем
                 }
             }
         }
+
+        if (toRemove.Count == 0)
+            return;
+
+        if (saveState)
+            _document.SaveState();
+
+        // Удаляем в обратном порядке, чтобы не сбивать индексы
+        for (int i = toRemove.Count - 1; i >= 0; i--)
+            _document.Strokes.RemoveAt(toRemove[i]);
+
+        _dirty = true;
     }
 
     public void EndStroke()
