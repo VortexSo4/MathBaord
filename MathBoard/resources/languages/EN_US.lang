@@ -1,0 +1,7 @@
+﻿panel_save_as=Save As...
+dialog_save_title=Enter file name:
+dialog_rename_title=Enter new name:
+dialog_delete_title=Are you sure you want to delete?
+dialog_button_ok=OK
+dialog_button_save=Save
+dialog_button_cancel=Cancel

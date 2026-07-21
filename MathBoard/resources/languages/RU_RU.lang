@@ -1,0 +1,7 @@
+﻿panel_save_as=Сохранить как...
+dialog_save_title=Введите имя файла:
+dialog_rename_title=Введите новое название:
+dialog_delete_title=Вы уверены, что хотите удалить?
+dialog_button_ok=ОК
+dialog_button_save=Сохранить
+dialog_button_cancel=Отмена

@@ -9,10 +9,6 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <Folder Include="Input\" />
-    </ItemGroup>
-
-    <ItemGroup>
         <None Include="Shaders\**\*.spv" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
@@ -25,6 +21,11 @@
       <PackageReference Include="SkiaSharp" Version="3.119.0" />
       <PackageReference Include="SkiaSharp.Views" Version="3.119.0" />
       <PackageReference Include="System.Windows.Forms.DataVisualization" Version="1.0.0-prerelease.20110.1" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="resources\**\**\*.*"
+              CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>

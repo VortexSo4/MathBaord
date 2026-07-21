@@ -18,6 +18,8 @@ public static class Settings
             "#FF8383",
             "#3A994C"
         ];
+        
+        public const string Language = "EN_US";
 
         public static readonly string DefaultBackgroundColor = "#121212";
 
@@ -51,6 +53,8 @@ public static class Settings
 
     // ====================== Настройки ======================
     public static List<Vector4> Colors { get; private set; } = Defaults.Colors.Select(HexToVector4).ToList();
+    
+    public static Setting<string> Language { get; } = new(Defaults.Language);
     
     public static Setting<Vector4> BackgroundColor { get; } = 
         new(HexToVector4(Defaults.DefaultBackgroundColor));

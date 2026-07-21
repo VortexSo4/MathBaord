@@ -1,4 +1,4 @@
-﻿using Silk.NET.Input;
+﻿﻿using Silk.NET.Input;
 using System.Numerics;
 using MathBoard.Rendering;
 using Silk.NET.Windowing;
@@ -55,11 +55,18 @@ public sealed class InputManager : IDisposable
         if (_keyboard != null)
         {
             _keyboard.KeyDown += OnKeyDown;
+            _keyboard.KeyChar += OnKeyChar;
         }
     }
 
     public void Update()
     {
+        // Keep rendering while dialog is open (cursor blink)
+        if (_libraryPanel?.IsDialogOpen == true)
+        {
+            _strokeRenderer.SetDirty();
+        }
+
         if (_menuPending && !_radialMenu.IsOpen)
         {
             double elapsed = (DateTime.Now - _mouseDownTime).TotalSeconds;
@@ -76,8 +83,16 @@ public sealed class InputManager : IDisposable
 
     private void OnMouseDown(IMouse mouse, MouseButton button)
     {
-        OnActivity?.Invoke();  // ← ФИКС: поднимаем активность
+        OnActivity?.Invoke();
         var pos = GetMousePosition(mouse, _window);
+
+        // Dialog takes priority over everything
+        if (_libraryPanel?.IsDialogOpen == true)
+        {
+            if (button == MouseButton.Left)
+                _libraryPanel.HandleClick(pos);
+            return;
+        }
 
         if (_libraryPanel?.IsOpen == true && pos.X < _libraryPanel.Width)
         {
@@ -112,7 +127,11 @@ public sealed class InputManager : IDisposable
 
     private void OnMouseMove(IMouse mouse, Vector2 position)
     {
-        OnActivity?.Invoke();  // ← ФИКС
+        OnActivity?.Invoke();
+
+        if (_libraryPanel?.IsDialogOpen == true)
+            return;
+
         var pos = GetMousePosition(mouse, _window);
 
         if (_isErasing)
@@ -150,7 +169,6 @@ public sealed class InputManager : IDisposable
         }
         else if (_mouse?.IsButtonPressed(MouseButton.Middle) == true)
         {
-            // Панорамирование — SetDirty НЕ нужен: трансформация на GPU
             var delta = pos - _lastPanPosition;
             _camera.Position += delta;
             _lastPanPosition = pos;
@@ -159,7 +177,11 @@ public sealed class InputManager : IDisposable
 
     private void OnMouseUp(IMouse mouse, MouseButton button)
     {
-        OnActivity?.Invoke();  // ← ФИКС
+        OnActivity?.Invoke();
+
+        if (_libraryPanel?.IsDialogOpen == true)
+            return;
+
         var pos = GetMousePosition(mouse, _window);
 
         if (button == MouseButton.Left)
@@ -193,13 +215,86 @@ public sealed class InputManager : IDisposable
 
     private void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
     {
-        OnActivity?.Invoke();  // ← ФИКС
-        bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
-        bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
+        OnActivity?.Invoke();
 
-        if (ctrl && key == Key.Z)
+        // Диалог перехватывает весь ввод с клавиатуры
+        if (_libraryPanel?.IsDialogOpen == true)
         {
-            if (shift)
+            bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
+            bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
+
+            if (key == Key.Enter)
+            {
+                _libraryPanel.ConfirmDialog();
+                _strokeRenderer.SetDirty();
+                return;
+            }
+
+            if (key == Key.Escape)
+            {
+                _libraryPanel.CancelDialog();
+                _strokeRenderer.SetDirty();
+                return;
+            }
+
+            var tb = _libraryPanel.TextBox;
+            bool changed = false;
+
+            // Управление курсором и редактирование (с поддержкой Ctrl и Shift)
+            if (key == Key.Backspace)
+            {
+                tb.Backspace(ctrl);
+                changed = true;
+            }
+            else if (key == Key.Delete)
+            {
+                tb.Delete(ctrl);
+                changed = true;
+            }
+            else if (key == Key.Left)
+            {
+                tb.MoveCursor(-1, ctrl, shift);
+                changed = true;
+            }
+            else if (key == Key.Right)
+            {
+                tb.MoveCursor(1, ctrl, shift);
+                changed = true;
+            }
+            else if (key == Key.Home)
+            {
+                tb.MoveCursorToStart(shift);
+                changed = true;
+            }
+            else if (key == Key.End)
+            {
+                tb.MoveCursorToEnd(shift);
+                changed = true;
+            }
+            else if (ctrl && key == Key.A)
+            {
+                tb.SelectAll();
+                changed = true;
+            }
+
+            if (changed)
+            {
+                // Перестраиваем атлас текста для отображения изменений и мигающего курсора
+                _libraryPanel.RefreshTree();
+                _strokeRenderer.SetDirty();
+            }
+
+            // Блокируем дальнейшую обработку клавиш (чтобы не рисовалось на холсте и не работал Ctrl+Z и т.д.)
+            return;
+        }
+
+        // Обычный ввод (когда диалог закрыт)
+        bool isCtrlPressed = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
+        bool isShiftPressed = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
+
+        if (isCtrlPressed && key == Key.Z)
+        {
+            if (isShiftPressed)
                 _strokeRenderer.Redo();
             else
                 _strokeRenderer.Undo();
@@ -218,21 +313,39 @@ public sealed class InputManager : IDisposable
             _strokeRenderer.SetDirty();
         }
 
-        if (key == Key.L && ctrl)
+        if (key == Key.L && isCtrlPressed)
         {
             _libraryPanel?.Toggle();
             _strokeRenderer.SetDirty();
         }
 
-        if (ctrl && key == Key.S)
+        if (isCtrlPressed && key == Key.S)
+        {
             _libraryManager?.SaveCanvas();
-        else if (ctrl && key == Key.O)
+            _libraryPanel?.RefreshTree();
+        }
+        else if (isCtrlPressed && key == Key.O)
+        {
             _libraryManager?.LoadLastSave();
+        }
+    }
+
+    private void OnKeyChar(IKeyboard keyboard, char c)
+    {
+        if (_libraryPanel?.IsDialogOpen == true)
+        {
+            _libraryPanel.HandleCharInput(c);
+            _strokeRenderer.SetDirty();
+        }
     }
 
     private void OnMouseWheel(IMouse mouse, ScrollWheel wheel)
     {
-        OnActivity?.Invoke();  // ← ФИКС
+        OnActivity?.Invoke();
+
+        if (_libraryPanel?.IsDialogOpen == true)
+            return;
+
         var screenPos = GetMousePosition(mouse, _window);
 
         bool ctrlPressed = _keyboard?.IsKeyPressed(Key.ControlLeft) == true ||
@@ -243,12 +356,10 @@ public sealed class InputManager : IDisposable
         if (_libraryPanel?.IsOpen == true && screenPos.X < _libraryPanel.Width)
         {
             _libraryPanel.HandleScroll(wheel.Y);
-            _strokeRenderer.SetDirty();  // UI scroll — нужен ребилд
+            _strokeRenderer.SetDirty();
             return;
         }
 
-        // Зум/пан — SetDirty НЕ нужен: трансформация на GPU.
-        // OnActivity уже вызван — рендер запустится и перезапишет command buffers.
         if (ctrlPressed)
         {
             var worldBefore = _strokeRenderer.ScreenToWorld(screenPos);
@@ -283,6 +394,9 @@ public sealed class InputManager : IDisposable
         }
 
         if (_keyboard != null)
+        {
             _keyboard.KeyDown -= OnKeyDown;
+            _keyboard.KeyChar -= OnKeyChar;
+        }
     }
 }

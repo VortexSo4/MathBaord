@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+﻿﻿using System.Numerics;
 using MathBoard.Rendering;
 
 namespace MathBoard.Core;
@@ -29,11 +29,45 @@ public class LibraryManager
         string name = customName ?? $"Untitled_{DateTime.Now:yyyy-MM-dd_HH-mm}";
         string path = Path.Combine(Settings.LibraryRootPath, $"{name}.mathboard");
 
-        path = Path.Combine(Settings.LibraryRootPath, $"{name}.mathboard");
-
         _document.SaveToFile(path);
         Console.WriteLine($"Saved: {path}");
         return path;
+    }
+
+    public void DeleteFile(string path)
+    {
+        if (!File.Exists(path)) return;
+        try
+        {
+            File.Delete(path);
+            Console.WriteLine($"Deleted: {path}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Delete failed: {ex.Message}");
+        }
+    }
+
+    public void RenameFile(string oldPath, string newName)
+    {
+        if (!File.Exists(oldPath)) return;
+        try
+        {
+            string dir = Path.GetDirectoryName(oldPath) ?? Settings.LibraryRootPath.Value;
+            string newPath = Path.Combine(dir, $"{newName}.mathboard");
+            if (string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase)) return;
+            if (File.Exists(newPath))
+            {
+                Console.WriteLine($"Rename failed: destination already exists: {newPath}");
+                return;
+            }
+            File.Move(oldPath, newPath);
+            Console.WriteLine($"Renamed: {oldPath} -> {newPath}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Rename failed: {ex.Message}");
+        }
     }
 
     public void AutoSaveIfNeeded()
@@ -68,7 +102,7 @@ public class LibraryManager
         try
         {
             _document.LoadFromFile(path);
-            _renderer.SetDirty(); // render loop сам вызовет UpdateGeometry в нужный момент
+            _renderer.SetDirty();
             Console.WriteLine($"Loaded: {path}");
         }
         catch (Exception ex)

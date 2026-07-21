@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+﻿﻿using System.Numerics;
 using System.Runtime.InteropServices;
 using Silk.NET.Vulkan;
 using Silk.NET.Core.Native;
@@ -6,19 +6,6 @@ using SkiaSharp;
 
 namespace MathBoard.Rendering;
 
-/// <summary>
-/// Полноценный GPU-рендер текста поверх Vulkan.
-///
-/// Идея: одна atlas-текстура (формат R8Unorm — только альфа-канал, легче GPU-буфер
-/// и трафик, чем RGBA), в которую SkiaSharp растеризует все нужные строки ОДНИМ
-/// проходом. Атлас перестраивается (CPU-раскладка + одна заливка GPU-текстуры)
-/// только когда меняется набор строк — вызывается из LibraryPanel.RefreshTree(),
-/// а не каждый кадр. Сам кадр (Emit) — это просто добавление 6 вершин
-/// (2 треугольника) со уже готовыми UV-координатами, дёшево как обычный quad.
-///
-/// Используется только колонкой автосохранений (LibraryPanel), как и просили —
-/// остальной рендер (штрихи, радиальное меню) текста не касается.
-/// </summary>
 public sealed unsafe class TextAtlas : IDisposable
 {
     private const int AtlasWidth = 1024;
@@ -41,6 +28,8 @@ public sealed unsafe class TextAtlas : IDisposable
 
     private readonly Dictionary<string, Entry> _cache = new();
     private readonly List<(string text, int x, int y)> _pending = new();
+    private readonly Dictionary<string, SKBitmap> _imageCache = new();
+    private readonly List<(SKBitmap bmp, int x, int y)> _pendingImages = new();
 
     private SKTypeface? _typeface;
     private SKPaint _paint = null!;
@@ -49,7 +38,6 @@ public sealed unsafe class TextAtlas : IDisposable
     private bool _building;
     private bool _atlasReady;
 
-    // ---- GPU: текстура ----
     private Image _image;
     private DeviceMemory _imageMemory;
     private ImageView _imageView;
@@ -58,11 +46,9 @@ public sealed unsafe class TextAtlas : IDisposable
     private DescriptorPool _descriptorPool;
     private DescriptorSet _descriptorSet;
 
-    // ---- GPU: пайплайн ----
     private Pipeline _pipeline;
     private PipelineLayout _pipelineLayout;
 
-    // ---- GPU: буфер вершин текста (пересобирается каждый кадр, дёшево) ----
     private Silk.NET.Vulkan.Buffer _vertexBuffer;
     private DeviceMemory _vertexBufferMemory;
     private ulong _vertexBufferAllocatedSize;
@@ -86,7 +72,7 @@ public sealed unsafe class TextAtlas : IDisposable
         {
             Typeface = _typeface,
             TextSize = 16f,
-            Color = SKColors.White,
+            Color = SKColors.White, // Белый текст позволяет тонировать через fragColor
             IsAntialias = true,
             SubpixelText = true,
             TextEncoding = SKTextEncoding.Utf8
@@ -98,40 +84,59 @@ public sealed unsafe class TextAtlas : IDisposable
         CreateDescriptorPool();
         CreateDescriptorSet();
         CreatePipeline();
-
-        Console.WriteLine("TextAtlas: initialized (R8 atlas, textured pipeline)");
     }
-
-    // ==================== ПОСТРОЕНИЕ АТЛАСА (редко — только при смене списка строк) ====================
 
     public void BeginBuild()
     {
         _building = true;
         _cache.Clear();
         _pending.Clear();
+        _pendingImages.Clear();
         _penX = Padding;
         _penY = Padding;
         _rowHeight = 0;
     }
 
-    /// <summary>Регистрирует строку в атласе (если ещё не зарегистрирована в этой сборке).</summary>
     public Entry Request(string text)
     {
-        if (!_building)
-            throw new InvalidOperationException("TextAtlas.Request() допустим только между BeginBuild()/EndBuild()");
-
-        if (string.IsNullOrEmpty(text))
-            return _cache[text] = new Entry(0, 0, 0, 0, 0, 0);
-
-        if (_cache.TryGetValue(text, out var existing))
-            return existing;
+        if (!_building) throw new InvalidOperationException("Call between BeginBuild/EndBuild");
+        if (string.IsNullOrEmpty(text)) return _cache[text] = new Entry(0, 0, 0, 0, 0, 0);
+        if (_cache.TryGetValue(text, out var existing)) return existing;
 
         float textWidth = _paint.MeasureText(text);
         var metrics = _paint.FontMetrics;
         float textHeight = metrics.Descent - metrics.Ascent;
 
-        int w = (int)MathF.Ceiling(textWidth) + Padding * 2;
-        int h = (int)MathF.Ceiling(textHeight) + Padding * 2;
+        PackAndAddEntry(text, (int)MathF.Ceiling(textWidth), (int)MathF.Ceiling(textHeight), out var entry);
+        _cache[text] = entry;
+        return entry;
+    }
+
+    public Entry RequestImage(string path)
+    {
+        if (!_building) throw new InvalidOperationException("Call between BeginBuild/EndBuild");
+        if (_cache.TryGetValue(path, out var existing)) return existing;
+
+        if (!_imageCache.TryGetValue(path, out var bmp))
+        {
+            if (!File.Exists(path))
+            {
+                Console.WriteLine($"TextAtlas: Image not found: {path}");
+                return _cache[path] = new Entry(0, 0, 0, 0, 0, 0);
+            }
+            bmp = SKBitmap.Decode(path);
+            _imageCache[path] = bmp;
+        }
+
+        PackAndAddEntry(path, bmp.Width, bmp.Height, out var entry);
+        _pendingImages.Add((bmp, _penX - bmp.Width - Padding, _penY - _rowHeight - Padding)); // simplified packing
+        return entry;
+    }
+
+    private void PackAndAddEntry(string key, int width, int height, out Entry entry)
+    {
+        int w = width + Padding * 2;
+        int h = height + Padding * 2;
 
         if (_penX + w > AtlasWidth)
         {
@@ -142,48 +147,47 @@ public sealed unsafe class TextAtlas : IDisposable
 
         if (_penY + h > AtlasHeight)
         {
-            Console.WriteLine($"TextAtlas: atlas overflow, '{text}' dropped (increase AtlasHeight if this happens often)");
-            var overflow = new Entry(0, 0, 0, 0, textWidth, textHeight);
-            _cache[text] = overflow;
-            return overflow;
+            entry = new Entry(0, 0, 0, 0, width, height);
+            return;
         }
 
         int x = _penX, y = _penY;
-        _pending.Add((text, x, y));
+        
+        if (key.EndsWith(".png"))
+            _pendingImages.Add((_imageCache[key], x, y));
+        else
+            _pending.Add((key, x, y));
 
         _penX += w + Padding;
         _rowHeight = Math.Max(_rowHeight, h);
 
         float u0 = (x + Padding) / (float)AtlasWidth;
         float v0 = (y + Padding) / (float)AtlasHeight;
-        float u1 = (x + Padding + textWidth) / (float)AtlasWidth;
-        float v1 = (y + Padding + textHeight) / (float)AtlasHeight;
+        float u1 = (x + Padding + width) / (float)AtlasWidth;
+        float v1 = (y + Padding + height) / (float)AtlasHeight;
 
-        var entry = new Entry(u0, v0, u1, v1, textWidth, textHeight);
-        _cache[text] = entry;
-        return entry;
+        entry = new Entry(u0, v0, u1, v1, width, height);
     }
 
-    /// <summary>Растеризует всё одним проходом SkiaSharp и один раз заливает GPU-текстуру.</summary>
     public void EndBuild()
     {
         _building = false;
-
-        if (_pending.Count == 0)
-        {
-            _atlasReady = true;
-            return;
-        }
 
         using var bitmap = new SKBitmap(AtlasWidth, AtlasHeight, SKColorType.Rgba8888, SKAlphaType.Premul);
         using (var canvas = new SKCanvas(bitmap))
         {
             canvas.Clear(SKColors.Transparent);
             var metrics = _paint.FontMetrics;
+            
             foreach (var (text, x, y) in _pending)
             {
                 float baseline = y + Padding - metrics.Ascent;
                 canvas.DrawText(text, x + Padding, baseline, _paint);
+            }
+
+            foreach (var (bmp, x, y) in _pendingImages)
+            {
+                canvas.DrawBitmap(bmp, x + Padding, y + Padding);
             }
         }
 
@@ -194,13 +198,13 @@ public sealed unsafe class TextAtlas : IDisposable
     private void UploadAtlas(SKBitmap bitmap)
     {
         int pixelCount = AtlasWidth * AtlasHeight;
-        var alphaData = new byte[pixelCount];
-
+        var rgbaData = new byte[pixelCount * 4];
         var pixels = bitmap.GetPixelSpan();
-        for (int i = 0; i < pixelCount; i++)
-            alphaData[i] = pixels[i * 4 + 3]; // RGBA -> берём только альфу
+        
+        // SkiaSharp Rgba8888 обычно отдает байты как RGBA, что идеально для Vulkan
+        pixels.CopyTo(rgbaData);
 
-        ulong size = (ulong)pixelCount;
+        ulong size = (ulong)rgbaData.Length;
 
         CreateBuffer(size, BufferUsageFlags.TransferSrcBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
@@ -208,7 +212,7 @@ public sealed unsafe class TextAtlas : IDisposable
 
         void* mapped;
         _context.Vk.MapMemory(_context.Device, stagingMemory, 0, size, 0, &mapped);
-        fixed (byte* src = alphaData)
+        fixed (byte* src = rgbaData)
             System.Buffer.MemoryCopy(src, mapped, size, size);
         _context.Vk.UnmapMemory(_context.Device, stagingMemory);
 
@@ -220,20 +224,26 @@ public sealed unsafe class TextAtlas : IDisposable
         _context.Vk.FreeMemory(_context.Device, stagingMemory, null);
     }
 
-    // ==================== КАДРОВАЯ ГЕНЕРАЦИЯ QUAD'ОВ (дёшево, каждый кадр) ====================
-
     public void BeginFrame() => _frameVertices.Clear();
 
-    /// <summary>Добавляет textured quad для уже зарегистрированной (через Request) строки. Возвращает её размер.</summary>
     public Vector2 Emit(string text, Vector2 pos, Vector4 color)
     {
-        if (string.IsNullOrEmpty(text) || !_cache.TryGetValue(text, out var e) || e.Width <= 0)
-            return Vector2.Zero;
+        if (string.IsNullOrEmpty(text) || !_cache.TryGetValue(text, out var e) || e.Width <= 0) return Vector2.Zero;
+        return EmitEntry(e, pos, new Vector2(e.Width, e.Height), color);
+    }
 
+    public Vector2 EmitImage(Entry e, Vector2 pos, Vector2 size, Vector4 color)
+    {
+        if (e.Width <= 0) return Vector2.Zero;
+        return EmitEntry(e, pos, size, color);
+    }
+
+    private Vector2 EmitEntry(Entry e, Vector2 pos, Vector2 size, Vector4 color)
+    {
         var p1 = pos;
-        var p2 = pos + new Vector2(e.Width, 0);
-        var p3 = pos + new Vector2(e.Width, e.Height);
-        var p4 = pos + new Vector2(0, e.Height);
+        var p2 = pos + new Vector2(size.X, 0);
+        var p3 = pos + new Vector2(size.X, size.Y);
+        var p4 = pos + new Vector2(0, size.Y);
 
         _frameVertices.Add(new TextVertex { Position = p1, UV = new Vector2(e.U0, e.V0), Color = color });
         _frameVertices.Add(new TextVertex { Position = p2, UV = new Vector2(e.U1, e.V0), Color = color });
@@ -243,15 +253,13 @@ public sealed unsafe class TextAtlas : IDisposable
         _frameVertices.Add(new TextVertex { Position = p3, UV = new Vector2(e.U1, e.V1), Color = color });
         _frameVertices.Add(new TextVertex { Position = p4, UV = new Vector2(e.U0, e.V1), Color = color });
 
-        return new Vector2(e.Width, e.Height);
+        return size;
     }
 
-    /// <summary>Размер строки в пикселях. Работает и до EndBuild (считает через SkiaSharp напрямую), нужен для раскладки.</summary>
     public Vector2 Measure(string text)
     {
         if (string.IsNullOrEmpty(text)) return Vector2.Zero;
-        if (_cache.TryGetValue(text, out var e) && e.Width > 0)
-            return new Vector2(e.Width, e.Height);
+        if (_cache.TryGetValue(text, out var e) && e.Width > 0) return new Vector2(e.Width, e.Height);
 
         float w = _paint.MeasureText(text);
         var m = _paint.FontMetrics;
@@ -290,11 +298,9 @@ public sealed unsafe class TextAtlas : IDisposable
 
     public void Render(CommandBuffer cmd, Extent2D extent)
     {
-        if (!_atlasReady || _vertexCount == 0 || _vertexBuffer.Handle == 0)
-            return;
+        if (!_atlasReady || _vertexCount == 0 || _vertexBuffer.Handle == 0) return;
 
         _context.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Graphics, _pipeline);
-
         var set = _descriptorSet;
         _context.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Graphics, _pipelineLayout, 0, 1, &set, 0, null);
 
@@ -308,8 +314,6 @@ public sealed unsafe class TextAtlas : IDisposable
         _context.Vk.CmdDraw(cmd, _vertexCount, 1, 0, 0);
     }
 
-    // ==================== VULKAN: ТЕКСТУРА ====================
-
     private void CreateEmptyImage()
     {
         var imageInfo = new ImageCreateInfo
@@ -319,7 +323,7 @@ public sealed unsafe class TextAtlas : IDisposable
             Extent = new Extent3D(AtlasWidth, AtlasHeight, 1),
             MipLevels = 1,
             ArrayLayers = 1,
-            Format = Format.R8Unorm,
+            Format = Format.R8G8B8A8Unorm, // <-- Изменили на RGBA
             Tiling = ImageTiling.Optimal,
             InitialLayout = ImageLayout.Undefined,
             Usage = ImageUsageFlags.TransferDstBit | ImageUsageFlags.SampledBit,
@@ -345,7 +349,7 @@ public sealed unsafe class TextAtlas : IDisposable
             SType = StructureType.ImageViewCreateInfo,
             Image = _image,
             ViewType = ImageViewType.Type2D,
-            Format = Format.R8Unorm,
+            Format = Format.R8G8B8A8Unorm, // <-- Изменили на RGBA
             SubresourceRange = new ImageSubresourceRange
             {
                 AspectMask = ImageAspectFlags.ColorBit,
@@ -355,7 +359,6 @@ public sealed unsafe class TextAtlas : IDisposable
         };
         _context.Vk.CreateImageView(_context.Device, &viewInfo, null, out _imageView);
 
-        // Сразу переводим в ShaderReadOnly — до первой заливки атлас просто "прозрачный".
         TransitionImageLayout(_image, ImageLayout.Undefined, ImageLayout.ShaderReadOnlyOptimal);
     }
 
