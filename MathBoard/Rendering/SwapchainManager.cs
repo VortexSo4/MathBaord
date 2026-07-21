@@ -137,12 +137,7 @@ public sealed unsafe class SwapchainManager : IDisposable
 
     private static PresentModeKHR ChoosePresentMode(PresentModeKHR[] presentModes)
     {
-        foreach (var mode in presentModes)
-        {
-            if (mode == PresentModeKHR.MailboxKhr)
-                return mode;
-        }
-        return PresentModeKHR.FifoKhr;
+        return PresentModeKHR.FifoKhr; // vsync, GPU ждёт дисплей
     }
 
     private Extent2D ChooseExtent(SurfaceCapabilitiesKHR capabilities)

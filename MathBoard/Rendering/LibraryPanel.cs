@@ -161,7 +161,6 @@ public class LibraryPanel : IDisposable
         // Временная заглушка — позже заменим на настоящую текстуру
         float w = text.Length * 9.5f;
         DrawRect(vertices, pos, new Vector2(w, 24), new Vector4(0,0,0,0.4f));
-        Console.WriteLine($"[Text] {text} @ {pos}");
     }
 
     // ====================== КЛИКИ ======================

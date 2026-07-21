@@ -24,6 +24,9 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private readonly Camera _camera;
     
     private LibraryPanel? _libraryPanel;
+    public event Action? OnSceneChanged;
+    public bool IsDirty => _dirty;
+    private void NotifyChanged() => OnSceneChanged?.Invoke();
     public void SetLibraryPanel(LibraryPanel panel) => _libraryPanel = panel;
 
     private bool _isEraser;

@@ -1,5 +1,7 @@
 ﻿using System.Numerics;
 using MathBoard.Core;
+using Silk.NET.Maths;
+using Silk.NET.Vulkan;
 using Silk.NET.Windowing;
 
 namespace MathBoard.Rendering;
@@ -7,8 +9,8 @@ namespace MathBoard.Rendering;
 public enum DrawFrameResult
 {
     Success,
-    SkipFrame,       // timeout или окно не готово — просто пропустить
-    NeedsRecreation  // реально нужно пересоздать swapchain
+    SkipFrame,
+    NeedsRecreation
 }
 
 public sealed class VulkanRenderer : IDisposable
@@ -32,10 +34,36 @@ public sealed class VulkanRenderer : IDisposable
     private bool _framebufferResized;
     private bool _isRecreating;
 
+    // --- Idle / dirty tracking ---
+    private bool _sceneDirty = true;          // первый кадр всегда рисуем
+    private bool _commandsDirty = true;       // command buffers нужно перезаписать
+    private Vector2D<int> _lastExtent;
+    private DateTime _lastActivityTime = DateTime.UtcNow;
+
+    // Сколько времени после последней активности держать полный FPS
+    private static readonly TimeSpan ActiveWindow = TimeSpan.FromSeconds(0.5);
+    // Целевой интервал кадра в простое (~10 FPS)
+    private static readonly TimeSpan IdleFrameInterval = TimeSpan.FromMilliseconds(100);
+
+    private DateTime _lastFrameTime = DateTime.UtcNow;
+
     public VulkanRenderer(IWindow window)
     {
         _context = new VulkanContext(window);
         _libraryManager = new LibraryManager(_document, null!);
+    }
+
+    // Вызывается из InputManager / StrokeRenderer когда что-то реально поменялось
+    public void MarkSceneDirty()
+    {
+        _sceneDirty = true;
+        _commandsDirty = true;
+        _lastActivityTime = DateTime.UtcNow;
+    }
+
+    public void MarkInputActivity()
+    {
+        _lastActivityTime = DateTime.UtcNow;
     }
 
     public void Initialize()
@@ -44,6 +72,10 @@ public sealed class VulkanRenderer : IDisposable
 
         _swapchain = new SwapchainManager(_context);
         _swapchain.Initialize();
+
+        _lastExtent = new Vector2D<int>(
+            (int)_swapchain.Extent.Width,
+            (int)_swapchain.Extent.Height);
 
         _camera.Position = new Vector2(_swapchain.Extent.Width / 2f, _swapchain.Extent.Height / 2f);
 
@@ -58,6 +90,7 @@ public sealed class VulkanRenderer : IDisposable
 
         _strokeRenderer = new StrokeRenderer(_context, _swapchain!, _renderPassManager!, _commandManager!, _document, _camera);
         _strokeRenderer.Initialize();
+        _strokeRenderer.OnSceneChanged += MarkSceneDirty; // подписываемся на изменения
 
         _radialMenu = new RadialMenu(_strokeRenderer!);
         _strokeRenderer.SetRadialMenu(_radialMenu);
@@ -68,8 +101,12 @@ public sealed class VulkanRenderer : IDisposable
         _strokeRenderer.SetLibraryPanel(_libraryPanel);
 
         _inputManager = new InputManager(_context.Window, _strokeRenderer!, _camera, _document, _radialMenu, _libraryManager, _libraryPanel);
+        _inputManager.OnActivity += MarkInputActivity;
+        _inputManager.OnSceneChanged += MarkSceneDirty;
 
         _commandManager.RecordCommandBuffers(_framebufferManager.Framebuffers, _renderPassManager.RenderPass, _swapchain.Extent, _strokeRenderer);
+
+        _commandsDirty = false;
 
         _frameSync = new FrameSync(_context);
         _frameSync.Initialize();
@@ -85,18 +122,11 @@ public sealed class VulkanRenderer : IDisposable
         try
         {
             Console.WriteLine("[Recreate] Starting swapchain recreation...");
-        
-            // Уничтожаем старый FrameSync, чтобы не ждать на его fence
+
             _frameSync?.Dispose();
             _frameSync = null;
-        
-            // Теперь ожидаем завершения всех операций – но если GPU завис, мы уже уничтожили объекты,
-            // и DeviceWaitIdle может всё равно зависнуть. Поэтому лучше сначала попробовать сбросить очередь.
-            // В идеале – пересоздать весь Vulkan-контекст, но это сложно.
-            // Как компромисс – установим таймаут через внешний таймер (например, Task.Run), но это уже усложнение.
-            // Пока оставим так, но добавим защиту от двойного входа.
-        
-            _context.Vk.DeviceWaitIdle(_context.Device); // всё ещё рискованно, но теперь вызывается только при накоплении таймаутов
+
+            _context.Vk.DeviceWaitIdle(_context.Device);
 
             _framebufferManager?.Dispose();
             _swapchain?.Recreate();
@@ -113,9 +143,16 @@ public sealed class VulkanRenderer : IDisposable
 
             _strokeRenderer!.UpdateExtent(_swapchain.Extent);
 
-            // Пересоздаём FrameSync
+            _lastExtent = new Vector2D<int>(
+                (int)_swapchain.Extent.Width,
+                (int)_swapchain.Extent.Height);
+
             _frameSync = new FrameSync(_context);
             _frameSync.Initialize();
+
+            // После пересоздания нужно перерисовать
+            _commandsDirty = false; // Recreate уже записал буферы
+            _sceneDirty = true;
 
             Console.WriteLine("[Recreate] Success");
         }
@@ -132,34 +169,58 @@ public sealed class VulkanRenderer : IDisposable
         if (size.X == 0 || size.Y == 0)
             return;
 
+        bool isActive = (DateTime.UtcNow - _lastActivityTime) < ActiveWindow;
+        if (!isActive && !_strokeRenderer!.IsDirty)
+            return;
+
         if (_framebufferResized)
             RecreateSwapchain();
 
         _inputManager?.Update();
         _libraryManager.AutoSaveIfNeeded();
 
-        // Ждём завершения предыдущего кадра ПЕРЕД любой работой с GPU-ресурсами
+        // ← СНАЧАЛА ждём GPU, только потом трогаем буферы
         if (!_frameSync!.WaitForPreviousFrame())
-            return; // GPU завис или timeout — пропускаем кадр без краша
+            return;
 
-        _strokeRenderer!.UpdateGeometry();
-        _strokeRenderer.UpdateExtent(_swapchain!.Extent);
+        var currentExtent = new Vector2D<int>(
+            (int)_swapchain!.Extent.Width,
+            (int)_swapchain.Extent.Height);
 
-        _commandManager!.RecordCommandBuffers(
-            _framebufferManager!.Framebuffers,
-            _renderPassManager!.RenderPass,
-            _swapchain.Extent,
-            _strokeRenderer);
+        if (currentExtent != _lastExtent)
+        {
+            _strokeRenderer!.UpdateExtent(_swapchain.Extent);
+            _lastExtent = currentExtent;
+            _commandsDirty = true;
+        }
 
-        var result = _frameSync.SubmitFrame(_swapchain, _commandManager);
+        if (_strokeRenderer!.IsDirty)
+        {
+            _strokeRenderer.UpdateGeometry();
+            _commandsDirty = true;
+        }
+
+        if (_commandsDirty)
+        {
+            _commandManager!.RecordCommandBuffers(
+                _framebufferManager!.Framebuffers,
+                _renderPassManager!.RenderPass,
+                _swapchain.Extent,
+                _strokeRenderer!);
+            _commandsDirty = false;
+        }
+
+        var result = _frameSync.SubmitFrame(_swapchain, _commandManager!);
 
         if (result == DrawFrameResult.NeedsRecreation)
             _framebufferResized = true;
+
+        _lastFrameTime = DateTime.UtcNow;
     }
 
     public void Dispose()
     {
-        _context.Vk.DeviceWaitIdle(_context.Device); // на всякий случай
+        _context.Vk.DeviceWaitIdle(_context.Device);
         _inputManager?.Dispose();
         _context.Vk.QueueWaitIdle(_context.GraphicsQueue);
         _context.Vk.QueueWaitIdle(_context.PresentQueue);

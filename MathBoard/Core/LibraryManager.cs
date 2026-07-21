@@ -59,19 +59,16 @@ public class LibraryManager
         {
             _document.LoadFromFile(lastSave);
             _renderer.SetDirty();
-            _renderer.UpdateGeometry();
         }
     }
     
     public void LoadFile(string path)
     {
         if (!File.Exists(path)) return;
-    
         try
         {
             _document.LoadFromFile(path);
-            _renderer.SetDirty();
-            _renderer.UpdateGeometry();
+            _renderer.SetDirty(); // render loop сам вызовет UpdateGeometry в нужный момент
             Console.WriteLine($"Loaded: {path}");
         }
         catch (Exception ex)

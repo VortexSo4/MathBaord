@@ -18,6 +18,8 @@ public sealed class InputManager : IDisposable
     private IMouse? _mouse;
     private IKeyboard? _keyboard;
     private readonly IWindow _window;
+    public event Action? OnActivity;      // поднять в каждом обработчике мыши/клавиш
+    public event Action? OnSceneChanged;  // поднять там где вызывается EndStroke / EraseAt
 
     private bool _isDrawing = false;
     private bool _isErasing = false;
