@@ -1,6 +1,5 @@
 ﻿using System.Numerics;
 using MathBoard.Core;
-using SkiaSharp;
 
 namespace MathBoard.Rendering;
 
@@ -17,35 +16,15 @@ public class LibraryPanel : IDisposable
     private float _scrollY = 0f;
     private const float ItemHeight = 36f;
 
-    // SkiaSharp для текста
-    private SKPaint _textPaint = new();
-    private SKTypeface? _typeface;
-    private SKSurface? _textSurface;
-    private SKCanvas? _textCanvas;
+    private const string SaveButtonLabel = "\uD83D\uDCBE Сохранить как..."; // 💾 Сохранить как...
+    private static readonly Vector4 TextColor = new(0.93f, 0.93f, 0.95f, 1f);
+    private static readonly Vector4 ButtonTextColor = Vector4.One;
 
     public LibraryPanel(StrokeRenderer renderer, LibraryManager libraryManager)
     {
         _renderer = renderer;
         _libraryManager = libraryManager;
-        InitSkia();
         RefreshTree();
-    }
-
-    private void InitSkia()
-    {
-        _typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Normal) 
-                   ?? SKTypeface.FromFamilyName("Arial") 
-                   ?? SKTypeface.Default;
-
-        _textPaint = new SKPaint
-        {
-            Typeface = _typeface,
-            TextSize = 16f,
-            Color = SKColors.WhiteSmoke,
-            IsAntialias = true,
-            SubpixelText = true,
-            TextEncoding = SKTextEncoding.Utf8
-        };
     }
 
     public void Toggle() { IsOpen = !IsOpen; _renderer.SetDirty(); }
@@ -54,10 +33,37 @@ public class LibraryPanel : IDisposable
     {
         _rootNode = BuildTree(Settings.LibraryRootPath.Value);
         RebuildFlatList();
+        RebuildTextAtlas();
         _renderer.SetDirty();
     }
 
-    private FileNode BuildTree(string path) {
+    // Атлас перестраивается ТОЛЬКО здесь — при изменении дерева файлов (появился/
+    // пропал автосейв, развернули папку и т.д.), а НЕ каждый кадр. RenderToVertices
+    // ниже просто штампует уже готовые textured quads по закэшированным UV — это
+    // и даёт "чтобы летало": сам рендер текста в кадре ничего не растеризует.
+    private void RebuildTextAtlas()
+    {
+        var atlas = _renderer.TextAtlas;
+        atlas.BeginBuild();
+
+        atlas.Request(SaveButtonLabel);
+
+        foreach (var (node, _, _) in _flatList)
+            atlas.Request(LabelFor(node));
+
+        atlas.EndBuild();
+    }
+
+    private static string LabelFor(FileNode node)
+    {
+        string prefix = node.IsDirectory
+            ? (node.IsExpanded ? "▼ " : "▶ ")
+            : "   • ";
+        return prefix + node.Name;
+    }
+
+    private FileNode BuildTree(string path)
+    {
         var root = new FileNode(Path.GetFileName(path) ?? "Lessons", path, true);
 
         if (!Directory.Exists(path))
@@ -110,36 +116,41 @@ public class LibraryPanel : IDisposable
     {
         if (!IsOpen) return;
 
-        // Фон и заголовок (через вершины)
+        // Фон и заголовок (через вершины — как раньше)
         DrawRect(vertices, Vector2.Zero, new Vector2(Width, screenSize.Y), new Vector4(0.06f, 0.06f, 0.085f, 0.985f));
         DrawRect(vertices, new Vector2(0, 0), new Vector2(Width, 68), new Vector4(0.11f, 0.11f, 0.15f, 1f));
 
         // Кнопка
-        if (DrawButton(vertices, "💾 Сохранить как...", new Vector2(16, 78), new Vector2(Width - 32, 42)))
+        if (DrawButton(vertices, SaveButtonLabel, new Vector2(16, 78), new Vector2(Width - 32, 42)))
         {
             string name = $"Урок_{DateTime.Now:yyyy-MM-dd_HH-mm}";
             _libraryManager.SaveCanvas(name);
             RefreshTree();
         }
 
-        // Текст через Skia (пока выводим в консоль + заглушка)
+        // Реальный текст через text atlas (не стаб)
+        var atlas = _renderer.TextAtlas;
         foreach (var (node, x, y) in _flatList)
         {
             float screenY = y - _scrollY;
             if (screenY < 120 || screenY > screenSize.Y + 50) continue;
 
-            string prefix = node.IsDirectory 
-                ? (node.IsExpanded ? "▼ " : "▶ ") 
-                : "   • ";
-
-            DrawTextWithSkiaStub(vertices, prefix + node.Name, new Vector2(x, screenY));
+            string label = LabelFor(node);
+            var size = atlas.Measure(label);
+            float textY = screenY + (ItemHeight - size.Y) * 0.5f;
+            atlas.Emit(label, new Vector2(x, textY), TextColor);
         }
     }
 
     private bool DrawButton(List<Vertex> v, string text, Vector2 pos, Vector2 size)
     {
         DrawRect(v, pos, size, new Vector4(0.22f, 0.42f, 0.78f, 1f));
-        DrawTextWithSkiaStub(v, text, pos + new Vector2(18, 12));
+
+        var atlas = _renderer.TextAtlas;
+        var textSize = atlas.Measure(text);
+        var textPos = pos + new Vector2(18, (size.Y - textSize.Y) * 0.5f);
+        atlas.Emit(text, textPos, ButtonTextColor);
+
         return false;
     }
 
@@ -156,19 +167,12 @@ public class LibraryPanel : IDisposable
         v.Add(new Vertex { Position = p4, Color = color });
     }
 
-    private void DrawTextWithSkiaStub(List<Vertex> vertices, string text, Vector2 pos)
-    {
-        // Временная заглушка — позже заменим на настоящую текстуру
-        float w = text.Length * 9.5f;
-        DrawRect(vertices, pos, new Vector2(w, 24), new Vector4(0,0,0,0.4f));
-    }
-
     // ====================== КЛИКИ ======================
     public bool HandleClick(Vector2 pos)
     {
         if (!IsOpen || pos.X > Width) return false;
 
-        float relativeY = pos.Y + _scrollY - 130;
+        float relativeY = pos.Y + _scrollY;
 
         for (int i = 0; i < _flatList.Count; i++)
         {
@@ -179,6 +183,7 @@ public class LibraryPanel : IDisposable
                 {
                     node.IsExpanded = !node.IsExpanded;
                     RebuildFlatList();
+                    RebuildTextAtlas();
                 }
                 else
                 {
@@ -199,8 +204,7 @@ public class LibraryPanel : IDisposable
 
     public void Dispose()
     {
-        _textPaint.Dispose();
-        _typeface?.Dispose();
-        _textSurface?.Dispose();
+        // Ресурсы текста (шрифт, GPU-текстура и т.д.) владеет TextAtlas внутри StrokeRenderer,
+        // он и освобождается там же.
     }
 }

@@ -50,6 +50,12 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     private RadialMenu? _radialMenu;
 
+    // Полноценный текст (используется LibraryPanel'ом для колонки автосохранений).
+    // Атлас перестраивается редко (см. LibraryPanel.RefreshTree), кадровая генерация
+    // quad'ов — дёшево, так что рендер не проседает.
+    private TextAtlas? _textAtlas;
+    public TextAtlas TextAtlas => _textAtlas!;
+
     public StrokeRenderer(
         VulkanContext context,
         SwapchainManager swapchain,
@@ -82,6 +88,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
     public void Initialize()
     {
         CreatePipeline();
+
+        _textAtlas = new TextAtlas(_context, _renderPass, _commandManager);
+        _textAtlas.Initialize();
+
         Console.WriteLine("StrokeRenderer: Pipeline created (world-space vertices, GPU camera transform)");
     }
 
@@ -233,6 +243,8 @@ public sealed unsafe class StrokeRenderer : IDisposable
         // --- UI: SCREEN SPACE ---
         // RadialMenu и LibraryPanel генерируют экранные координаты.
         // Для них используется identity-трансформ (только ortho).
+        _textAtlas?.BeginFrame();
+
         if (_radialMenu?.IsOpen == true)
         {
             _radialMenu.RenderUI(_vertices);
@@ -252,6 +264,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         {
             RebuildAllVertices();
             UpdateVertexBuffer();
+            _textAtlas?.UploadFrameVertices();
             _dirty = false;
         }
     }
@@ -298,6 +311,9 @@ public sealed unsafe class StrokeRenderer : IDisposable
                 0, (uint)sizeof(Matrix4x4), &transform);
             _context.Vk.CmdDraw(cmd, _uiVertexCount, 1, _strokeVertexCount, 0);
         }
+
+        // Draw 3: текст (тот же экранный ortho, отдельный textured pipeline)
+        _textAtlas?.Render(cmd, _extent);
     }
 
     // screenPos = worldPos * zoom + cameraPos
@@ -616,5 +632,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
         if (_pipelineLayout.Handle != 0)
             _context.Vk.DestroyPipelineLayout(_context.Device, _pipelineLayout, null);
+
+        _textAtlas?.Dispose();
     }
 }
