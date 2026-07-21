@@ -18,15 +18,14 @@ public sealed class InputManager : IDisposable
     private IMouse? _mouse;
     private IKeyboard? _keyboard;
     private readonly IWindow _window;
-    public event Action? OnActivity;      // поднять в каждом обработчике мыши/клавиш
-    public event Action? OnSceneChanged;  // поднять там где вызывается EndStroke / EraseAt
+    public event Action? OnActivity;
+    public event Action? OnSceneChanged;
 
     private bool _isDrawing = false;
     private bool _isErasing = false;
     private Vector2 _lastPanPosition;
     private Vector2 _mouseDownPos;
 
-    // Новое поведение: меню открывается после долгого нажатия (по таймеру)
     private bool _menuPending = false;
     private DateTime _mouseDownTime;
 
@@ -59,7 +58,6 @@ public sealed class InputManager : IDisposable
         }
     }
 
-    // Вызывается каждый кадр из VulkanRenderer.Render
     public void Update()
     {
         if (_menuPending && !_radialMenu.IsOpen)
@@ -67,7 +65,6 @@ public sealed class InputManager : IDisposable
             double elapsed = (DateTime.Now - _mouseDownTime).TotalSeconds;
             if (elapsed >= Settings.RadialMenuOpenThreshold)
             {
-                // Открываем меню по таймеру (мышь не двигалась или двигалась слишком мало)
                 var currentPos = GetMousePosition(_mouse!, _window);
                 _radialMenu.OpenAt(_mouseDownPos);
                 _radialMenu.OnMouseDown(currentPos);
@@ -79,6 +76,7 @@ public sealed class InputManager : IDisposable
 
     private void OnMouseDown(IMouse mouse, MouseButton button)
     {
+        OnActivity?.Invoke();  // ← ФИКС: поднимаем активность
         var pos = GetMousePosition(mouse, _window);
 
         if (_libraryPanel?.IsOpen == true && pos.X < _libraryPanel.Width)
@@ -99,17 +97,14 @@ public sealed class InputManager : IDisposable
                 {
                     _radialMenu.OnMouseDown(pos);
                 }
-
                 break;
             }
             case MouseButton.Right:
-                // Начинаем стирание правой кнопкой
                 _isErasing = true;
-                _document.SaveState(); // сохраняем состояние перед серией стираний
+                _document.SaveState();
                 _strokeRenderer.EraseAt(pos, saveState: false);
                 break;
             case MouseButton.Middle:
-                // Только средняя кнопка для панорамирования
                 _lastPanPosition = pos;
                 break;
         }
@@ -117,9 +112,9 @@ public sealed class InputManager : IDisposable
 
     private void OnMouseMove(IMouse mouse, Vector2 position)
     {
+        OnActivity?.Invoke();  // ← ФИКС
         var pos = GetMousePosition(mouse, _window);
 
-        // Если активно стирание правой кнопкой
         if (_isErasing)
         {
             _strokeRenderer.EraseAt(pos, saveState: false);
@@ -127,7 +122,6 @@ public sealed class InputManager : IDisposable
             return;
         }
 
-        // Если меню уже открыто — передаём движение в меню
         if (_radialMenu.IsOpen)
         {
             _radialMenu.OnMouseMove(pos);
@@ -135,13 +129,11 @@ public sealed class InputManager : IDisposable
             return;
         }
 
-        // Проверяем, не нужно ли отменить открытие меню из-за быстрого движения
         if (_menuPending)
         {
             float elapsed = (float)(DateTime.Now - _mouseDownTime).TotalSeconds;
             float dist = Vector2.Distance(_mouseDownPos, pos);
 
-            // Отмена меню при быстром движении (ещё не открыто)
             if (dist > Settings.RadialMenuEscapeDistance && elapsed < Settings.RadialMenuEscapeTime)
             {
                 _menuPending = false;
@@ -158,16 +150,16 @@ public sealed class InputManager : IDisposable
         }
         else if (_mouse?.IsButtonPressed(MouseButton.Middle) == true)
         {
-            // Панорамирование только при зажатой средней кнопке
+            // Панорамирование — SetDirty НЕ нужен: трансформация на GPU
             var delta = pos - _lastPanPosition;
             _camera.Position += delta;
             _lastPanPosition = pos;
-            _strokeRenderer.SetDirty();
         }
     }
 
     private void OnMouseUp(IMouse mouse, MouseButton button)
     {
+        OnActivity?.Invoke();  // ← ФИКС
         var pos = GetMousePosition(mouse, _window);
 
         if (button == MouseButton.Left)
@@ -183,7 +175,6 @@ public sealed class InputManager : IDisposable
             }
             else if (_menuPending && !_radialMenu.IsOpen)
             {
-                // Не дождались открытия меню – начинаем рисование
                 _strokeRenderer.BeginStroke(_mouseDownPos);
                 _strokeRenderer.AddPoint(pos);
                 _isDrawing = true;
@@ -198,11 +189,11 @@ public sealed class InputManager : IDisposable
         {
             _isErasing = false;
         }
-        // Для средней кнопки ничего не делаем, панорамирование останавливается само
     }
 
     private void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
     {
+        OnActivity?.Invoke();  // ← ФИКС
         bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
         bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
 
@@ -227,7 +218,7 @@ public sealed class InputManager : IDisposable
             _strokeRenderer.SetDirty();
         }
 
-        if (key == Key.L && ctrl) // Ctrl+L — открыть/закрыть библиотеку
+        if (key == Key.L && ctrl)
         {
             _libraryPanel?.Toggle();
             _strokeRenderer.SetDirty();
@@ -241,6 +232,7 @@ public sealed class InputManager : IDisposable
 
     private void OnMouseWheel(IMouse mouse, ScrollWheel wheel)
     {
+        OnActivity?.Invoke();  // ← ФИКС
         var screenPos = GetMousePosition(mouse, _window);
 
         bool ctrlPressed = _keyboard?.IsKeyPressed(Key.ControlLeft) == true ||
@@ -251,10 +243,12 @@ public sealed class InputManager : IDisposable
         if (_libraryPanel?.IsOpen == true && screenPos.X < _libraryPanel.Width)
         {
             _libraryPanel.HandleScroll(wheel.Y);
-            _strokeRenderer.SetDirty();
+            _strokeRenderer.SetDirty();  // UI scroll — нужен ребилд
             return;
         }
 
+        // Зум/пан — SetDirty НЕ нужен: трансформация на GPU.
+        // OnActivity уже вызван — рендер запустится и перезапишет command buffers.
         if (ctrlPressed)
         {
             var worldBefore = _strokeRenderer.ScreenToWorld(screenPos);
@@ -270,8 +264,6 @@ public sealed class InputManager : IDisposable
         {
             _camera.Position += new Vector2(0, wheel.Y * Settings.CameraPanSpeed);
         }
-
-        _strokeRenderer.SetDirty();
     }
 
     private static Vector2 GetMousePosition(IMouse mouse, IWindow window)

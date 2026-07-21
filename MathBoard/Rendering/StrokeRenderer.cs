@@ -10,7 +10,6 @@ namespace MathBoard.Rendering;
 public struct Vertex
 {
     public Vector2 Position;
-    public float Thickness;
     public Vector4 Color;
 }
 
@@ -22,11 +21,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private readonly CommandManager _commandManager;
     private readonly Document _document;
     private readonly Camera _camera;
-    
+
     private LibraryPanel? _libraryPanel;
     public event Action? OnSceneChanged;
     public bool IsDirty => _dirty;
-    private void NotifyChanged() => OnSceneChanged?.Invoke();
     public void SetLibraryPanel(LibraryPanel panel) => _libraryPanel = panel;
 
     private bool _isEraser;
@@ -40,7 +38,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     private Silk.NET.Vulkan.Buffer _vertexBuffer;
     private DeviceMemory _vertexBufferMemory;
+    private ulong _vertexBufferAllocatedSize;
     private uint _vertexCount;
+    private uint _strokeVertexCount;
+    private uint _uiVertexCount;
 
     private readonly List<Vertex> _vertices = [];
     private bool _dirty = true;
@@ -64,7 +65,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _document = document;
         _camera = camera;
         _extent = _swapchain.Extent;
-    
+
         _currentBrushWidth = Settings.DefaultBrushWidth;
         _eraserSize = Settings.DefaultEraserSize;
     }
@@ -81,7 +82,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
     public void Initialize()
     {
         CreatePipeline();
-        Console.WriteLine("StrokeRenderer: Smooth rounded strokes pipeline created");
+        Console.WriteLine("StrokeRenderer: Pipeline created (world-space vertices, GPU camera transform)");
     }
 
     public void UpdateExtent(Extent2D extent) => _extent = extent;
@@ -139,7 +140,6 @@ public sealed unsafe class StrokeRenderer : IDisposable
         var worldPos = ScreenToWorld(screenPos);
         var radius = _eraserSize;
 
-        // Собираем индексы штрихов, которые нужно удалить
         var toRemove = new List<int>();
         for (int i = 0; i < _document.Strokes.Count; i++)
         {
@@ -149,7 +149,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
                 if (Vector2.Distance(p, worldPos) < radius + stroke.Width * 0.5f)
                 {
                     toRemove.Add(i);
-                    break; // штрих уже помечен, дальше не проверяем
+                    break;
                 }
             }
         }
@@ -160,7 +160,6 @@ public sealed unsafe class StrokeRenderer : IDisposable
         if (saveState)
             _document.SaveState();
 
-        // Удаляем в обратном порядке, чтобы не сбивать индексы
         for (int i = toRemove.Count - 1; i >= 0; i--)
             _document.Strokes.RemoveAt(toRemove[i]);
 
@@ -172,7 +171,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _dirty = true;
     }
 
-    // ==================== SMOOTH VERTEX GENERATION ====================
+    // ==================== VERTEX GENERATION (WORLD SPACE) ====================
+    // Вершины штрихов генерируются в WORLD SPACE — трансформация камеры
+    // применяется в шейдере через push constant. Движение/зум камеры
+    // НЕ требует ребилда вершин.
     private void RebuildAllVertices()
     {
         _vertices.Clear();
@@ -180,35 +182,33 @@ public sealed unsafe class StrokeRenderer : IDisposable
         int circleSegments = Settings.StrokeCircleSegments;
         const float twoPi = MathF.PI * 2f;
 
+        // --- Штрихи: WORLD SPACE ---
         foreach (var stroke in _document.Strokes)
         {
             if (stroke.Points.Count == 0) continue;
 
             var color = stroke.Color;
-            var radius = (stroke.Width * 0.5f) * _camera.Zoom;
+            var radius = stroke.Width * 0.5f; // world-space радиус (без зума)
 
             // Круги в каждой точке (плавные стыки)
             foreach (var p in stroke.Points)
             {
-                var center = WorldToScreen(p);
                 for (int i = 0; i < circleSegments; i++)
                 {
                     float a1 = i * twoPi / circleSegments;
                     float a2 = (i + 1) * twoPi / circleSegments;
 
-                    _vertices.Add(new Vertex { Position = center, Color = color });
-                    _vertices.Add(new Vertex
-                        { Position = center + new Vector2(MathF.Cos(a1), MathF.Sin(a1)) * radius, Color = color });
-                    _vertices.Add(new Vertex
-                        { Position = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * radius, Color = color });
+                    _vertices.Add(new Vertex { Position = p, Color = color });
+                    _vertices.Add(new Vertex { Position = p + new Vector2(MathF.Cos(a1), MathF.Sin(a1)) * radius, Color = color });
+                    _vertices.Add(new Vertex { Position = p + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * radius, Color = color });
                 }
             }
 
             // Прямоугольники между точками
             for (int i = 0; i < stroke.Points.Count - 1; i++)
             {
-                var p1 = WorldToScreen(stroke.Points[i]);
-                var p2 = WorldToScreen(stroke.Points[i + 1]);
+                var p1 = stroke.Points[i];
+                var p2 = stroke.Points[i + 1];
 
                 var dir = Vector2.Normalize(p2 - p1);
                 var perp = new Vector2(-dir.Y, dir.X);
@@ -228,7 +228,11 @@ public sealed unsafe class StrokeRenderer : IDisposable
             }
         }
 
-        // Добавляем UI-вершины, если меню открыто
+        _strokeVertexCount = (uint)_vertices.Count;
+
+        // --- UI: SCREEN SPACE ---
+        // RadialMenu и LibraryPanel генерируют экранные координаты.
+        // Для них используется identity-трансформ (только ortho).
         if (_radialMenu?.IsOpen == true)
         {
             _radialMenu.RenderUI(_vertices);
@@ -237,6 +241,9 @@ public sealed unsafe class StrokeRenderer : IDisposable
         {
             _libraryPanel.RenderToVertices(_vertices, new Vector2(_extent.Width, _extent.Height));
         }
+
+        _uiVertexCount = (uint)_vertices.Count - _strokeVertexCount;
+        _vertexCount = (uint)_vertices.Count;
     }
 
     public void UpdateGeometry()
@@ -249,12 +256,12 @@ public sealed unsafe class StrokeRenderer : IDisposable
         }
     }
 
+    // ==================== RENDER ====================
     public void Render(CommandBuffer cmd)
     {
-        if (_vertexCount < 3)
+        if (_vertexCount == 0 || _vertexBuffer.Handle == 0)
             return;
 
-        // === Vulkan отрисовка ===
         var viewport = new Viewport
         {
             X = 0, Y = 0,
@@ -267,23 +274,46 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _context.Vk.CmdSetViewport(cmd, 0, 1, &viewport);
         _context.Vk.CmdSetScissor(cmd, 0, 1, &scissor);
 
-        var projection = Matrix4x4.CreateOrthographicOffCenter(
-            0, _extent.Width, 0, _extent.Height, -1f, 1f);
-
         _context.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Graphics, _pipeline);
 
         var vb = _vertexBuffer;
         var offset = 0ul;
         _context.Vk.CmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 
-        Matrix4x4* pProj = &projection;
-        _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4),
-            pProj);
+        // Draw 1: штрихи (world-space → camera transform)
+        if (_strokeVertexCount > 0)
+        {
+            var transform = ComputeCameraTransform();
+            _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit,
+                0, (uint)sizeof(Matrix4x4), &transform);
+            _context.Vk.CmdDraw(cmd, _strokeVertexCount, 1, 0, 0);
+        }
 
-        _context.Vk.CmdDraw(cmd, _vertexCount, 1, 0, 0);
+        // Draw 2: UI (screen-space → ortho only)
+        if (_uiVertexCount > 0)
+        {
+            var transform = Matrix4x4.CreateOrthographicOffCenter(
+                0, _extent.Width, 0, _extent.Height, -1f, 1f);
+            _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit,
+                0, (uint)sizeof(Matrix4x4), &transform);
+            _context.Vk.CmdDraw(cmd, _uiVertexCount, 1, _strokeVertexCount, 0);
+        }
     }
 
-    // ==================== Vulkan Pipeline & Buffers (оставляем как было) ====================
+    // screenPos = worldPos * zoom + cameraPos
+    // Matrix (row-major, v * M): Scale(zoom) * Translate(cam) * Proj
+    // GLSL получает транспонированную (column-major) — M^T * v = v * M ✓
+    private Matrix4x4 ComputeCameraTransform()
+    {
+        float z = _camera.Zoom;
+        var cam = _camera.Position;
+
+        var view = Matrix4x4.CreateScale(z, z, 1f) * Matrix4x4.CreateTranslation(cam.X, cam.Y, 0f);
+        var proj = Matrix4x4.CreateOrthographicOffCenter(0, _extent.Width, 0, _extent.Height, -1f, 1f);
+        return view * proj;
+    }
+
+    // ==================== Vulkan Pipeline ====================
     private void CreatePipeline()
     {
         var vertShader = LoadShader("Shaders/stroke.vert.spv");
@@ -314,18 +344,16 @@ public sealed unsafe class StrokeRenderer : IDisposable
             InputRate = VertexInputRate.Vertex
         };
 
-        var attributes = stackalloc VertexInputAttributeDescription[3];
+        // 2 атрибута вместо 3 (убран Thickness)
+        var attributes = stackalloc VertexInputAttributeDescription[2];
         attributes[0] = new VertexInputAttributeDescription
         {
-            Location = 0, Binding = 0, Format = Format.R32G32Sfloat, Offset = (uint)Marshal.OffsetOf<Vertex>("Position")
+            Location = 0, Binding = 0, Format = Format.R32G32Sfloat,
+            Offset = (uint)Marshal.OffsetOf<Vertex>("Position")
         };
         attributes[1] = new VertexInputAttributeDescription
         {
-            Location = 1, Binding = 0, Format = Format.R32Sfloat, Offset = (uint)Marshal.OffsetOf<Vertex>("Thickness")
-        };
-        attributes[2] = new VertexInputAttributeDescription
-        {
-            Location = 2, Binding = 0, Format = Format.R32G32B32A32Sfloat,
+            Location = 1, Binding = 0, Format = Format.R32G32B32A32Sfloat,
             Offset = (uint)Marshal.OffsetOf<Vertex>("Color")
         };
 
@@ -334,7 +362,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             SType = StructureType.PipelineVertexInputStateCreateInfo,
             VertexBindingDescriptionCount = 1,
             PVertexBindingDescriptions = &binding,
-            VertexAttributeDescriptionCount = 3,
+            VertexAttributeDescriptionCount = 2,
             PVertexAttributeDescriptions = attributes
         };
 
@@ -454,48 +482,44 @@ public sealed unsafe class StrokeRenderer : IDisposable
         }
     }
 
+    // ==================== PERSISTENT HOST-VISIBLE VERTEX BUFFER ====================
+    // Без staging buffer, без QueueWaitIdle. Буфер живёт постоянно,
+    // перераспределяется только при росте. Синхронизация через fence кадра.
     private void UpdateVertexBuffer()
     {
-        // DeviceWaitIdle убран: к этому моменту WaitForPreviousFrame() в Render() уже
-        // подтвердил что GPU завершил предыдущий кадр и буфер больше не используется
-        if (_vertexBuffer.Handle != 0)
-        {
-            _context.Vk.DestroyBuffer(_context.Device, _vertexBuffer, null);
-            _context.Vk.FreeMemory(_context.Device, _vertexBufferMemory, null);
-            _vertexBuffer = default;
-            _vertexBufferMemory = default;
-        }
+        _vertexCount = (uint)_vertices.Count;
 
-        _vertexCount = 0;
         if (_vertices.Count == 0)
             return;
 
-        var bufferSize = (ulong)(sizeof(Vertex) * _vertices.Count);
+        var requiredSize = (ulong)(sizeof(Vertex) * _vertices.Count);
 
-        // Staging buffer
-        CreateBuffer(bufferSize, BufferUsageFlags.TransferSrcBit,
-            MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-            out var stagingBuffer, out var stagingMemory);
-
-        void* mapped;
-        _context.Vk.MapMemory(_context.Device, stagingMemory, 0, bufferSize, 0, &mapped);
-        fixed (Vertex* src = CollectionsMarshal.AsSpan(_vertices))
+        // Перераспределяем только при нехватке места
+        if (_vertexBuffer.Handle == 0 || _vertexBufferAllocatedSize < requiredSize)
         {
-            System.Buffer.MemoryCopy(src, mapped, bufferSize, bufferSize);
+            if (_vertexBuffer.Handle != 0)
+            {
+                _context.Vk.DeviceWaitIdle(_context.Device);
+                _context.Vk.DestroyBuffer(_context.Device, _vertexBuffer, null);
+                _context.Vk.FreeMemory(_context.Device, _vertexBufferMemory, null);
+            }
+
+            // Выделяем с запасом (минимум 1 MB), чтобы избежать частых реаллокаций
+            var allocSize = Math.Max(requiredSize * 2, 1UL << 20);
+            CreateBuffer(allocSize, BufferUsageFlags.VertexBufferBit,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+                out _vertexBuffer, out _vertexBufferMemory);
+            _vertexBufferAllocatedSize = allocSize;
         }
 
-        _context.Vk.UnmapMemory(_context.Device, stagingMemory);
-
-        // GPU buffer
-        CreateBuffer(bufferSize, BufferUsageFlags.TransferDstBit | BufferUsageFlags.VertexBufferBit,
-            MemoryPropertyFlags.DeviceLocalBit, out _vertexBuffer, out _vertexBufferMemory);
-
-        CopyBuffer(stagingBuffer, _vertexBuffer, bufferSize);
-
-        _context.Vk.DestroyBuffer(_context.Device, stagingBuffer, null);
-        _context.Vk.FreeMemory(_context.Device, stagingMemory, null);
-
-        _vertexCount = (uint)_vertices.Count;
+        // Прямой map + copy — без staging, без QueueWaitIdle
+        void* mapped;
+        _context.Vk.MapMemory(_context.Device, _vertexBufferMemory, 0, requiredSize, 0, &mapped);
+        fixed (Vertex* src = CollectionsMarshal.AsSpan(_vertices))
+        {
+            System.Buffer.MemoryCopy(src, mapped, requiredSize, requiredSize);
+        }
+        _context.Vk.UnmapMemory(_context.Device, _vertexBufferMemory);
     }
 
     private void CreateBuffer(ulong size, BufferUsageFlags usage, MemoryPropertyFlags properties,
@@ -539,40 +563,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         throw new Exception("Failed to find suitable memory type");
     }
 
-    private void CopyBuffer(Silk.NET.Vulkan.Buffer src, Silk.NET.Vulkan.Buffer dst, ulong size)
-    {
-        // (оставь как было в предыдущей версии — используй temporary command buffer)
-        var allocInfo = new CommandBufferAllocateInfo
-        {
-            SType = StructureType.CommandBufferAllocateInfo,
-            CommandPool = _commandManager.CommandPool,
-            Level = CommandBufferLevel.Primary,
-            CommandBufferCount = 1
-        };
-
-        CommandBuffer cmd;
-        _context.Vk.AllocateCommandBuffers(_context.Device, &allocInfo, &cmd);
-
-        var beginInfo = new CommandBufferBeginInfo { SType = StructureType.CommandBufferBeginInfo };
-        _context.Vk.BeginCommandBuffer(cmd, &beginInfo);
-
-        var copyRegion = new BufferCopy { Size = size };
-        _context.Vk.CmdCopyBuffer(cmd, src, dst, 1, &copyRegion);
-
-        _context.Vk.EndCommandBuffer(cmd);
-
-        var submitInfo = new SubmitInfo
-        {
-            SType = StructureType.SubmitInfo,
-            CommandBufferCount = 1,
-            PCommandBuffers = &cmd
-        };
-
-        _context.Vk.QueueSubmit(_context.GraphicsQueue, 1, &submitInfo, default);
-        _context.Vk.QueueWaitIdle(_context.GraphicsQueue);
-
-        _context.Vk.FreeCommandBuffers(_context.Device, _commandManager.CommandPool, 1, &cmd);
-    }
+    // CopyBuffer полностью удалён — не нужен с host-visible буфером
 
     public void ToggleEraser()
     {

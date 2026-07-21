@@ -36,16 +36,10 @@ public sealed class VulkanRenderer : IDisposable
 
     // --- Idle / dirty tracking ---
     private bool _sceneDirty = true;          // первый кадр всегда рисуем
-    private bool _commandsDirty = true;       // command buffers нужно перезаписать
     private Vector2D<int> _lastExtent;
     private DateTime _lastActivityTime = DateTime.UtcNow;
 
-    // Сколько времени после последней активности держать полный FPS
     private static readonly TimeSpan ActiveWindow = TimeSpan.FromSeconds(0.5);
-    // Целевой интервал кадра в простое (~10 FPS)
-    private static readonly TimeSpan IdleFrameInterval = TimeSpan.FromMilliseconds(100);
-
-    private DateTime _lastFrameTime = DateTime.UtcNow;
 
     public VulkanRenderer(IWindow window)
     {
@@ -53,11 +47,9 @@ public sealed class VulkanRenderer : IDisposable
         _libraryManager = new LibraryManager(_document, null!);
     }
 
-    // Вызывается из InputManager / StrokeRenderer когда что-то реально поменялось
     public void MarkSceneDirty()
     {
         _sceneDirty = true;
-        _commandsDirty = true;
         _lastActivityTime = DateTime.UtcNow;
     }
 
@@ -90,13 +82,13 @@ public sealed class VulkanRenderer : IDisposable
 
         _strokeRenderer = new StrokeRenderer(_context, _swapchain!, _renderPassManager!, _commandManager!, _document, _camera);
         _strokeRenderer.Initialize();
-        _strokeRenderer.OnSceneChanged += MarkSceneDirty; // подписываемся на изменения
+        _strokeRenderer.OnSceneChanged += MarkSceneDirty;
 
         _radialMenu = new RadialMenu(_strokeRenderer!);
         _strokeRenderer.SetRadialMenu(_radialMenu);
 
         _libraryManager = new LibraryManager(_document, _strokeRenderer!);
-        
+
         _libraryPanel = new LibraryPanel(_strokeRenderer!, _libraryManager);
         _strokeRenderer.SetLibraryPanel(_libraryPanel);
 
@@ -104,9 +96,19 @@ public sealed class VulkanRenderer : IDisposable
         _inputManager.OnActivity += MarkInputActivity;
         _inputManager.OnSceneChanged += MarkSceneDirty;
 
-        _commandManager.RecordCommandBuffers(_framebufferManager.Framebuffers, _renderPassManager.RenderPass, _swapchain.Extent, _strokeRenderer);
+        // Подписываемся на ресайз окна — это гарантирует что рендер
+        // запустится после изменения размера (bug 2)
+        _context.Window.FramebufferResize += _ =>
+        {
+            _framebufferResized = true;
+            _lastActivityTime = DateTime.UtcNow;
+        };
 
-        _commandsDirty = false;
+        _commandManager.RecordCommandBuffers(
+            _framebufferManager.Framebuffers,
+            _renderPassManager.RenderPass,
+            _swapchain.Extent,
+            _strokeRenderer);
 
         _frameSync = new FrameSync(_context);
         _frameSync.Initialize();
@@ -142,6 +144,7 @@ public sealed class VulkanRenderer : IDisposable
                 _strokeRenderer!);
 
             _strokeRenderer!.UpdateExtent(_swapchain.Extent);
+            _strokeRenderer!.SetDirty(); // UI вершины зависят от extent
 
             _lastExtent = new Vector2D<int>(
                 (int)_swapchain.Extent.Width,
@@ -150,8 +153,6 @@ public sealed class VulkanRenderer : IDisposable
             _frameSync = new FrameSync(_context);
             _frameSync.Initialize();
 
-            // После пересоздания нужно перерисовать
-            _commandsDirty = false; // Recreate уже записал буферы
             _sceneDirty = true;
 
             Console.WriteLine("[Recreate] Success");
@@ -169,17 +170,22 @@ public sealed class VulkanRenderer : IDisposable
         if (size.X == 0 || size.Y == 0)
             return;
 
-        bool isActive = (DateTime.UtcNow - _lastActivityTime) < ActiveWindow;
-        if (!isActive && !_strokeRenderer!.IsDirty)
-            return;
+        // ВСЕГДА обрабатываем ввод — нужно для обнаружения долгого нажатия (bug 1).
+        // Update() очень дешёвый (проверка таймера).
+        _inputManager?.Update();
+        _libraryManager.AutoSaveIfNeeded();
 
         if (_framebufferResized)
             RecreateSwapchain();
 
-        _inputManager?.Update();
-        _libraryManager.AutoSaveIfNeeded();
+        // Рендерим если: есть активность, геометрия грязная, или сцена грязная
+        bool isActive = (DateTime.UtcNow - _lastActivityTime) < ActiveWindow;
+        bool needsRender = isActive || _strokeRenderer!.IsDirty || _sceneDirty;
 
-        // ← СНАЧАЛА ждём GPU, только потом трогаем буферы
+        if (!needsRender)
+            return;
+
+        // Ждём GPU перед обновлением буферов
         if (!_frameSync!.WaitForPreviousFrame())
             return;
 
@@ -190,32 +196,30 @@ public sealed class VulkanRenderer : IDisposable
         if (currentExtent != _lastExtent)
         {
             _strokeRenderer!.UpdateExtent(_swapchain.Extent);
+            _strokeRenderer!.SetDirty();
             _lastExtent = currentExtent;
-            _commandsDirty = true;
         }
 
+        // Обновляем геометрию если грязная (только при изменении штрихов/UI,
+        // НЕ при движении камеры — трансформация на GPU)
         if (_strokeRenderer!.IsDirty)
-        {
             _strokeRenderer.UpdateGeometry();
-            _commandsDirty = true;
-        }
 
-        if (_commandsDirty)
-        {
-            _commandManager!.RecordCommandBuffers(
-                _framebufferManager!.Framebuffers,
-                _renderPassManager!.RenderPass,
-                _swapchain.Extent,
-                _strokeRenderer!);
-            _commandsDirty = false;
-        }
+        // ВСЕГДА перезаписываем command buffers при рендере.
+        // Это дёшево (~10-15 вызовов API на буфер) и автоматически
+        // подхватывает изменение camera transform без отдельных флагов.
+        _commandManager!.RecordCommandBuffers(
+            _framebufferManager!.Framebuffers,
+            _renderPassManager!.RenderPass,
+            _swapchain.Extent,
+            _strokeRenderer!);
 
         var result = _frameSync.SubmitFrame(_swapchain, _commandManager!);
 
         if (result == DrawFrameResult.NeedsRecreation)
             _framebufferResized = true;
 
-        _lastFrameTime = DateTime.UtcNow;
+        _sceneDirty = false;
     }
 
     public void Dispose()
