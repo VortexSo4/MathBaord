@@ -1,4 +1,4 @@
-﻿﻿using System.Numerics;
+﻿using System.Numerics;
 using System.Text;
 using MathBoard.Core;
 
@@ -87,7 +87,10 @@ public class LibraryPanel : IDisposable
             }
             else
             {
+                if (CursorPos <= 0) { LastEditTime = DateTime.Now; return; }
+
                 int removeCount = wholeWord ? GetWordLength(-1) : 1;
+                removeCount = Math.Min(removeCount, CursorPos); // clamp so we never go negative
                 if (removeCount > 0)
                 {
                     Text.Remove(CursorPos - removeCount, removeCount);
@@ -108,7 +111,10 @@ public class LibraryPanel : IDisposable
             }
             else
             {
+                if (CursorPos >= Text.Length) { LastEditTime = DateTime.Now; return; }
+
                 int removeCount = wholeWord ? GetWordLength(1) : 1;
+                removeCount = Math.Min(removeCount, Text.Length - CursorPos);
                 if (removeCount > 0)
                     Text.Remove(CursorPos, removeCount);
             }

@@ -1,4 +1,4 @@
-﻿﻿using System.Numerics;
+﻿using System.Numerics;
 using MathBoard.Core;
 
 namespace MathBoard.Rendering;

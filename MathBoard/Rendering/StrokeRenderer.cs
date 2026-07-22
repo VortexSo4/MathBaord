@@ -1,4 +1,4 @@
-﻿﻿using Silk.NET.Vulkan;
+﻿using Silk.NET.Vulkan;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Silk.NET.Core.Native;

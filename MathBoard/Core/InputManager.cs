@@ -1,4 +1,4 @@
-﻿﻿using Silk.NET.Input;
+﻿using Silk.NET.Input;
 using System.Numerics;
 using MathBoard.Rendering;
 using Silk.NET.Windowing;
