@@ -153,27 +153,46 @@ public sealed unsafe class StrokeRenderer : IDisposable
         var toRemove = new List<int>();
         for (int i = 0; i < _document.Strokes.Count; i++)
         {
-            var stroke = _document.Strokes[i];
-            foreach (var p in stroke.Points)
-            {
-                if (Vector2.Distance(p, worldPos) < radius + stroke.Width * 0.5f)
-                {
-                    toRemove.Add(i);
-                    break;
-                }
-            }
+            if (IsStrokeHitByEraser(_document.Strokes[i], worldPos, radius))
+                toRemove.Add(i);
         }
 
-        if (toRemove.Count == 0)
-            return;
-
-        if (saveState)
-            _document.SaveState();
-
+        if (toRemove.Count == 0) return;
+        if (saveState) _document.SaveState();
         for (int i = toRemove.Count - 1; i >= 0; i--)
             _document.Strokes.RemoveAt(toRemove[i]);
-
         _dirty = true;
+    }
+    
+    public void RequestRadialMenuIcons()
+    {
+        _radialMenu?.RequestIcons(_textAtlas!);
+    }
+
+    private static bool IsStrokeHitByEraser(Stroke stroke, Vector2 eraserPos, float eraserRadius)
+    {
+        float threshold = eraserRadius + stroke.Width * 0.5f;
+        float thresholdSq = threshold * threshold;
+        var pts = stroke.Points;
+        if (pts.Count == 0) return false;
+        if (pts.Count == 1)
+            return Vector2.DistanceSquared(pts[0], eraserPos) < thresholdSq;
+
+        for (int i = 0; i < pts.Count - 1; i++)
+        {
+            if (PointToSegmentDistanceSq(eraserPos, pts[i], pts[i + 1]) < thresholdSq)
+                return true;
+        }
+        return false;
+    }
+
+    private static float PointToSegmentDistanceSq(Vector2 p, Vector2 a, Vector2 b)
+    {
+        Vector2 ab = b - a;
+        float lenSq = ab.LengthSquared();
+        if (lenSq < 1e-6f) return Vector2.DistanceSquared(p, a);
+        float t = Math.Clamp(Vector2.Dot(p - a, ab) / lenSq, 0f, 1f);
+        return Vector2.DistanceSquared(p, a + ab * t);
     }
 
     public void EndStroke()

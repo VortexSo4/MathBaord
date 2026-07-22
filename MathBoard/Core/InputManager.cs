@@ -86,17 +86,18 @@ public sealed class InputManager : IDisposable
         OnActivity?.Invoke();
         var pos = GetMousePosition(mouse, _window);
 
-        // Dialog takes priority over everything
+        // Диалог имеет наивысший приоритет
         if (_libraryPanel?.IsDialogOpen == true)
         {
             if (button == MouseButton.Left)
-                _libraryPanel.HandleClick(pos);
+                _libraryPanel.HandleMouseDown(pos);
             return;
         }
 
-        if (_libraryPanel?.IsOpen == true && pos.X < _libraryPanel.Width)
+        // Панель библиотеки (включая drag&drop) перехватывает ЛКМ
+        if (button == MouseButton.Left && _libraryPanel?.IsOpen == true && pos.X < _libraryPanel.Width)
         {
-            if (_libraryPanel.HandleClick(pos))
+            if (_libraryPanel.HandleMouseDown(pos))
                 return;
         }
 
@@ -112,6 +113,7 @@ public sealed class InputManager : IDisposable
                 {
                     _radialMenu.OnMouseDown(pos);
                 }
+
                 break;
             }
             case MouseButton.Right:
@@ -133,6 +135,14 @@ public sealed class InputManager : IDisposable
             return;
 
         var pos = GetMousePosition(mouse, _window);
+
+        // Drag&Drop в библиотеке — приоритет над рисованием
+        if (_libraryPanel != null && (_libraryPanel.IsDragging || _libraryPanel.HasPendingDrag))
+        {
+            _libraryPanel.HandleMouseMove(pos);
+            _strokeRenderer.SetDirty();
+            return;
+        }
 
         if (_isErasing)
         {
@@ -183,6 +193,15 @@ public sealed class InputManager : IDisposable
             return;
 
         var pos = GetMousePosition(mouse, _window);
+
+        // Завершение Drag&Drop в библиотеке
+        if (button == MouseButton.Left && _libraryPanel != null &&
+            (_libraryPanel.IsDragging || _libraryPanel.HasPendingDrag))
+        {
+            _libraryPanel.HandleMouseUp(pos);
+            _strokeRenderer.SetDirty();
+            return;
+        }
 
         if (button == MouseButton.Left)
         {
@@ -279,8 +298,7 @@ public sealed class InputManager : IDisposable
 
             if (changed)
             {
-                // Перестраиваем атлас текста для отображения изменений и мигающего курсора
-                _libraryPanel.RefreshTree();
+                _libraryPanel.RefreshDialogText();
                 _strokeRenderer.SetDirty();
             }
 

@@ -38,6 +38,7 @@ public class RadialMenu
     private static float InnerRadius => Settings.RadialMenuInnerRadius;
     private static float CenterRadius => Settings.RadialMenuCenterRadius;
     private float IconRadius => (OuterRadius + InnerRadius) * 0.55f;
+    private TextAtlas.Entry _eraserIcon, _brushIcon, _thicknessIcon, _clearIcon;
 
     private const float RenderAngleOffset = MathF.PI;
     private bool _isMouseDown;
@@ -48,6 +49,14 @@ public class RadialMenu
         Settings.Load();
         _previewThickness = Settings.DefaultBrushWidth;
         _thicknessBaseWidth = Settings.DefaultBrushWidth;
+    }
+    
+    public void RequestIcons(TextAtlas atlas)
+    {
+        _eraserIcon    = atlas.RequestImage("resources/textures/eraser.png");
+        _brushIcon     = atlas.RequestImage("resources/textures/brush.png");
+        _thicknessIcon = atlas.RequestImage("resources/textures/thickness.png");
+        _clearIcon     = atlas.RequestImage("resources/textures/clear.png");
     }
 
     public void OpenAt(Vector2 screenPos)
@@ -566,35 +575,30 @@ public class RadialMenu
 
     private void DrawIcon(List<Vertex> vertices, int sectorIndex, bool isSelected)
     {
+        // Для цветов и фона иконок нет — только заливка сектора
+        if (sectorIndex >= 4) return;
+
         float angle = sectorIndex * MathF.PI * 2f / SectorCount + RenderAngleOffset;
         var iconCenter = Position + new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * IconRadius;
         var iconColor = isSelected
             ? new Vector4(0.02f, 0.02f, 0.05f, 1f)
             : new Vector4(1f, 1f, 1f, 0.92f);
 
-        switch (sectorIndex)
+        float iconSize = 28f;
+        var entry = sectorIndex switch
         {
-            case 0:
-                DrawLine(vertices, iconCenter + new Vector2(-13, -11), iconCenter + new Vector2(13, 11), iconColor, 8f);
-                break;
-            case 1:
-                DrawRect(vertices, iconCenter, 26, 18, iconColor);
-                break;
-            case 2:
-                DrawCircle(vertices, iconCenter, 13, iconColor, 22);
-                DrawCircle(vertices, iconCenter, 6,
-                    isSelected ? new Vector4(0.4f, 0.78f, 1f, 1f) : new Vector4(0.12f, 0.12f, 0.16f, 1f), 18);
-                break;
-            case 3:
-                DrawLine(vertices, iconCenter + new Vector2(-11, -11), iconCenter + new Vector2(11, 11), iconColor, 7f);
-                DrawLine(vertices, iconCenter + new Vector2(11, -11), iconCenter + new Vector2(-11, 11), iconColor, 7f);
-                break;
-            case 4:
-                DrawRect(vertices, iconCenter, 24, 24, Settings.BackgroundColor);
-                break;
-            default:
-                DrawCircle(vertices, iconCenter, 9, new Vector4(1, 1, 1, 0.85f), 18);
-                break;
+            0 => _eraserIcon,
+            1 => _brushIcon,
+            2 => _thicknessIcon,
+            3 => _clearIcon,
+            _ => default
+        };
+
+        if (entry.Width > 0)
+        {
+            _renderer.TextAtlas.EmitImage(entry,
+                iconCenter - new Vector2(iconSize * 0.5f, iconSize * 0.5f),
+                new Vector2(iconSize, iconSize), iconColor);
         }
     }
 
