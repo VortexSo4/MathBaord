@@ -194,7 +194,7 @@ public class LibraryManager
 
     public void LoadLastSave()
     {
-        string lastSave = "last_save.mathboard";
+        string lastSave = "AutoSave.mathboard";
         if (File.Exists(lastSave))
         {
             _document.LoadFromFile(lastSave);
