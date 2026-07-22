@@ -29,6 +29,9 @@ public sealed class InputManager : IDisposable
     private bool _menuPending = false;
     private DateTime _mouseDownTime;
 
+    private Vector2 _lastMovePos;
+    private DateTime _lastMoveTime = DateTime.Now;
+
     public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document,
         RadialMenu radialMenu, LibraryManager libraryManager, LibraryPanel? libraryPanel)
     {
@@ -61,7 +64,6 @@ public sealed class InputManager : IDisposable
 
     public void Update()
     {
-        // Keep rendering while dialog is open (cursor blink)
         if (_libraryPanel?.IsDialogOpen == true)
         {
             _strokeRenderer.SetDirty();
@@ -76,7 +78,36 @@ public sealed class InputManager : IDisposable
                 _radialMenu.OpenAt(_mouseDownPos);
                 _radialMenu.OnMouseDown(currentPos);
                 _menuPending = false;
+                
+                // Если меню открылось во время рисования рамки выделения - отменяем выделение
+                if (_strokeRenderer.IsSelectMode && _strokeRenderer.CurrentSelectionState == StrokeRenderer.SelectionState.DrawingBox)
+                {
+                    _strokeRenderer.CurrentSelectionState = StrokeRenderer.SelectionState.None;
+                }
                 _strokeRenderer.SetDirty();
+            }
+        }
+
+        // QuickShape detection
+        if (_isDrawing && !_menuPending && !_strokeRenderer.IsSelectMode && _mouse != null)
+        {
+            var currentPos = GetMousePosition(_mouse, _window);
+            if (Vector2.Distance(currentPos, _lastMovePos) < 1.0f)
+            {
+                if ((DateTime.Now - _lastMoveTime).TotalSeconds > 1.0)
+                {
+                    if (!_strokeRenderer.IsQuickShapeApplied)
+                    {
+                        _strokeRenderer.ApplyQuickShape();
+                        _strokeRenderer.IsQuickShapeApplied = true;
+                    }
+                }
+            }
+            else
+            {
+                _lastMovePos = currentPos;
+                _lastMoveTime = DateTime.Now;
+                _strokeRenderer.IsQuickShapeApplied = false;
             }
         }
     }
@@ -86,7 +117,6 @@ public sealed class InputManager : IDisposable
         OnActivity?.Invoke();
         var pos = GetMousePosition(mouse, _window);
 
-        // Диалог имеет наивысший приоритет
         if (_libraryPanel?.IsDialogOpen == true)
         {
             if (button == MouseButton.Left)
@@ -94,11 +124,27 @@ public sealed class InputManager : IDisposable
             return;
         }
 
-        // Панель библиотеки (включая drag&drop) перехватывает ЛКМ
         if (button == MouseButton.Left && _libraryPanel?.IsOpen == true && pos.X < _libraryPanel.Width)
         {
             if (_libraryPanel.HandleMouseDown(pos))
                 return;
+        }
+
+        if (button == MouseButton.Left && _radialMenu.IsOpen)
+        {
+            _radialMenu.OnMouseDown(pos);
+            return;
+        }
+
+        if (button == MouseButton.Left && _strokeRenderer.IsSelectMode)
+        {
+            _mouseDownPos = pos;
+            _mouseDownTime = DateTime.Now;
+            _menuPending = true;
+            
+            _strokeRenderer.HandleSelectionDown(pos);
+            _strokeRenderer.SetDirty();
+            return;
         }
 
         switch (button)
@@ -108,12 +154,6 @@ public sealed class InputManager : IDisposable
                 _mouseDownPos = pos;
                 _mouseDownTime = DateTime.Now;
                 _menuPending = true;
-
-                if (_radialMenu.IsOpen)
-                {
-                    _radialMenu.OnMouseDown(pos);
-                }
-
                 break;
             }
             case MouseButton.Right:
@@ -135,8 +175,9 @@ public sealed class InputManager : IDisposable
             return;
 
         var pos = GetMousePosition(mouse, _window);
+        _lastMovePos = pos;
+        _lastMoveTime = DateTime.Now;
 
-        // Drag&Drop в библиотеке — приоритет над рисованием
         if (_libraryPanel != null && (_libraryPanel.IsDragging || _libraryPanel.HasPendingDrag))
         {
             _libraryPanel.HandleMouseMove(pos);
@@ -154,6 +195,29 @@ public sealed class InputManager : IDisposable
         if (_radialMenu.IsOpen)
         {
             _radialMenu.OnMouseMove(pos);
+            _strokeRenderer.SetDirty();
+            return;
+        }
+
+        if (_strokeRenderer.IsSelectMode && _mouse?.IsButtonPressed(MouseButton.Left) == true)
+        {
+            if (_menuPending)
+            {
+                float elapsed = (float)(DateTime.Now - _mouseDownTime).TotalSeconds;
+                float dist = Vector2.Distance(_mouseDownPos, pos);
+
+                if (dist > Settings.RadialMenuEscapeDistance && elapsed < Settings.RadialMenuEscapeTime)
+                {
+                    _menuPending = false;
+                }
+                else
+                {
+                    // Пока ждём меню, не двигаем выделение
+                    return;
+                }
+            }
+            
+            _strokeRenderer.HandleSelectionMove(pos);
             _strokeRenderer.SetDirty();
             return;
         }
@@ -194,7 +258,6 @@ public sealed class InputManager : IDisposable
 
         var pos = GetMousePosition(mouse, _window);
 
-        // Завершение Drag&Drop в библиотеке
         if (button == MouseButton.Left && _libraryPanel != null &&
             (_libraryPanel.IsDragging || _libraryPanel.HasPendingDrag))
         {
@@ -209,10 +272,16 @@ public sealed class InputManager : IDisposable
             {
                 _radialMenu.OnMouseUp(pos);
             }
+            else if (_strokeRenderer.IsSelectMode)
+            {
+                _strokeRenderer.HandleSelectionUp(pos);
+                _strokeRenderer.SetDirty();
+            }
             else if (_isDrawing)
             {
                 _strokeRenderer.EndStroke();
                 _isDrawing = false;
+                _strokeRenderer.IsQuickShapeApplied = false;
             }
             else if (_menuPending && !_radialMenu.IsOpen)
             {
@@ -236,116 +305,45 @@ public sealed class InputManager : IDisposable
     {
         OnActivity?.Invoke();
 
-        // Диалог перехватывает весь ввод с клавиатуры
         if (_libraryPanel?.IsDialogOpen == true)
         {
             bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
             bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
 
-            if (key == Key.Enter)
-            {
-                _libraryPanel.ConfirmDialog();
-                _strokeRenderer.SetDirty();
-                return;
-            }
-
-            if (key == Key.Escape)
-            {
-                _libraryPanel.CancelDialog();
-                _strokeRenderer.SetDirty();
-                return;
-            }
+            if (key == Key.Enter) { _libraryPanel.ConfirmDialog(); _strokeRenderer.SetDirty(); return; }
+            if (key == Key.Escape) { _libraryPanel.CancelDialog(); _strokeRenderer.SetDirty(); return; }
 
             var tb = _libraryPanel.TextBox;
             bool changed = false;
 
-            // Управление курсором и редактирование (с поддержкой Ctrl и Shift)
-            if (key == Key.Backspace)
-            {
-                tb.Backspace(ctrl);
-                changed = true;
-            }
-            else if (key == Key.Delete)
-            {
-                tb.Delete(ctrl);
-                changed = true;
-            }
-            else if (key == Key.Left)
-            {
-                tb.MoveCursor(-1, ctrl, shift);
-                changed = true;
-            }
-            else if (key == Key.Right)
-            {
-                tb.MoveCursor(1, ctrl, shift);
-                changed = true;
-            }
-            else if (key == Key.Home)
-            {
-                tb.MoveCursorToStart(shift);
-                changed = true;
-            }
-            else if (key == Key.End)
-            {
-                tb.MoveCursorToEnd(shift);
-                changed = true;
-            }
-            else if (ctrl && key == Key.A)
-            {
-                tb.SelectAll();
-                changed = true;
-            }
+            if (key == Key.Backspace) { tb.Backspace(ctrl); changed = true; }
+            else if (key == Key.Delete) { tb.Delete(ctrl); changed = true; }
+            else if (key == Key.Left) { tb.MoveCursor(-1, ctrl, shift); changed = true; }
+            else if (key == Key.Right) { tb.MoveCursor(1, ctrl, shift); changed = true; }
+            else if (key == Key.Home) { tb.MoveCursorToStart(shift); changed = true; }
+            else if (key == Key.End) { tb.MoveCursorToEnd(shift); changed = true; }
+            else if (ctrl && key == Key.A) { tb.SelectAll(); changed = true; }
 
-            if (changed)
-            {
-                _libraryPanel.RefreshDialogText();
-                _strokeRenderer.SetDirty();
-            }
-
-            // Блокируем дальнейшую обработку клавиш (чтобы не рисовалось на холсте и не работал Ctrl+Z и т.д.)
+            if (changed) { _libraryPanel.RefreshDialogText(); _strokeRenderer.SetDirty(); }
             return;
         }
 
-        // Обычный ввод (когда диалог закрыт)
         bool isCtrlPressed = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
         bool isShiftPressed = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
 
         if (isCtrlPressed && key == Key.Z)
         {
-            if (isShiftPressed)
-                _strokeRenderer.Redo();
-            else
-                _strokeRenderer.Undo();
+            if (isShiftPressed) _strokeRenderer.Redo();
+            else _strokeRenderer.Undo();
             _strokeRenderer.SetDirty();
         }
 
-        if (key == Key.E)
-        {
-            _strokeRenderer.ToggleEraser();
-            _strokeRenderer.SetDirty();
-        }
+        if (key == Key.E) { _strokeRenderer.ToggleEraser(); _strokeRenderer.SetDirty(); }
+        if (key == Key.Escape && _radialMenu.IsOpen) { _radialMenu.Close(); _strokeRenderer.SetDirty(); }
+        if (key == Key.L && isCtrlPressed) { _libraryPanel?.Toggle(); _strokeRenderer.SetDirty(); }
 
-        if (key == Key.Escape && _radialMenu.IsOpen)
-        {
-            _radialMenu.Close();
-            _strokeRenderer.SetDirty();
-        }
-
-        if (key == Key.L && isCtrlPressed)
-        {
-            _libraryPanel?.Toggle();
-            _strokeRenderer.SetDirty();
-        }
-
-        if (isCtrlPressed && key == Key.S)
-        {
-            _libraryManager?.SaveCanvas();
-            _libraryPanel?.RefreshTree();
-        }
-        else if (isCtrlPressed && key == Key.O)
-        {
-            _libraryManager?.LoadLastSave();
-        }
+        if (isCtrlPressed && key == Key.S) { _libraryManager?.SaveCanvas(); _libraryPanel?.RefreshTree(); }
+        else if (isCtrlPressed && key == Key.O) { _libraryManager?.LoadLastSave(); }
     }
 
     private void OnKeyChar(IKeyboard keyboard, char c)
@@ -361,8 +359,7 @@ public sealed class InputManager : IDisposable
     {
         OnActivity?.Invoke();
 
-        if (_libraryPanel?.IsDialogOpen == true)
-            return;
+        if (_libraryPanel?.IsDialogOpen == true) return;
 
         var screenPos = GetMousePosition(mouse, _window);
 
