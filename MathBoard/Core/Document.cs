@@ -5,8 +5,8 @@ namespace MathBoard.Core;
 public class Document
 {
     public List<Stroke> Strokes { get; } = [];
-    
-    // Для Undo/Redo
+    public bool IsDirty { get; set; } = false;
+
     private readonly Stack<List<Stroke>> _history = new();
     private readonly Stack<List<Stroke>> _redoStack = new();
     private bool _isUndoing = false;
@@ -14,7 +14,8 @@ public class Document
     public void SaveState()
     {
         if (_isUndoing) return;
-        
+
+        IsDirty = true;
         _redoStack.Clear();
         _history.Push([
             ..Strokes.Select(s => new Stroke
@@ -24,16 +25,14 @@ public class Document
                 Points = [..s.Points]
             })
         ]);
-        
-        // Ограничение истории
+
         if (_history.Count > 50)
-            _history.Pop(); // удаляем самое старое
+            _history.Pop();
     }
 
     public void Undo()
     {
         if (_history.Count == 0) return;
-        
         _isUndoing = true;
         _redoStack.Push([
             ..Strokes.Select(s => new Stroke
@@ -50,6 +49,7 @@ public class Document
             Strokes.Add(s);
         
         _isUndoing = false;
+        IsDirty = true;
     }
 
     public void Redo()
@@ -69,6 +69,15 @@ public class Document
         var next = _redoStack.Pop();
         foreach (var s in next)
             Strokes.Add(s);
+        IsDirty = true;
+    }
+    
+    public void Clear()
+    {
+        Strokes.Clear();
+        _history.Clear();
+        _redoStack.Clear();
+        IsDirty = false;
     }
     
     public void SaveToFile(string path)
@@ -99,6 +108,7 @@ public class Document
                 writer.Write(p.Y);
             }
         }
+        IsDirty = false;
     }
 
     public void LoadFromFile(string path)
@@ -133,5 +143,6 @@ public class Document
         // Сбрасываем историю
         _history.Clear();
         _redoStack.Clear();
+        IsDirty = false;
     }
 }

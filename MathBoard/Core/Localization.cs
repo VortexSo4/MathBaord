@@ -32,4 +32,10 @@ public static class Localization
     {
         return _strings.TryGetValue(key, out var val) ? val : key;
     }
+
+    public static string Get(string key, string defaultValue)
+    {
+        if (_strings.TryGetValue(key, out var val)) return val;
+        return string.IsNullOrEmpty(defaultValue) ? key : defaultValue;
+    }
 }

@@ -165,6 +165,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         if (_document.Strokes.Count == 0) return;
         var worldPos = ScreenToWorld(screenPos);
         _document.Strokes[^1].Points.Add(worldPos);
+        _document.IsDirty = true;
         _dirty = true;
     }
 
@@ -180,6 +181,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         }
         if (toRemove.Count == 0) return;
         if (saveState) _document.SaveState();
+        else _document.IsDirty = true;
         for (int i = toRemove.Count - 1; i >= 0; i--)
             _document.Strokes.RemoveAt(toRemove[i]);
         _dirty = true;
@@ -278,27 +280,56 @@ public sealed unsafe class StrokeRenderer : IDisposable
         }
         else if (CurrentSelectionState == SelectionState.Scaling)
         {
+            Vector2 minB = _originalBounds.Min;
+            Vector2 maxB = _originalBounds.Max;
+            float midX = (minB.X + maxB.X) / 2f;
+            float midY = (minB.Y + maxB.Y) / 2f;
+
             Vector2 fixedCorner = Vector2.Zero;
             switch (_activeHandle)
             {
-                case 0: fixedCorner = _originalBounds.Max; break;
-                case 1: fixedCorner = new Vector2((_originalBounds.Min.X + _originalBounds.Max.X) / 2, _originalBounds.Max.Y); break;
-                case 2: fixedCorner = _originalBounds.Min; break;
-                case 3: fixedCorner = new Vector2(_originalBounds.Max.X, (_originalBounds.Min.Y + _originalBounds.Max.Y) / 2); break;
-                case 4: fixedCorner = new Vector2(_originalBounds.Min.X, (_originalBounds.Min.Y + _originalBounds.Max.Y) / 2); break;
-                case 5: fixedCorner = _originalBounds.Max; break;
-                case 6: fixedCorner = new Vector2((_originalBounds.Min.X + _originalBounds.Max.X) / 2, _originalBounds.Min.Y); break;
-                case 7: fixedCorner = _originalBounds.Min; break;
+                case 0: fixedCorner = maxB; break;
+                case 1: fixedCorner = new Vector2(midX, maxB.Y); break;
+                case 2: fixedCorner = new Vector2(minB.X, maxB.Y); break;
+                case 3: fixedCorner = new Vector2(maxB.X, midY); break;
+                case 4: fixedCorner = new Vector2(minB.X, midY); break;
+                case 5: fixedCorner = new Vector2(maxB.X, minB.Y); break;
+                case 6: fixedCorner = new Vector2(midX, minB.Y); break;
+                case 7: fixedCorner = minB; break;
             }
 
-            Vector2 newMin = _originalBounds.Min;
-            Vector2 newMax = _originalBounds.Max;
-            if (_activeHandle == 0 || _activeHandle == 3 || _activeHandle == 5) newMin.X = mouseWorld.X;
-            if (_activeHandle == 2 || _activeHandle == 4 || _activeHandle == 7) newMax.X = mouseWorld.X;
-            if (_activeHandle == 0 || _activeHandle == 1 || _activeHandle == 2) newMin.Y = mouseWorld.Y;
-            if (_activeHandle == 5 || _activeHandle == 6 || _activeHandle == 7) newMax.Y = mouseWorld.Y;
+            Vector2 newMin = minB;
+            Vector2 newMax = maxB;
+            
+            switch (_activeHandle)
+            {
+                case 0:
+                case 3:
+                case 5:
+                    newMin.X = mouseWorld.X;
+                    break;
+                case 2:
+                case 4:
+                case 7:
+                    newMax.X = mouseWorld.X;
+                    break;
+            }
+            
+            switch (_activeHandle)
+            {
+                case 0:
+                case 1:
+                case 2:
+                    newMin.Y = mouseWorld.Y;
+                    break;
+                case 5:
+                case 6:
+                case 7:
+                    newMax.Y = mouseWorld.Y;
+                    break;
+            }
 
-            Vector2 origSize = _originalBounds.Max - _originalBounds.Min;
+            Vector2 origSize = maxB - minB;
             Vector2 newSize = newMax - newMin;
             if (MathF.Abs(origSize.X) < 0.001f) origSize.X = 0.001f;
             if (MathF.Abs(origSize.Y) < 0.001f) origSize.Y = 0.001f;
@@ -468,6 +499,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             stroke.Points = GenerateLine(stroke.Points[0], stroke.Points[^1]);
         }
         _dirty = true;
+        _document.IsDirty = true;
     }
 
     private static List<Vector2> FilterCorners(List<Vector2> pts)

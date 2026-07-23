@@ -246,6 +246,9 @@ public sealed class InputManager : IDisposable
             var delta = pos - _lastPanPosition;
             _camera.Position += delta;
             _lastPanPosition = pos;
+
+            if (_strokeRenderer.IsSelectMode || _strokeRenderer.SelectedStrokes.Count > 0)
+                _strokeRenderer.SetDirty();
         }
     }
 
@@ -313,6 +316,8 @@ public sealed class InputManager : IDisposable
             if (key == Key.Enter) { _libraryPanel.ConfirmDialog(); _strokeRenderer.SetDirty(); return; }
             if (key == Key.Escape) { _libraryPanel.CancelDialog(); _strokeRenderer.SetDirty(); return; }
 
+            if (!_libraryPanel.HasTextInput) return;
+
             var tb = _libraryPanel.TextBox;
             bool changed = false;
 
@@ -344,6 +349,14 @@ public sealed class InputManager : IDisposable
 
         if (isCtrlPressed && key == Key.S) { _libraryManager?.SaveCanvas(); _libraryPanel?.RefreshTree(); }
         else if (isCtrlPressed && key == Key.O) { _libraryManager?.LoadLastSave(); }
+        else if (isCtrlPressed && key == Key.N)
+        {
+            if (_document.IsDirty)
+                _libraryPanel?.OpenNewFileDialog();
+            else
+                _libraryManager?.NewFile();
+            _strokeRenderer.SetDirty();
+        }
     }
 
     private void OnKeyChar(IKeyboard keyboard, char c)
@@ -390,6 +403,9 @@ public sealed class InputManager : IDisposable
         {
             _camera.Position += new Vector2(0, wheel.Y * Settings.CameraPanSpeed);
         }
+
+        if (_strokeRenderer.IsSelectMode || _strokeRenderer.SelectedStrokes.Count > 0)
+            _strokeRenderer.SetDirty();
     }
 
     private static Vector2 GetMousePosition(IMouse mouse, IWindow window)

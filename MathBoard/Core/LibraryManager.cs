@@ -8,6 +8,15 @@ public class LibraryManager
     private readonly Document _document;
     private readonly StrokeRenderer _renderer;
     private DateTime _lastAutoSave = DateTime.MinValue;
+    
+    public bool IsDocumentDirty() => _document.IsDirty;
+
+    public void NewFile()
+    {
+        _document.Clear();
+        _renderer.ClearSelection();
+        _renderer.SetDirty();
+    }
 
     public LibraryManager(Document document, StrokeRenderer renderer)
     {

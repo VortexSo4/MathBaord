@@ -12,13 +12,13 @@ public static class Settings
     // ====================== ОДИН ИСТОЧНИК ПРАВДЫ ======================
     private static class Defaults
     {
-        public static readonly List<string> Colors = 
+        public static readonly List<string> Colors =
         [
             "#D3D3D3",
             "#FF8383",
             "#3A994C"
         ];
-        
+
         public const string Language = "EN_US";
 
         public static readonly string DefaultBackgroundColor = "#121212";
@@ -53,10 +53,10 @@ public static class Settings
 
     // ====================== Настройки ======================
     public static List<Vector4> Colors { get; private set; } = Defaults.Colors.Select(HexToVector4).ToList();
-    
+
     public static Setting<string> Language { get; } = new(Defaults.Language);
-    
-    public static Setting<Vector4> BackgroundColor { get; } = 
+
+    public static Setting<Vector4> BackgroundColor { get; } =
         new(HexToVector4(Defaults.DefaultBackgroundColor));
 
     public static Setting<string> LibraryRootPath { get; } = new(Defaults.LibraryRootPath);
@@ -109,11 +109,11 @@ public static class Settings
     };
 
     // ====================== АВТОМАТИКА (рефлексия) ======================
-    private static readonly Dictionary<string, object> _settingProperties = 
+    private static readonly Dictionary<string, object> _settingProperties =
         typeof(Settings)
             .GetProperties(BindingFlags.Public | BindingFlags.Static)
-            .Where(p => p.PropertyType.IsGenericType && 
-                       p.PropertyType.GetGenericTypeDefinition() == typeof(Setting<>))
+            .Where(p => p.PropertyType.IsGenericType &&
+                        p.PropertyType.GetGenericTypeDefinition() == typeof(Setting<>))
             .ToDictionary(p => p.Name, p => p.GetValue(null)!);
 
     public static void Load()
@@ -127,25 +127,61 @@ public static class Settings
         try
         {
             var json = File.ReadAllText(Path);
-            var data = JsonSerializer.Deserialize<SettingsData>(json, _jsonOptions);
+            using var doc = JsonDocument.Parse(json);
 
-            if (data?.Values != null)
+            if (doc.RootElement.TryGetProperty("Values", out var valuesElem))
             {
-                foreach (var kvp in data.Values)
+                foreach (var prop in valuesElem.EnumerateObject())
                 {
-                    if (_settingProperties.TryGetValue(kvp.Key, out var settingObj))
+                    if (!_settingProperties.TryGetValue(prop.Name, out var settingObj))
+                        continue;
+
+                    var settingType = settingObj.GetType();
+                    var valueProp = settingType.GetProperty("Value");
+                    if (valueProp == null) continue;
+
+                    var targetType = valueProp.PropertyType;
+                    object? value = null;
+                    var elem = prop.Value;
+
+                    try
                     {
-                        var settingType = settingObj.GetType();
-                        var valueProp = settingType.GetProperty("Value");
-                        valueProp?.SetValue(settingObj, kvp.Value);
+                        if (targetType == typeof(string))
+                            value = elem.ValueKind == JsonValueKind.String
+                                ? elem.GetString()
+                                : elem.GetRawText();
+                        else if (targetType == typeof(float))
+                            value = elem.GetSingle();
+                        else if (targetType == typeof(int))
+                            value = elem.GetInt32();
+                        else if (targetType == typeof(bool))
+                            value = elem.GetBoolean();
+                        else
+                            value = elem.Deserialize(targetType, _jsonOptions);
                     }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    if (value != null)
+                        valueProp.SetValue(settingObj, value);
                 }
             }
 
-            if (data?.Colors?.Count > 3)
-                data.Colors = data.Colors.Take(3).ToList();
+            // Восстановление цветов (раньше вообще не применялось!)
+            if (doc.RootElement.TryGetProperty("Colors", out var colorsElem) &&
+                colorsElem.ValueKind == JsonValueKind.Array)
+            {
+                var colors = colorsElem.Deserialize<List<string>>(_jsonOptions);
+                if (colors != null && colors.Count >= 3)
+                    Colors = colors.Take(3).Select(HexToVector4).ToList();
+            }
         }
-        catch { /* fallback */ }
+        catch
+        {
+            /* fallback to defaults */
+        }
     }
 
     public static void Save()
@@ -170,9 +206,11 @@ public static class Settings
             var json = JsonSerializer.Serialize(data, _jsonOptions);
             File.WriteAllText(Path, json);
         }
-        catch { }
+        catch
+        {
+        }
     }
-    
+
     private static Vector4 HexToVector4(string hex)
     {
         if (string.IsNullOrWhiteSpace(hex))
@@ -186,6 +224,7 @@ public static class Settings
             byte b = byte.Parse(hex.Substring(4, 2), NumberStyles.HexNumber);
             return new Vector4(r / 255f, g / 255f, b / 255f, 1f);
         }
+
         return new Vector4(1, 1, 1, 1); // fallback
     }
 

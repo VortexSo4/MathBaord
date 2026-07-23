@@ -22,7 +22,7 @@ public class LibraryPanel : IDisposable
     private static readonly Vector4 FileNameColor = new(0.95f, 0.78f, 0.55f, 1f);
     private static readonly Vector4 DropHighlightColor = new(0.4f, 0.78f, 1.0f, 0.95f);
 
-    public enum DialogMode { None, Delete, Rename, Save, CreateFolder }
+    public enum DialogMode { None, Delete, Rename, Save, CreateFolder, NewFile }
     private enum IconAction { Edit, Delete, Move }
 
     private DialogMode _dialogMode = DialogMode.None;
@@ -30,6 +30,7 @@ public class LibraryPanel : IDisposable
 
     public bool IsDialogOpen => _dialogMode != DialogMode.None;
     public bool IsTreeDialog => _dialogMode == DialogMode.CreateFolder;
+    public bool HasTextInput => _dialogMode == DialogMode.Rename || _dialogMode == DialogMode.Save || _dialogMode == DialogMode.CreateFolder;
 
     // Drag & Drop State
     private bool _dragPending = false;
@@ -186,6 +187,7 @@ public class LibraryPanel : IDisposable
     private string _dialogTitle = "";
     private string _dialogConfirmLabel = "OK";
     private string _dialogCancelLabel = "Cancel";
+    private string _dialogMessage = "";
 
     private const float DialogWidth = 380f;
     private const float DialogHeight = 210f;
@@ -197,10 +199,11 @@ public class LibraryPanel : IDisposable
     private readonly List<(FileNode node, IconAction action, float x, float y, float w, float h)> _iconHitRegions = new();
     private Vector4 _saveButtonBounds;
     private Vector4 _createFolderButtonBounds;
+    private Vector4 _newButtonBounds;
     private string? _selectedDestDir;
 
     private Vector2 _screenSize;
-    private TextAtlas.Entry _saveIconEntry, _editIconEntry, _deleteIconEntry, _moveIconEntry, _folderIconEntry;
+    private TextAtlas.Entry _saveIconEntry, _editIconEntry, _deleteIconEntry, _moveIconEntry, _folderIconEntry, _newIconEntry;
 
     public LibraryPanel(StrokeRenderer renderer, LibraryManager libraryManager)
     {
@@ -208,6 +211,7 @@ public class LibraryPanel : IDisposable
         _libraryManager = libraryManager;
         _saveButtonBounds = new Vector4(16, 78, Width - 32, 42);
         _createFolderButtonBounds = new Vector4(16, 126, Width - 32, 42);
+        _newButtonBounds = new Vector4(16, 174, Width - 32, 42);
         RefreshTree();
     }
 
@@ -235,19 +239,23 @@ public class LibraryPanel : IDisposable
 
         atlas.Request(Localization.Get("panel_save_as"));
         atlas.Request(Localization.Get("panel_create_folder"));
+        atlas.Request(Localization.Get("panel_new_file", "New File"));
         atlas.Request(Localization.Get("dialog_save_title"));
         atlas.Request(Localization.Get("dialog_rename_title"));
         atlas.Request(Localization.Get("dialog_delete_title"));
         atlas.Request(Localization.Get("dialog_create_folder_title"));
+        atlas.Request(Localization.Get("dialog_new_file_title", "Create New File?"));
         atlas.Request(Localization.Get("dialog_button_ok"));
         atlas.Request(Localization.Get("dialog_button_save"));
         atlas.Request(Localization.Get("dialog_button_cancel"));
+        atlas.Request(Localization.Get("dialog_button_create", "Create"));
 
         _saveIconEntry = atlas.RequestImage("resources/textures/save.png");
         _editIconEntry = atlas.RequestImage("resources/textures/edit.png");
         _deleteIconEntry = atlas.RequestImage("resources/textures/delete.png");
         _moveIconEntry = atlas.RequestImage("resources/textures/move.png");
         _folderIconEntry = atlas.RequestImage("resources/textures/folder.png");
+        _newIconEntry = atlas.RequestImage("resources/textures/new.png");
 
         _renderer.RequestRadialMenuIcons();
 
@@ -256,6 +264,9 @@ public class LibraryPanel : IDisposable
 
         if (_dialogMode != DialogMode.None && !string.IsNullOrEmpty(TextBox.ToString()))
             atlas.Request(TextBox.ToString());
+        
+        if (_dialogMode == DialogMode.NewFile && !string.IsNullOrEmpty(_dialogMessage))
+            atlas.Request(_dialogMessage);
 
         if (_dialogMode == DialogMode.Delete && _dialogTargetNode != null)
             atlas.Request(_dialogTargetNode.Name);
@@ -296,7 +307,7 @@ public class LibraryPanel : IDisposable
     {
         _flatList.Clear();
         if (_rootNode == null) return;
-        FlattenTree(_rootNode, 24f, 190f);
+        FlattenTree(_rootNode, 24f, 226f);
     }
 
     private float FlattenTree(FileNode node, float x, float y)
@@ -361,16 +372,35 @@ public class LibraryPanel : IDisposable
 
         textSize = atlas.Measure(Localization.Get("panel_create_folder"));
         atlas.Emit(Localization.Get("panel_create_folder"), new Vector2(_createFolderButtonBounds.X + 48f, _createFolderButtonBounds.Y + (_createFolderButtonBounds.W - textSize.Y) * 0.5f), ButtonTextColor);
+        
+        _newButtonBounds = new Vector4(16, 174, Width - 32, 42);
+        DrawRect(vertices, new Vector2(_newButtonBounds.X, _newButtonBounds.Y),
+            new Vector2(_newButtonBounds.Z, _newButtonBounds.W),
+            new Vector4(0.42f, 0.22f, 0.22f, 1f));
+
+        iconY = _newButtonBounds.Y + (_newButtonBounds.W - iconSize) * 0.5f;
+        atlas.EmitImage(_newIconEntry,
+            new Vector2(_newButtonBounds.X + 12f, iconY),
+            new Vector2(iconSize, iconSize), ButtonTextColor);
+
+        var newLabel = Localization.Get("panel_new_file", "New File");
+        textSize = atlas.Measure(newLabel);
+        atlas.Emit(newLabel,
+            new Vector2(_newButtonBounds.X + 48f,
+                _newButtonBounds.Y + (_newButtonBounds.W - textSize.Y) * 0.5f),
+            ButtonTextColor);
     }
 
     private void RenderFileList(List<Vertex> vertices, TextAtlas atlas, bool isTreeDialog)
     {
         _iconHitRegions.Clear();
 
+        float cullY = isTreeDialog ? 68f : 220f;
+
         foreach (var (node, x, y) in _flatList)
         {
             float screenY = y - _scrollY;
-            if (screenY < 120 || screenY > _screenSize.Y + 50) continue;
+            if (screenY < cullY || screenY > _screenSize.Y + 50) continue;
 
             if (isTreeDialog)
             {
@@ -487,6 +517,14 @@ public class LibraryPanel : IDisposable
             var nameSize = atlas.Measure(_dialogTargetNode.Name);
             atlas.Emit(_dialogTargetNode.Name, new Vector2(dx + (DialogWidth - nameSize.X) * 0.5f, yPos), FileNameColor);
         }
+        
+        else if (_dialogMode == DialogMode.NewFile)
+        {
+            var msgSize = atlas.Measure(_dialogMessage);
+            atlas.Emit(_dialogMessage,
+                new Vector2(dx + (DialogWidth - msgSize.X) * 0.5f, yPos),
+                TextColor);
+        }
 
         float btnY = dy + DialogHeight - DialogBtnHeight - 20f;
         float cancelX = dx + DialogWidth - DialogBtnWidth * 2 - 28;
@@ -570,6 +608,7 @@ public class LibraryPanel : IDisposable
 
     public void OpenSaveDialog()
     {
+        _dialogMessage = "";
         _dialogMode = DialogMode.Save;
         _dialogTargetNode = null;
         TextBox.SetText($"Lesson_{DateTime.Now:yyyy-MM-dd_HH-mm}");
@@ -581,6 +620,7 @@ public class LibraryPanel : IDisposable
 
     public void OpenRenameDialog(FileNode node)
     {
+        _dialogMessage = "";
         _dialogMode = DialogMode.Rename;
         _dialogTargetNode = node;
         TextBox.SetText(node.Name);
@@ -592,6 +632,7 @@ public class LibraryPanel : IDisposable
 
     public void OpenDeleteDialog(FileNode node)
     {
+        _dialogMessage = "";
         _dialogMode = DialogMode.Delete;
         _dialogTargetNode = node;
         TextBox.SetText("");
@@ -603,6 +644,7 @@ public class LibraryPanel : IDisposable
 
     public void OpenCreateFolderDialog()
     {
+        _dialogMessage = "";
         _dialogMode = DialogMode.CreateFolder;
         _dialogTargetNode = null;
         _selectedDestDir = Settings.LibraryRootPath.Value;
@@ -642,6 +684,9 @@ public class LibraryPanel : IDisposable
                 if (!string.IsNullOrWhiteSpace(TextBox.ToString()))
                     _libraryManager.CreateFolder(_selectedDestDir, TextBox.ToString());
                 break;
+            case DialogMode.NewFile:
+                _libraryManager.NewFile();
+                break;
         }
 
         _dialogMode = DialogMode.None;
@@ -655,6 +700,7 @@ public class LibraryPanel : IDisposable
         _dialogMode = DialogMode.None;
         _dialogTargetNode = null;
         _selectedDestDir = null;
+        _dialogMessage = ""; 
         _renderer.SetDirty();
     }
 
@@ -685,6 +731,14 @@ public class LibraryPanel : IDisposable
         // 1. Кнопки (Сохранить / Создать папку)
         if (HitTest(_saveButtonBounds, pos)) { OpenSaveDialog(); return true; }
         if (HitTest(_createFolderButtonBounds, pos)) { OpenCreateFolderDialog(); return true; }
+        if (HitTest(_newButtonBounds, pos))
+        {
+            if (_libraryManager.IsDocumentDirty())
+                OpenNewFileDialog();
+            else
+                _libraryManager.NewFile();
+            return true;
+        }
 
         // 2. Иконки (Переименовать / Удалить / Переместить)
         foreach (var (node, action, x, y, w, h) in _iconHitRegions)
@@ -889,6 +943,18 @@ public class LibraryPanel : IDisposable
         if (_dialogMode != DialogMode.None && !IsTreeDialog) return;
         _scrollY -= delta * 28f;
         _scrollY = Math.Clamp(_scrollY, 0, Math.Max(0, _flatList.Count * ItemHeight - 500));
+    }
+    
+    public void OpenNewFileDialog()
+    {
+        _dialogMode = DialogMode.NewFile;
+        _dialogTargetNode = null;
+        TextBox.SetText("");
+        _dialogTitle = Localization.Get("dialog_new_file_title", "Create New File?");
+        _dialogMessage = Localization.Get("dialog_new_file_message", "Unsaved changes will be lost.");
+        _dialogConfirmLabel = Localization.Get("dialog_button_create", "Create");
+        _dialogCancelLabel = Localization.Get("dialog_button_cancel", "Cancel");
+        RebuildTextAtlas();
     }
 
     public void Dispose() { }
