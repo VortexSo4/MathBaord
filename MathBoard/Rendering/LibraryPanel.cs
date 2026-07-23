@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+﻿﻿using System.Numerics;
 using System.Text;
 using MathBoard.Core;
 
@@ -11,6 +11,8 @@ public class LibraryPanel : IDisposable
 
     private readonly StrokeRenderer _renderer;
     private readonly LibraryManager _libraryManager;
+    private readonly SettingsPanel _settingsPanel;
+    public SettingsPanel SettingsPanel => _settingsPanel;
 
     private FileNode? _rootNode;
     private readonly List<(FileNode node, float x, float y)> _flatList = new();
@@ -22,17 +24,16 @@ public class LibraryPanel : IDisposable
     private static readonly Vector4 FileNameColor = new(0.95f, 0.78f, 0.55f, 1f);
     private static readonly Vector4 DropHighlightColor = new(0.4f, 0.78f, 1.0f, 0.95f);
 
-    public enum DialogMode { None, Delete, Rename, Save, CreateFolder, NewFile }
+    public enum DialogMode { None, Delete, Rename, Save, CreateFolder, NewFile, Log }
     private enum IconAction { Edit, Delete, Move }
 
     private DialogMode _dialogMode = DialogMode.None;
     private FileNode? _dialogTargetNode;
 
-    public bool IsDialogOpen => _dialogMode != DialogMode.None;
+    public bool IsDialogOpen => _dialogMode != DialogMode.None || _settingsPanel.IsOpen;
     public bool IsTreeDialog => _dialogMode == DialogMode.CreateFolder;
-    public bool HasTextInput => _dialogMode == DialogMode.Rename || _dialogMode == DialogMode.Save || _dialogMode == DialogMode.CreateFolder;
+    public bool HasTextInput => _dialogMode == DialogMode.Rename || _dialogMode == DialogMode.Save || _dialogMode == DialogMode.CreateFolder || _settingsPanel.HasTextInput;
 
-    // Drag & Drop State
     private bool _dragPending = false;
     private Vector2 _dragStartPos;
     private FileNode? _dragNode;
@@ -40,9 +41,12 @@ public class LibraryPanel : IDisposable
     private Vector2 _dragMousePos;
     private string? _dropTargetPath;
     private const float DragThreshold = 6f;
+    private Vector2 _mousePos;
 
     public bool IsDragging => _isDragging;
     public bool HasPendingDrag => _dragPending;
+
+    private List<string> _logLines = new();
 
     public class TextBoxState
     {
@@ -91,7 +95,7 @@ public class LibraryPanel : IDisposable
                 if (CursorPos <= 0) { LastEditTime = DateTime.Now; return; }
 
                 int removeCount = wholeWord ? GetWordLength(-1) : 1;
-                removeCount = Math.Min(removeCount, CursorPos); // clamp so we never go negative
+                removeCount = Math.Min(removeCount, CursorPos);
                 if (removeCount > 0)
                 {
                     Text.Remove(CursorPos - removeCount, removeCount);
@@ -182,7 +186,15 @@ public class LibraryPanel : IDisposable
         public override string ToString() => Text.ToString();
     }
 
-    public TextBoxState TextBox { get; } = new TextBoxState();
+    private readonly TextBoxState _textBox = new();
+    public TextBoxState TextBox
+    {
+        get
+        {
+            if (_settingsPanel.HasTextInput) return _settingsPanel.TextBox;
+            return _textBox;
+        }
+    }
 
     private string _dialogTitle = "";
     private string _dialogConfirmLabel = "OK";
@@ -193,13 +205,14 @@ public class LibraryPanel : IDisposable
     private const float DialogHeight = 210f;
     private const float DialogBtnWidth = 100f;
     private const float DialogBtnHeight = 36f;
-    private const float IconButtonSize = 24f;
+    private const float IconButtonSize = 32f;
     private const float IconButtonMargin = 4f;
 
     private readonly List<(FileNode node, IconAction action, float x, float y, float w, float h)> _iconHitRegions = new();
     private Vector4 _saveButtonBounds;
     private Vector4 _createFolderButtonBounds;
     private Vector4 _newButtonBounds;
+    private Vector4 _settingsButtonBounds;
     private string? _selectedDestDir;
 
     private Vector2 _screenSize;
@@ -209,9 +222,11 @@ public class LibraryPanel : IDisposable
     {
         _renderer = renderer;
         _libraryManager = libraryManager;
-        _saveButtonBounds = new Vector4(16, 78, Width - 32, 42);
-        _createFolderButtonBounds = new Vector4(16, 126, Width - 32, 42);
-        _newButtonBounds = new Vector4(16, 174, Width - 32, 42);
+        _settingsPanel = new SettingsPanel(renderer, RebuildTextAtlas);
+        _settingsPanel.OnOpenLog = OpenLogDialog;
+        _saveButtonBounds = new Vector4(16, 78, IconButtonSize, IconButtonSize);
+        _createFolderButtonBounds = new Vector4(16 + 36, 78, IconButtonSize, IconButtonSize);
+        _newButtonBounds = new Vector4(16 + 72, 78, IconButtonSize, IconButtonSize);
         RefreshTree();
     }
 
@@ -249,6 +264,16 @@ public class LibraryPanel : IDisposable
         atlas.Request(Localization.Get("dialog_button_save"));
         atlas.Request(Localization.Get("dialog_button_cancel"));
         atlas.Request(Localization.Get("dialog_button_create", "Create"));
+        atlas.Request(Localization.Get("settings_title", "Settings"));
+
+        atlas.Request(Localization.Get("tooltip_save", "Save"));
+        atlas.Request(Localization.Get("tooltip_create_folder", "Create Folder"));
+        atlas.Request(Localization.Get("tooltip_new_file", "New File"));
+        atlas.Request(Localization.Get("tooltip_settings", "Settings"));
+        atlas.Request(Localization.Get("tooltip_open_log", "Open Latest Log"));
+        
+        atlas.Request("S");
+        atlas.Request("X");
 
         _saveIconEntry = atlas.RequestImage("resources/textures/save.png");
         _editIconEntry = atlas.RequestImage("resources/textures/edit.png");
@@ -262,14 +287,24 @@ public class LibraryPanel : IDisposable
         foreach (var (node, _, _) in _flatList)
             atlas.Request(LabelFor(node));
 
-        if (_dialogMode != DialogMode.None && !string.IsNullOrEmpty(TextBox.ToString()))
-            atlas.Request(TextBox.ToString());
+        if (_dialogMode != DialogMode.None && !string.IsNullOrEmpty(_textBox.ToString()))
+            atlas.Request(_textBox.ToString());
         
         if (_dialogMode == DialogMode.NewFile && !string.IsNullOrEmpty(_dialogMessage))
             atlas.Request(_dialogMessage);
 
         if (_dialogMode == DialogMode.Delete && _dialogTargetNode != null)
             atlas.Request(_dialogTargetNode.Name);
+
+        if (_settingsPanel.IsOpen)
+        {
+            _settingsPanel.RequestAtlasEntries(atlas);
+        }
+        else if (_dialogMode == DialogMode.Log)
+        {
+            foreach (var line in _logLines)
+                atlas.Request(line);
+        }
 
         atlas.EndBuild();
         _renderer.SetDirty();
@@ -307,7 +342,7 @@ public class LibraryPanel : IDisposable
     {
         _flatList.Clear();
         if (_rootNode == null) return;
-        FlattenTree(_rootNode, 24f, 226f);
+        FlattenTree(_rootNode, 24f, 130f);
     }
 
     private float FlattenTree(FileNode node, float x, float y)
@@ -318,7 +353,7 @@ public class LibraryPanel : IDisposable
         {
             foreach (var child in node.Children)
             {
-                nextY = FlattenTree(child, x + 24, nextY); // Корректный отступ для вложенных
+                nextY = FlattenTree(child, x + 24, nextY);
             }
         }
         return nextY;
@@ -334,68 +369,68 @@ public class LibraryPanel : IDisposable
 
         var atlas = _renderer.TextAtlas;
 
-        if (_dialogMode != DialogMode.None && !IsTreeDialog)
+        if (_dialogMode != DialogMode.None && !IsTreeDialog && _dialogMode != DialogMode.Log)
         {
             RenderDialog(vertices, atlas, screenSize);
             return;
         }
 
-        if (!IsTreeDialog)
-            RenderSaveAndFolderButtons(vertices, atlas);
+        if (!IsTreeDialog && _dialogMode != DialogMode.Log)
+            RenderTopButtons(vertices, atlas);
 
-        RenderFileList(vertices, atlas, IsTreeDialog);
+        if (_dialogMode == DialogMode.Log)
+            RenderLogList(vertices, atlas);
+        else
+            RenderFileList(vertices, atlas, IsTreeDialog);
 
         if (IsTreeDialog)
             RenderTreeDialogUI(vertices, atlas, screenSize);
+
+        RenderBottomButtons(vertices, atlas);
+
+        string tooltip = null;
+        if (_dialogMode == DialogMode.None && !_settingsPanel.IsOpen)
+        {
+            if (HitTest(_saveButtonBounds, _mousePos)) tooltip = Localization.Get("tooltip_save", "Save");
+            else if (HitTest(_createFolderButtonBounds, _mousePos)) tooltip = Localization.Get("tooltip_create_folder", "Create Folder");
+            else if (HitTest(_newButtonBounds, _mousePos)) tooltip = Localization.Get("tooltip_new_file", "New File");
+            else if (HitTest(_settingsButtonBounds, _mousePos)) tooltip = Localization.Get("tooltip_settings", "Settings");
+        }
+
+        if (!string.IsNullOrEmpty(tooltip))
+        {
+            var size = atlas.Measure(tooltip);
+            float pad = 6f;
+            float bgX = _mousePos.X + 15f;
+            float bgY = _mousePos.Y - size.Y - 15f;
+            DrawRect(vertices, new Vector2(bgX, bgY), new Vector2(size.X + pad * 2, size.Y + pad * 2), new Vector4(0, 0, 0, 0.8f));
+            atlas.Emit(tooltip, new Vector2(bgX + pad, bgY + pad), TextColor);
+        }
+
+        if (_settingsPanel.IsOpen)
+            _settingsPanel.RenderToVertices(vertices, screenSize);
 
         if (_isDragging && _dragNode != null)
             RenderDragPreview(vertices, atlas);
     }
 
-    private void RenderSaveAndFolderButtons(List<Vertex> vertices, TextAtlas atlas)
+    private void RenderTopButtons(List<Vertex> vertices, TextAtlas atlas)
     {
-        _saveButtonBounds = new Vector4(16, 78, Width - 32, 42);
-        DrawRect(vertices, new Vector2(_saveButtonBounds.X, _saveButtonBounds.Y), new Vector2(_saveButtonBounds.Z, _saveButtonBounds.W), new Vector4(0.22f, 0.42f, 0.78f, 1f));
+        DrawIconButton(vertices, atlas, _saveIconEntry, _saveButtonBounds.X, _saveButtonBounds.Y, new Vector4(0.22f, 0.42f, 0.78f, 1f));
+        DrawIconButton(vertices, atlas, _folderIconEntry, _createFolderButtonBounds.X, _createFolderButtonBounds.Y, new Vector4(0.18f, 0.38f, 0.28f, 1f));
+        DrawIconButton(vertices, atlas, _newIconEntry, _newButtonBounds.X, _newButtonBounds.Y, new Vector4(0.42f, 0.22f, 0.22f, 1f));
+    }
 
-        float iconSize = 24f;
-        float iconY = _saveButtonBounds.Y + (_saveButtonBounds.W - iconSize) * 0.5f;
-        atlas.EmitImage(_saveIconEntry, new Vector2(_saveButtonBounds.X + 12f, iconY), new Vector2(iconSize, iconSize), ButtonTextColor);
-
-        var textSize = atlas.Measure(Localization.Get("panel_save_as"));
-        atlas.Emit(Localization.Get("panel_save_as"), new Vector2(_saveButtonBounds.X + 48f, _saveButtonBounds.Y + (_saveButtonBounds.W - textSize.Y) * 0.5f), ButtonTextColor);
-
-        _createFolderButtonBounds = new Vector4(16, 126, Width - 32, 42);
-        DrawRect(vertices, new Vector2(_createFolderButtonBounds.X, _createFolderButtonBounds.Y), new Vector2(_createFolderButtonBounds.Z, _createFolderButtonBounds.W), new Vector4(0.18f, 0.38f, 0.28f, 1f));
-
-        iconY = _createFolderButtonBounds.Y + (_createFolderButtonBounds.W - iconSize) * 0.5f;
-        atlas.EmitImage(_folderIconEntry, new Vector2(_createFolderButtonBounds.X + 12f, iconY), new Vector2(iconSize, iconSize), ButtonTextColor);
-
-        textSize = atlas.Measure(Localization.Get("panel_create_folder"));
-        atlas.Emit(Localization.Get("panel_create_folder"), new Vector2(_createFolderButtonBounds.X + 48f, _createFolderButtonBounds.Y + (_createFolderButtonBounds.W - textSize.Y) * 0.5f), ButtonTextColor);
-        
-        _newButtonBounds = new Vector4(16, 174, Width - 32, 42);
-        DrawRect(vertices, new Vector2(_newButtonBounds.X, _newButtonBounds.Y),
-            new Vector2(_newButtonBounds.Z, _newButtonBounds.W),
-            new Vector4(0.42f, 0.22f, 0.22f, 1f));
-
-        iconY = _newButtonBounds.Y + (_newButtonBounds.W - iconSize) * 0.5f;
-        atlas.EmitImage(_newIconEntry,
-            new Vector2(_newButtonBounds.X + 12f, iconY),
-            new Vector2(iconSize, iconSize), ButtonTextColor);
-
-        var newLabel = Localization.Get("panel_new_file", "New File");
-        textSize = atlas.Measure(newLabel);
-        atlas.Emit(newLabel,
-            new Vector2(_newButtonBounds.X + 48f,
-                _newButtonBounds.Y + (_newButtonBounds.W - textSize.Y) * 0.5f),
-            ButtonTextColor);
+    private void RenderBottomButtons(List<Vertex> vertices, TextAtlas atlas)
+    {
+        _settingsButtonBounds = new Vector4(16, _screenSize.Y - 48, IconButtonSize, IconButtonSize);
+        DrawTextButton(vertices, atlas, "S", _settingsButtonBounds, new Vector4(0.2f, 0.2f, 0.2f, 1f));
     }
 
     private void RenderFileList(List<Vertex> vertices, TextAtlas atlas, bool isTreeDialog)
     {
         _iconHitRegions.Clear();
-
-        float cullY = isTreeDialog ? 68f : 220f;
+        float cullY = isTreeDialog ? 68f : 120f;
 
         foreach (var (node, x, y) in _flatList)
         {
@@ -517,13 +552,10 @@ public class LibraryPanel : IDisposable
             var nameSize = atlas.Measure(_dialogTargetNode.Name);
             atlas.Emit(_dialogTargetNode.Name, new Vector2(dx + (DialogWidth - nameSize.X) * 0.5f, yPos), FileNameColor);
         }
-        
         else if (_dialogMode == DialogMode.NewFile)
         {
             var msgSize = atlas.Measure(_dialogMessage);
-            atlas.Emit(_dialogMessage,
-                new Vector2(dx + (DialogWidth - msgSize.X) * 0.5f, yPos),
-                TextColor);
+            atlas.Emit(_dialogMessage, new Vector2(dx + (DialogWidth - msgSize.X) * 0.5f, yPos), TextColor);
         }
 
         float btnY = dy + DialogHeight - DialogBtnHeight - 20f;
@@ -534,18 +566,45 @@ public class LibraryPanel : IDisposable
         DrawDialogButton(vertices, atlas, _dialogConfirmLabel, okX, btnY, new Vector4(0.22f, 0.42f, 0.78f, 1f));
     }
 
+    private void RenderLogList(List<Vertex> vertices, TextAtlas atlas)
+    {
+        var title = Localization.Get("tooltip_open_log", "Latest Log");
+        var titleSize = atlas.Measure(title);
+        atlas.Emit(title, new Vector2((Width - titleSize.X) * 0.5f, 24), TextColor);
+
+        DrawRect(vertices, new Vector2(0, 68), new Vector2(Width, _screenSize.Y - 68), new Vector4(0.06f, 0.06f, 0.085f, 1f));
+
+        float cullY = 68f;
+        float bottomCull = _screenSize.Y - 60f;
+        float y = 78f - _scrollY;
+        float lineH = 20f;
+
+        foreach (var line in _logLines)
+        {
+            if (y + lineH > cullY && y < bottomCull)
+            {
+                atlas.Emit(line, new Vector2(16f, y), TextColor);
+            }
+            y += lineH;
+        }
+
+        float btnY = _screenSize.Y - 48;
+        float cancelX = 16;
+        DrawTextButton(vertices, atlas, "X", new Vector4(cancelX, btnY, IconButtonSize, IconButtonSize), new Vector4(0.42f, 0.22f, 0.22f, 1f));
+    }
+
     private void RenderTextInput(List<Vertex> vertices, TextAtlas atlas, Vector2 fieldPos, Vector2 fieldSize)
     {
-        string text = TextBox.ToString();
+        string text = _textBox.ToString();
         float fieldX = fieldPos.X;
         float fieldY = fieldPos.Y;
         float fieldW = fieldSize.X;
         float fieldH = fieldSize.Y;
 
-        if (TextBox.HasSelection)
+        if (_textBox.HasSelection)
         {
-            string beforeSel = text.Substring(0, TextBox.SelStart);
-            string selText = text.Substring(TextBox.SelStart, TextBox.SelEnd - TextBox.SelStart);
+            string beforeSel = text.Substring(0, _textBox.SelStart);
+            string selText = text.Substring(_textBox.SelStart, _textBox.SelEnd - _textBox.SelStart);
 
             var beforeSize = atlas.Measure(beforeSel);
             var selSize = atlas.Measure(selText);
@@ -557,10 +616,10 @@ public class LibraryPanel : IDisposable
         float textY = fieldY + (fieldH - inputSize.Y) * 0.5f;
         atlas.Emit(text, new Vector2(fieldX + 12f, textY), TextColor);
 
-        bool showCursor = ((DateTime.Now - TextBox.LastEditTime).TotalMilliseconds % 1000) < 500;
+        bool showCursor = ((DateTime.Now - _textBox.LastEditTime).TotalMilliseconds % 1000) < 500;
         if (showCursor)
         {
-            string beforeCursor = text.Substring(0, TextBox.CursorPos);
+            string beforeCursor = text.Substring(0, _textBox.CursorPos);
             var beforeSize = atlas.Measure(beforeCursor);
             float cursorX = fieldX + 12f + beforeSize.X + 2f;
             float cursorH = Math.Max(inputSize.Y - 6f, 12f);
@@ -573,9 +632,16 @@ public class LibraryPanel : IDisposable
         DrawRect(v, new Vector2(x, y), new Vector2(IconButtonSize, IconButtonSize), bg);
         if (icon.Width > 0)
         {
-            float pad = 4f;
+            float pad = 6f;
             atlas.EmitImage(icon, new Vector2(x + pad, y + pad), new Vector2(IconButtonSize - pad * 2, IconButtonSize - pad * 2), Vector4.One);
         }
+    }
+
+    private void DrawTextButton(List<Vertex> v, TextAtlas atlas, string text, Vector4 bounds, Vector4 bg)
+    {
+        DrawRect(v, new Vector2(bounds.X, bounds.Y), new Vector2(bounds.Z, bounds.W), bg);
+        var size = atlas.Measure(text);
+        atlas.Emit(text, new Vector2(bounds.X + (bounds.Z - size.X) * 0.5f, bounds.Y + (bounds.W - size.Y) * 0.5f), ButtonTextColor);
     }
 
     private void DrawDialogButton(List<Vertex> v, TextAtlas atlas, string text, float x, float y, Vector4 bg)
@@ -611,7 +677,7 @@ public class LibraryPanel : IDisposable
         _dialogMessage = "";
         _dialogMode = DialogMode.Save;
         _dialogTargetNode = null;
-        TextBox.SetText($"Lesson_{DateTime.Now:yyyy-MM-dd_HH-mm}");
+        _textBox.SetText($"Lesson_{DateTime.Now:yyyy-MM-dd_HH-mm}");
         _dialogTitle = Localization.Get("dialog_save_title");
         _dialogConfirmLabel = Localization.Get("dialog_button_save");
         _dialogCancelLabel = Localization.Get("dialog_button_cancel");
@@ -623,7 +689,7 @@ public class LibraryPanel : IDisposable
         _dialogMessage = "";
         _dialogMode = DialogMode.Rename;
         _dialogTargetNode = node;
-        TextBox.SetText(node.Name);
+        _textBox.SetText(node.Name);
         _dialogTitle = Localization.Get("dialog_rename_title");
         _dialogConfirmLabel = Localization.Get("dialog_button_ok");
         _dialogCancelLabel = Localization.Get("dialog_button_cancel");
@@ -635,7 +701,7 @@ public class LibraryPanel : IDisposable
         _dialogMessage = "";
         _dialogMode = DialogMode.Delete;
         _dialogTargetNode = node;
-        TextBox.SetText("");
+        _textBox.SetText("");
         _dialogTitle = Localization.Get("dialog_delete_title");
         _dialogConfirmLabel = Localization.Get("dialog_button_ok");
         _dialogCancelLabel = Localization.Get("dialog_button_cancel");
@@ -648,22 +714,57 @@ public class LibraryPanel : IDisposable
         _dialogMode = DialogMode.CreateFolder;
         _dialogTargetNode = null;
         _selectedDestDir = Settings.LibraryRootPath.Value;
-        TextBox.SetText($"NewFolder_{DateTime.Now:HHmm}");
+        _textBox.SetText($"NewFolder_{DateTime.Now:HHmm}");
         _dialogTitle = Localization.Get("dialog_create_folder_title");
         _dialogConfirmLabel = Localization.Get("dialog_button_ok");
         _dialogCancelLabel = Localization.Get("dialog_button_cancel");
         RebuildTextAtlas();
     }
 
+    public void OpenSettingsDialog()
+    {
+        _settingsPanel.Open();
+    }
+
+    public void OpenLogDialog()
+    {
+        _dialogMode = DialogMode.Log;
+        _scrollY = 0;
+        _logLines.Clear();
+        try
+        {
+            if (File.Exists("latest.log"))
+            {
+                var lines = File.ReadAllLines("latest.log");
+                _logLines = lines.Skip(Math.Max(0, lines.Length - 500)).ToList();
+            }
+            else
+            {
+                _logLines.Add("Log file not found.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logLines.Add($"Error reading log: {ex.Message}");
+        }
+        RebuildTextAtlas();
+    }
+
     public void ConfirmDialog()
     {
+        if (_settingsPanel.IsOpen)
+        {
+            _settingsPanel.Close();
+            return;
+        }
+
         if (_dialogMode == DialogMode.None) return;
 
         switch (_dialogMode)
         {
             case DialogMode.Save:
-                if (!string.IsNullOrWhiteSpace(TextBox.ToString()))
-                    _libraryManager.SaveCanvas(TextBox.ToString());
+                if (!string.IsNullOrWhiteSpace(_textBox.ToString()))
+                    _libraryManager.SaveCanvas(_textBox.ToString());
                 break;
             case DialogMode.Delete when _dialogTargetNode != null:
                 if (_dialogTargetNode.IsDirectory)
@@ -672,17 +773,17 @@ public class LibraryPanel : IDisposable
                     _libraryManager.DeleteFile(_dialogTargetNode.FullPath);
                 break;
             case DialogMode.Rename when _dialogTargetNode != null:
-                if (!string.IsNullOrWhiteSpace(TextBox.ToString()))
+                if (!string.IsNullOrWhiteSpace(_textBox.ToString()))
                 {
                     if (_dialogTargetNode.IsDirectory)
-                        _libraryManager.RenameDirectory(_dialogTargetNode.FullPath, TextBox.ToString());
+                        _libraryManager.RenameDirectory(_dialogTargetNode.FullPath, _textBox.ToString());
                     else
-                        _libraryManager.RenameFile(_dialogTargetNode.FullPath, TextBox.ToString());
+                        _libraryManager.RenameFile(_dialogTargetNode.FullPath, _textBox.ToString());
                 }
                 break;
             case DialogMode.CreateFolder when _selectedDestDir != null:
-                if (!string.IsNullOrWhiteSpace(TextBox.ToString()))
-                    _libraryManager.CreateFolder(_selectedDestDir, TextBox.ToString());
+                if (!string.IsNullOrWhiteSpace(_textBox.ToString()))
+                    _libraryManager.CreateFolder(_selectedDestDir, _textBox.ToString());
                 break;
             case DialogMode.NewFile:
                 _libraryManager.NewFile();
@@ -697,6 +798,12 @@ public class LibraryPanel : IDisposable
 
     public void CancelDialog()
     {
+        if (_settingsPanel.IsOpen)
+        {
+            _settingsPanel.Cancel();
+            return;
+        }
+
         _dialogMode = DialogMode.None;
         _dialogTargetNode = null;
         _selectedDestDir = null;
@@ -706,20 +813,34 @@ public class LibraryPanel : IDisposable
 
     public void HandleCharInput(char c)
     {
+        if (_settingsPanel.IsOpen)
+        {
+            _settingsPanel.HandleCharInput(c);
+            return;
+        }
+
         if (_dialogMode != DialogMode.Rename && _dialogMode != DialogMode.Save && _dialogMode != DialogMode.CreateFolder) return;
         if (c < 32) return;
         if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') return;
 
-        TextBox.Insert(c);
+        _textBox.Insert(c);
         RefreshDialogText();
     }
 
-    public bool HandleMouseDown(Vector2 pos)
+    public bool HandleMouseDown(Vector2 pos, bool isRightClick = false)
     {
-        // Диалог приоритетнее всего
+        _mousePos = pos;
+        
+        if (_settingsPanel.IsOpen)
+        {
+            _settingsPanel.UpdateMousePos(pos);
+            _settingsPanel.HandleMouseDown(pos);
+            return true;
+        }
+
         if (IsDialogOpen)
         {
-            HandleDialogClick(pos);
+            HandleDialogClick(pos, isRightClick);
             return true;
         }
 
@@ -728,7 +849,6 @@ public class LibraryPanel : IDisposable
 
         if (!IsOpen || pos.X > Width) return false;
 
-        // 1. Кнопки (Сохранить / Создать папку)
         if (HitTest(_saveButtonBounds, pos)) { OpenSaveDialog(); return true; }
         if (HitTest(_createFolderButtonBounds, pos)) { OpenCreateFolderDialog(); return true; }
         if (HitTest(_newButtonBounds, pos))
@@ -739,8 +859,9 @@ public class LibraryPanel : IDisposable
                 _libraryManager.NewFile();
             return true;
         }
+        
+        if (HitTest(_settingsButtonBounds, pos)) { OpenSettingsDialog(); return true; }
 
-        // 2. Иконки (Переименовать / Удалить / Переместить)
         foreach (var (node, action, x, y, w, h) in _iconHitRegions)
         {
             if (pos.X >= x && pos.X <= x + w && pos.Y >= y && pos.Y <= y + h)
@@ -749,7 +870,6 @@ public class LibraryPanel : IDisposable
                 else if (action == IconAction.Delete) OpenDeleteDialog(node);
                 else if (action == IconAction.Move)
                 {
-                    // Начинаем Drag&Drop
                     _dragPending = true;
                     _dragStartPos = pos;
                     _dragNode = node;
@@ -758,7 +878,6 @@ public class LibraryPanel : IDisposable
             }
         }
 
-        // 3. Клики по самим строкам (раскрыть папку или загрузить файл)
         float relativeY = pos.Y + _scrollY;
         foreach (var (node, x, y) in _flatList)
         {
@@ -787,27 +906,39 @@ public class LibraryPanel : IDisposable
                pos.Y >= bounds.Y && pos.Y <= bounds.Y + bounds.W;
     }
 
-    private void HandleDialogClick(Vector2 pos)
+    private void HandleDialogClick(Vector2 pos, bool isRightClick)
     {
         if (IsTreeDialog)
         {
             HandleTreeDialogClick(pos);
             return;
         }
+        
+        if (_dialogMode == DialogMode.Log)
+        {
+            float btnY = _screenSize.Y - 48;
+            float cancelX = 16;
+            if (pos.X >= cancelX && pos.X <= cancelX + IconButtonSize && pos.Y >= btnY && pos.Y <= btnY + IconButtonSize)
+            {
+                CancelDialog();
+                return;
+            }
+            return;
+        }
 
         float dx = (_screenSize.X - DialogWidth) * 0.5f;
         float dy = (_screenSize.Y - DialogHeight) * 0.5f;
-        float btnY = dy + DialogHeight - DialogBtnHeight - 20f;
+        float btnY1 = dy + DialogHeight - DialogBtnHeight - 20f;
 
         float okX = dx + DialogWidth - DialogBtnWidth - 16;
-        if (pos.X >= okX && pos.X <= okX + DialogBtnWidth && pos.Y >= btnY && pos.Y <= btnY + DialogBtnHeight)
+        if (pos.X >= okX && pos.X <= okX + DialogBtnWidth && pos.Y >= btnY1 && pos.Y <= btnY1 + DialogBtnHeight)
         {
             ConfirmDialog();
             return;
         }
 
-        float cancelX = dx + DialogWidth - DialogBtnWidth * 2 - 28;
-        if (pos.X >= cancelX && pos.X <= cancelX + DialogBtnWidth && pos.Y >= btnY && pos.Y <= btnY + DialogBtnHeight)
+        float cancelX1 = dx + DialogWidth - DialogBtnWidth * 2 - 28;
+        if (pos.X >= cancelX1 && pos.X <= cancelX1 + DialogBtnWidth && pos.Y >= btnY1 && pos.Y <= btnY1 + DialogBtnHeight)
         {
             CancelDialog();
             return;
@@ -857,6 +988,15 @@ public class LibraryPanel : IDisposable
 
     public void HandleMouseMove(Vector2 pos)
     {
+        _mousePos = pos;
+        
+        if (_settingsPanel.IsOpen)
+        {
+            _settingsPanel.UpdateMousePos(pos);
+            _renderer.SetDirty();
+            return;
+        }
+
         if (_dragPending && !_isDragging)
         {
             float dist = Vector2.Distance(_dragStartPos, pos);
@@ -879,7 +1019,12 @@ public class LibraryPanel : IDisposable
 
     public void HandleMouseUp(Vector2 pos)
     {
-        // Завершение Drag&Drop
+        if (_settingsPanel.IsOpen)
+        {
+            _settingsPanel.HandleMouseUp(pos);
+            return;
+        }
+
         if (_isDragging && _dragNode != null)
         {
             if (_dropTargetPath != null)
@@ -922,7 +1067,6 @@ public class LibraryPanel : IDisposable
             if (!node.IsDirectory) continue;
             if (node == _dragNode) continue;
 
-            // Нельзя бросить папку в её собственного потомка
             if (_dragNode != null && _dragNode.IsDirectory)
             {
                 if (node.FullPath.StartsWith(_dragNode.FullPath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
@@ -939,17 +1083,31 @@ public class LibraryPanel : IDisposable
 
     public void HandleScroll(float delta)
     {
+        if (_settingsPanel.IsOpen)
+        {
+            _settingsPanel.HandleScroll(delta);
+            _renderer.SetDirty();
+            return;
+        }
+
         if (_isDragging) return;
-        if (_dialogMode != DialogMode.None && !IsTreeDialog) return;
+        if (_dialogMode != DialogMode.None && !IsTreeDialog && _dialogMode != DialogMode.Log) return;
         _scrollY -= delta * 28f;
-        _scrollY = Math.Clamp(_scrollY, 0, Math.Max(0, _flatList.Count * ItemHeight - 500));
+        
+        float maxScroll;
+        if (_dialogMode == DialogMode.Log)
+            maxScroll = _logLines.Count * 20f - 500;
+        else
+            maxScroll = _flatList.Count * ItemHeight - 500;
+            
+        _scrollY = Math.Clamp(_scrollY, 0, Math.Max(0, maxScroll));
     }
     
     public void OpenNewFileDialog()
     {
         _dialogMode = DialogMode.NewFile;
         _dialogTargetNode = null;
-        TextBox.SetText("");
+        _textBox.SetText("");
         _dialogTitle = Localization.Get("dialog_new_file_title", "Create New File?");
         _dialogMessage = Localization.Get("dialog_new_file_message", "Unsaved changes will be lost.");
         _dialogConfirmLabel = Localization.Get("dialog_button_create", "Create");

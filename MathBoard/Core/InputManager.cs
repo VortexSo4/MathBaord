@@ -1,4 +1,4 @@
-﻿using Silk.NET.Input;
+﻿﻿using Silk.NET.Input;
 using System.Numerics;
 using MathBoard.Rendering;
 using Silk.NET.Windowing;
@@ -79,7 +79,6 @@ public sealed class InputManager : IDisposable
                 _radialMenu.OnMouseDown(currentPos);
                 _menuPending = false;
                 
-                // Если меню открылось во время рисования рамки выделения - отменяем выделение
                 if (_strokeRenderer.IsSelectMode && _strokeRenderer.CurrentSelectionState == StrokeRenderer.SelectionState.DrawingBox)
                 {
                     _strokeRenderer.CurrentSelectionState = StrokeRenderer.SelectionState.None;
@@ -88,7 +87,6 @@ public sealed class InputManager : IDisposable
             }
         }
 
-        // QuickShape detection
         if (_isDrawing && !_menuPending && !_strokeRenderer.IsSelectMode && _mouse != null)
         {
             var currentPos = GetMousePosition(_mouse, _window);
@@ -120,7 +118,9 @@ public sealed class InputManager : IDisposable
         if (_libraryPanel?.IsDialogOpen == true)
         {
             if (button == MouseButton.Left)
-                _libraryPanel.HandleMouseDown(pos);
+                _libraryPanel.HandleMouseDown(pos, false);
+            else if (button == MouseButton.Right)
+                _libraryPanel.HandleMouseDown(pos, true);
             return;
         }
 
@@ -171,14 +171,20 @@ public sealed class InputManager : IDisposable
     {
         OnActivity?.Invoke();
 
-        if (_libraryPanel?.IsDialogOpen == true)
-            return;
-
         var pos = GetMousePosition(mouse, _window);
+
+        // Обновляем позицию мыши для панели, чтобы тултипы и подсветка работали сразу при наведении
+        if (_libraryPanel?.IsDialogOpen == true)
+        {
+            _libraryPanel.HandleMouseMove(pos);
+            _strokeRenderer.SetDirty();
+            return;
+        }
+
         _lastMovePos = pos;
         _lastMoveTime = DateTime.Now;
 
-        if (_libraryPanel != null && (_libraryPanel.IsDragging || _libraryPanel.HasPendingDrag))
+        if (_libraryPanel != null && _libraryPanel.IsOpen && pos.X < _libraryPanel.Width)
         {
             _libraryPanel.HandleMouseMove(pos);
             _strokeRenderer.SetDirty();
@@ -212,7 +218,6 @@ public sealed class InputManager : IDisposable
                 }
                 else
                 {
-                    // Пока ждём меню, не двигаем выделение
                     return;
                 }
             }
@@ -257,7 +262,14 @@ public sealed class InputManager : IDisposable
         OnActivity?.Invoke();
 
         if (_libraryPanel?.IsDialogOpen == true)
+        {
+            // Пробрасываем отпускание мыши в панель настроек, чтобы сбросить скроллбар
+            if (button == MouseButton.Left && _libraryPanel.SettingsPanel.IsOpen)
+            {
+                _libraryPanel.SettingsPanel.HandleMouseUp(GetMousePosition(mouse, _window));
+            }
             return;
+        }
 
         var pos = GetMousePosition(mouse, _window);
 
@@ -372,7 +384,15 @@ public sealed class InputManager : IDisposable
     {
         OnActivity?.Invoke();
 
-        if (_libraryPanel?.IsDialogOpen == true) return;
+        if (_libraryPanel?.IsDialogOpen == true)
+        {
+            if (_libraryPanel.SettingsPanel.IsOpen)
+            {
+                _libraryPanel.HandleScroll(wheel.Y);
+                _strokeRenderer.SetDirty();
+            }
+            return;
+        }
 
         var screenPos = GetMousePosition(mouse, _window);
 

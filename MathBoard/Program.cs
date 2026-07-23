@@ -3,6 +3,10 @@ using Silk.NET.Windowing;
 using MathBoard.Rendering;
 using Silk.NET.Maths;
 
+using var logFile = File.CreateText("latest.log");
+Console.SetOut(logFile);
+Console.SetError(logFile);
+
 var options = WindowOptions.DefaultVulkan with
 {
     Size = new Vector2D<int>(1280, 720),

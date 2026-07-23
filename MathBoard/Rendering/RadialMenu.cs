@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+﻿﻿using System.Numerics;
 using MathBoard.Core;
 
 namespace MathBoard.Rendering;
@@ -30,6 +30,8 @@ public class RadialMenu
     private float _pickerValue = 1f;
     private int _activePickerRing = -1;
 
+    private Vector2 _mousePos;
+
     private const float PickerOuterRadius = 130f;
     private const float PickerRingWidth = 28f;
     private const float PickerCenterRadius = 18f;
@@ -59,9 +61,19 @@ public class RadialMenu
         _brushIcon     = atlas.RequestImage("resources/textures/brush.png");
         _thicknessIcon = atlas.RequestImage("resources/textures/thickness.png");
         _clearIcon     = atlas.RequestImage("resources/textures/clear.png");
-        _brushIcon     = atlas.RequestImage("resources/textures/brush.png");
         _selectIcon    = atlas.RequestImage("resources/textures/select.png");
         _colorpicker   = atlas.RequestImage("resources/textures/colorpicker.png");
+
+        atlas.Request(Localization.Get("tooltip_brush", "Brush"));
+        atlas.Request(Localization.Get("tooltip_eraser", "Eraser"));
+        atlas.Request(Localization.Get("tooltip_thickness", "Thickness"));
+        atlas.Request(Localization.Get("tooltip_clear", "Clear All"));
+        atlas.Request(Localization.Get("tooltip_select", "Select"));
+        atlas.Request(Localization.Get("tooltip_colorpicker", "Color Picker"));
+        atlas.Request(Localization.Get("tooltip_color_1", "Color 1"));
+        atlas.Request(Localization.Get("tooltip_color_2", "Color 2"));
+        atlas.Request(Localization.Get("tooltip_color_3", "Color 3"));
+        atlas.Request(Localization.Get("tooltip_background_color", "Background Color"));
     }
 
     public void OpenAt(Vector2 screenPos)
@@ -131,6 +143,8 @@ public class RadialMenu
     public void OnMouseMove(Vector2 screenPos)
     {
         if (!IsOpen) return;
+        
+        _mousePos = screenPos; // Обновляем позицию мыши для тултипов
 
         if (_isAdjustingThickness)
         {
@@ -340,8 +354,6 @@ public class RadialMenu
         }
     }
 
-    // ====================== РЕНДЕР ======================
-
     public void RenderUI(List<Vertex> vertices)
     {
         if (!IsOpen) return;
@@ -395,6 +407,42 @@ public class RadialMenu
         }
 
         DrawCenterButton(vertices, centerColor, outlineColor);
+
+        string tooltip = null;
+        if (_selectedIndex >= 0)
+        {
+            if (_isColorMenuOpen)
+            {
+                if (_selectedIndex == 0) tooltip = Localization.Get("tooltip_color_1", "Color 1");
+                else if (_selectedIndex == 1) tooltip = Localization.Get("tooltip_color_2", "Color 2");
+                else if (_selectedIndex == 2) tooltip = Localization.Get("tooltip_color_3", "Color 3");
+                else if (_selectedIndex == 3) tooltip = Localization.Get("tooltip_background_color", "Background Color");
+            }
+            else
+            {
+                tooltip = _selectedIndex switch
+                {
+                    0 => Localization.Get("tooltip_brush", "Brush"),
+                    1 => Localization.Get("tooltip_eraser", "Eraser"),
+                    2 => Localization.Get("tooltip_thickness", "Thickness"),
+                    3 => Localization.Get("tooltip_clear", "Clear All"),
+                    4 => Localization.Get("tooltip_select", "Select"),
+                    5 => Localization.Get("tooltip_colorpicker", "Color Picker"),
+                    _ => null
+                };
+            }
+        }
+
+        if (!string.IsNullOrEmpty(tooltip))
+        {
+            var pos = _mousePos;
+            var size = _renderer.TextAtlas.Measure(tooltip);
+            float pad = 6f;
+            float bgX = pos.X + 15f;
+            float bgY = pos.Y - size.Y - 15f;
+            DrawRect(vertices, new Vector2(bgX, bgY), new Vector2(size.X + pad * 2, size.Y + pad * 2), new Vector4(0, 0, 0, 0.8f));
+            _renderer.TextAtlas.Emit(tooltip, new Vector2(bgX + pad, bgY + pad), Vector4.One);
+        }
     }
 
     private void RenderColorPicker(List<Vertex> vertices)
@@ -590,8 +638,6 @@ public class RadialMenu
         }
     }
 
-    // ====================== ПРИМИТИВЫ ======================
-
     private static void DrawAnnularSector(List<Vertex> v, Vector2 center, float r1, float r2, float start, float end, Vector4 color, int segments)
     {
         float step = (end - start) / segments;
@@ -636,7 +682,18 @@ public class RadialMenu
         v.Add(new Vertex { Position = p2 - perp, Color = color });
     }
 
-    // ====================== ЦВЕТОВЫЕ УТИЛИТЫ ======================
+    private static void DrawRect(List<Vertex> v, Vector2 pos, Vector2 size, Vector4 color)
+    {
+        var p1 = pos; var p2 = pos + new Vector2(size.X, 0);
+        var p3 = pos + size; var p4 = pos + new Vector2(0, size.Y);
+
+        v.Add(new Vertex { Position = p1, Color = color });
+        v.Add(new Vertex { Position = p2, Color = color });
+        v.Add(new Vertex { Position = p3, Color = color });
+        v.Add(new Vertex { Position = p1, Color = color });
+        v.Add(new Vertex { Position = p3, Color = color });
+        v.Add(new Vertex { Position = p4, Color = color });
+    }
 
     private static Vector4 HsvToRgb(float h, float s, float v)
     {
