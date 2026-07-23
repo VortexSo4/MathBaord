@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+﻿﻿using System.Numerics;
 using System.Runtime.InteropServices;
 using Silk.NET.Vulkan;
 using Silk.NET.Core.Native;
@@ -64,7 +64,9 @@ public sealed unsafe class TextAtlas : IDisposable
 
     public void Initialize()
     {
-        _typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Normal)
+        // Принудительно находим шрифт, поддерживающий кириллицу (буква 'А')
+        _typeface = SKFontManager.Default.MatchCharacter('А') 
+                    ?? SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Normal)
                     ?? SKTypeface.FromFamilyName("Arial")
                     ?? SKTypeface.Default;
 
@@ -128,8 +130,8 @@ public sealed unsafe class TextAtlas : IDisposable
             _imageCache[path] = bmp;
         }
 
+        // BUGFIX: Раньше здесь был баг с дублированием упаковки, вызывавший артефакты с иконками поверх русского текста
         PackAndAddEntry(path, bmp.Width, bmp.Height, out var entry);
-        _pendingImages.Add((bmp, _penX - bmp.Width - Padding, _penY - _rowHeight - Padding)); // simplified packing
         return entry;
     }
 
@@ -200,8 +202,6 @@ public sealed unsafe class TextAtlas : IDisposable
         int pixelCount = AtlasWidth * AtlasHeight;
         var rgbaData = new byte[pixelCount * 4];
         var pixels = bitmap.GetPixelSpan();
-        
-        // SkiaSharp Rgba8888 обычно отдает байты как RGBA, что идеально для Vulkan
         pixels.CopyTo(rgbaData);
 
         ulong size = (ulong)rgbaData.Length;
@@ -291,7 +291,8 @@ public sealed unsafe class TextAtlas : IDisposable
 
         void* mapped;
         _context.Vk.MapMemory(_context.Device, _vertexBufferMemory, 0, requiredSize, 0, &mapped);
-        fixed (TextVertex* src = CollectionsMarshal.AsSpan(_frameVertices))
+        var span = CollectionsMarshal.AsSpan(_frameVertices);
+        fixed (TextVertex* src = &MemoryMarshal.GetReference(span))
             System.Buffer.MemoryCopy(src, mapped, requiredSize, requiredSize);
         _context.Vk.UnmapMemory(_context.Device, _vertexBufferMemory);
     }
@@ -308,8 +309,9 @@ public sealed unsafe class TextAtlas : IDisposable
         var offset = 0ul;
         _context.Vk.CmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 
-        var transform = Matrix4x4.CreateOrthographicOffCenter(0, extent.Width, 0, extent.Height, -1f, 1f);
-        _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4), &transform);
+        var transform = stackalloc Matrix4x4[1];
+        transform[0] = Matrix4x4.CreateOrthographicOffCenter(0, extent.Width, 0, extent.Height, -1f, 1f);
+        _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4), transform);
 
         _context.Vk.CmdDraw(cmd, _vertexCount, 1, 0, 0);
     }
@@ -323,7 +325,7 @@ public sealed unsafe class TextAtlas : IDisposable
             Extent = new Extent3D(AtlasWidth, AtlasHeight, 1),
             MipLevels = 1,
             ArrayLayers = 1,
-            Format = Format.R8G8B8A8Unorm, // <-- Изменили на RGBA
+            Format = Format.R8G8B8A8Unorm,
             Tiling = ImageTiling.Optimal,
             InitialLayout = ImageLayout.Undefined,
             Usage = ImageUsageFlags.TransferDstBit | ImageUsageFlags.SampledBit,
@@ -349,7 +351,7 @@ public sealed unsafe class TextAtlas : IDisposable
             SType = StructureType.ImageViewCreateInfo,
             Image = _image,
             ViewType = ImageViewType.Type2D,
-            Format = Format.R8G8B8A8Unorm, // <-- Изменили на RGBA
+            Format = Format.R8G8B8A8Unorm,
             SubresourceRange = new ImageSubresourceRange
             {
                 AspectMask = ImageAspectFlags.ColorBit,
@@ -489,7 +491,7 @@ public sealed unsafe class TextAtlas : IDisposable
             srcStage = PipelineStageFlags.FragmentShaderBit;
             dstStage = PipelineStageFlags.TransferBit;
         }
-        else // Undefined -> ShaderReadOnly (первичная инициализация)
+        else 
         {
             barrier.SrcAccessMask = 0;
             barrier.DstAccessMask = AccessFlags.ShaderReadBit;
@@ -556,13 +558,11 @@ public sealed unsafe class TextAtlas : IDisposable
             PCommandBuffers = &cmd
         };
         _context.Vk.QueueSubmit(_context.GraphicsQueue, 1, &submitInfo, default);
-        _context.Vk.QueueWaitIdle(_context.GraphicsQueue); // редкая операция (только при смене дерева файлов) — ОК без фенсов
+        _context.Vk.QueueWaitIdle(_context.GraphicsQueue); 
 
         var pool = _commandManager.CommandPool;
         _context.Vk.FreeCommandBuffers(_context.Device, pool, 1, &cmd);
     }
-
-    // ==================== VULKAN: ПАЙПЛАЙН ====================
 
     private void CreatePipeline()
     {
@@ -632,13 +632,15 @@ public sealed unsafe class TextAtlas : IDisposable
             PDynamicStates = dynamicStates
         };
 
-        var viewport = new Viewport { Width = 1, Height = 1, MinDepth = 0, MaxDepth = 1 };
-        var scissor = new Rect2D { Extent = new Extent2D { Width = 1, Height = 1 } };
+        var vp = stackalloc Viewport[1];
+        vp[0] = new Viewport { Width = 1, Height = 1, MinDepth = 0, MaxDepth = 1 };
+        var sc = stackalloc Rect2D[1];
+        sc[0] = new Rect2D { Extent = new Extent2D { Width = 1, Height = 1 } };
         var viewportState = new PipelineViewportStateCreateInfo
         {
             SType = StructureType.PipelineViewportStateCreateInfo,
-            ViewportCount = 1, PViewports = &viewport,
-            ScissorCount = 1, PScissors = &scissor
+            ViewportCount = 1, PViewports = vp,
+            ScissorCount = 1, PScissors = sc
         };
 
         var rasterizer = new PipelineRasterizationStateCreateInfo

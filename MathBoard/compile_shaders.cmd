@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 
 echo Compiling shaders...
 
-for %%f in (Shaders\*.frag Shaders\*.vert) do (
+for %%f in (Shaders\*.frag Shaders\*.vert Shaders\*.comp) do (
     echo Compiling %%f...
     glslc "%%f" -o "%%f.spv"
     if !errorlevel! neq 0 (

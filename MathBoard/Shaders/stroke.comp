@@ -1,0 +1,116 @@
+#version 460
+layout(local_size_x = 64) in;
+
+struct StrokeInfo {
+    uint pointDataOffset;
+    uint pointCount;
+    float width;
+    vec4 color;
+    uint pointVertexOffset;
+    uint segmentVertexOffset;
+    uint pad1;
+    uint pad2;
+};
+
+struct StrokePoint {
+    vec2 pos;
+};
+
+struct Vertex {
+    vec2 pos;
+    vec4 color;
+};
+
+layout(std430, binding = 0) readonly buffer InfoBuffer {
+    StrokeInfo infos[];
+};
+layout(std430, binding = 1) readonly buffer PointBuffer {
+    StrokePoint points[];
+};
+layout(std430, binding = 2) writeonly buffer VertexBuffer {
+    Vertex vertices[];
+};
+
+layout(push_constant) uniform PC {
+    uint circleSegments;
+    uint totalStrokes;
+    uint mode; // 0 = точки (круги), 1 = сегменты (прямоугольники)
+    uint pad;
+} pc;
+
+const float PI = 3.14159265359;
+
+void main() {
+    uint threadId = gl_GlobalInvocationID.x;
+    bool found = false;
+    uint currentStrokeIndex = 0;
+    uint localId = 0;
+
+    // Ищем какому штриху принадлежит данный поток
+    for(uint i = 0; i < pc.totalStrokes; i++) {
+        if (pc.mode == 0) {
+            uint pointCount = infos[i].pointCount;
+            if (threadId < pointCount) {
+                currentStrokeIndex = i;
+                localId = threadId;
+                found = true;
+                break;
+            }
+            threadId -= pointCount;
+        } else {
+            uint segCount = max(0u, infos[i].pointCount - 1);
+            if (threadId < segCount) {
+                currentStrokeIndex = i;
+                localId = threadId;
+                found = true;
+                break;
+            }
+            threadId -= segCount;
+        }
+    }
+
+    if (!found) return;
+
+    StrokeInfo info = infos[currentStrokeIndex];
+    float radius = info.width * 0.5;
+    vec4 color = info.color;
+
+    if (pc.mode == 0) {
+        // Генерация круга для точки
+        StrokePoint p = points[info.pointDataOffset + localId];
+        float baseOffset = float(info.pointVertexOffset) + float(localId * pc.circleSegments * 3u);
+
+        for (uint i = 0; i < pc.circleSegments; i++) {
+            float a1 = float(i) * 2.0 * PI / float(pc.circleSegments);
+            float a2 = float(i + 1) * 2.0 * PI / float(pc.circleSegments);
+
+            uint idx = uint(baseOffset) + i * 3u;
+            vertices[idx]     = Vertex(p.pos, color);
+            vertices[idx + 1] = Vertex(p.pos + vec2(cos(a1), sin(a1)) * radius, color);
+            vertices[idx + 2] = Vertex(p.pos + vec2(cos(a2), sin(a2)) * radius, color);
+        }
+    } else {
+        // Генерация прямоугольника для отрезка
+        StrokePoint p1 = points[info.pointDataOffset + localId];
+        StrokePoint p2 = points[info.pointDataOffset + localId + 1];
+
+        vec2 dir = normalize(p2.pos - p1.pos);
+        vec2 perp = vec2(-dir.y, dir.x) * radius;
+
+        vec2 p1l = p1.pos + perp;
+        vec2 p1r = p1.pos - perp;
+        vec2 p2l = p2.pos + perp;
+        vec2 p2r = p2.pos - perp;
+
+        float baseOffset = float(info.segmentVertexOffset) + float(localId * 6u);
+        uint idx = uint(baseOffset);
+
+        vertices[idx]     = Vertex(p1l, color);
+        vertices[idx + 1] = Vertex(p1r, color);
+        vertices[idx + 2] = Vertex(p2l, color);
+
+        vertices[idx + 3] = Vertex(p2l, color);
+        vertices[idx + 4] = Vertex(p1r, color);
+        vertices[idx + 5] = Vertex(p2r, color);
+    }
+}
