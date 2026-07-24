@@ -1,4 +1,4 @@
-﻿using MathBoard.Core;
+﻿﻿using MathBoard.Core;
 using Silk.NET.Vulkan;
 
 namespace MathBoard.Rendering;
@@ -9,7 +9,6 @@ public sealed unsafe class CommandManager : IDisposable
 
     private CommandPool _commandPool;
     private CommandBuffer[] _commandBuffers = [];
-    
 
     public CommandManager(VulkanContext context)
     {
@@ -81,6 +80,8 @@ public sealed unsafe class CommandManager : IDisposable
             CommandBufferBeginInfo beginInfo = new() { SType = StructureType.CommandBufferBeginInfo };
             _context.Vk.BeginCommandBuffer(cmd, &beginInfo);
 
+            strokeRenderer.DispatchAllComputes(cmd);
+
             RenderPassBeginInfo renderPassInfo = new()
             {
                 SType = StructureType.RenderPassBeginInfo,
@@ -105,7 +106,6 @@ public sealed unsafe class CommandManager : IDisposable
 
             _context.Vk.CmdBeginRenderPass(cmd, &renderPassInfo, SubpassContents.Inline);
         
-            // ← Рисуем наши линии
             strokeRenderer.Render(cmd);
 
             _context.Vk.CmdEndRenderPass(cmd);

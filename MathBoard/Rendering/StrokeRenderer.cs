@@ -1,4 +1,4 @@
-﻿﻿using Silk.NET.Vulkan;
+﻿using Silk.NET.Vulkan;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Silk.NET.Core.Native;
@@ -44,6 +44,14 @@ public struct ComputePushConstants
     public uint Pad;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+public struct UICommand
+{
+    public Vector4 P1P2;      // xy = pos/p1, zw = size/p2
+    public Vector4 Color;
+    public Vector4 Params;    // x=thickness, y=type(0=rect,1=circle,2=line,3=outline), z=segments, w=offset
+}
+
 public sealed unsafe class StrokeRenderer : IDisposable
 {
     private readonly VulkanContext _context;
@@ -67,7 +75,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private Pipeline _pipeline;
     private PipelineLayout _pipelineLayout;
 
-    // Stroke Buffers (GPU Generated)
+    // Stroke Buffers
     private Silk.NET.Vulkan.Buffer _strokeVertexBuffer;
     private DeviceMemory _strokeBufferMemory;
     private ulong _strokeBufferAllocatedSize;
@@ -81,13 +89,17 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private DeviceMemory _strokePointMemory;
     private ulong _strokePointAllocatedSize;
 
-    // UI Buffers (CPU Generated)
+    // UI Buffers (Now GPU Generated)
     private Silk.NET.Vulkan.Buffer _uiVertexBuffer;
     private DeviceMemory _uiVertexBufferMemory;
     private ulong _uiVertexBufferAllocatedSize;
     private uint _uiVertexCount;
 
-    private readonly List<Vertex> _uiVertices = [];
+    private Silk.NET.Vulkan.Buffer _uiCommandBuffer;
+    private DeviceMemory _uiCommandMemory;
+    private ulong _uiCommandAllocatedSize;
+
+    private readonly List<UICommand> _uiCommands = [];
     private bool _dirty = true;
 
     private Extent2D _extent;
@@ -95,18 +107,33 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private TextAtlas? _textAtlas;
     public TextAtlas TextAtlas => _textAtlas!;
 
-    // Compute Pipeline
+    // Stroke Compute Pipeline
     private Pipeline _computePipeline;
     private PipelineLayout _computeLayout;
     private DescriptorSetLayout _computeDescSetLayout;
     private DescriptorPool _computeDescPool;
     private DescriptorSet _computeDescSet;
 
+    // UI Compute Pipeline
+    private Pipeline _uiComputePipeline;
+    private PipelineLayout _uiComputeLayout;
+    private DescriptorSetLayout _uiComputeDescSetLayout;
+    private DescriptorPool _uiComputeDescPool;
+    private DescriptorSet _uiComputeDescSet;
+
     public bool IsSelectMode { get; set; } = false;
     public bool IsQuickShapeApplied { get; set; } = false;
     public List<Stroke> SelectedStrokes { get; } = new();
 
-    public enum SelectionState { None, DrawingBox, Moving, Scaling, Rotating }
+    public enum SelectionState
+    {
+        None,
+        DrawingBox,
+        Moving,
+        Scaling,
+        Rotating
+    }
+
     public SelectionState CurrentSelectionState { get; set; } = SelectionState.None;
 
     private Vector2 _selectionStartScreen;
@@ -116,7 +143,8 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private (Vector2 Min, Vector2 Max) _originalBounds;
     private Vector2 _startMouseWorld;
 
-    public StrokeRenderer(VulkanContext context, SwapchainManager swapchain, RenderPassManager renderPass, CommandManager commandManager, Document document, Camera camera)
+    public StrokeRenderer(VulkanContext context, SwapchainManager swapchain, RenderPassManager renderPass,
+        CommandManager commandManager, Document document, Camera camera)
     {
         _context = context;
         _swapchain = swapchain;
@@ -132,12 +160,18 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     public void SetRadialMenu(RadialMenu menu) => _radialMenu = menu;
     public Camera Camera => _camera;
-    public float CurrentBrushWidth { get => _currentBrushWidth; set => _currentBrushWidth = value; }
+
+    public float CurrentBrushWidth
+    {
+        get => _currentBrushWidth;
+        set => _currentBrushWidth = value;
+    }
 
     public void Initialize()
     {
         CreateGraphicsPipeline();
         CreateComputeResources();
+        CreateUIComputeResources();
         _textAtlas = new TextAtlas(_context, _renderPass, _commandManager);
         _textAtlas.Initialize();
     }
@@ -147,10 +181,15 @@ public sealed unsafe class StrokeRenderer : IDisposable
     public Vector2 WorldToScreen(Vector2 world) => world * _camera.Zoom + _camera.Position;
     public void SetDirty() => _dirty = true;
 
-    // ==================== DRAWING ====================
     public void BeginStroke(Vector2 screenPos)
     {
-        if (_isEraser) { _document.SaveState(); EraseAt(screenPos); return; }
+        if (_isEraser)
+        {
+            _document.SaveState();
+            EraseAt(screenPos);
+            return;
+        }
+
         _document.SaveState();
         var worldPos = ScreenToWorld(screenPos);
         var stroke = new Stroke { Width = _currentBrushWidth, Color = _currentColor };
@@ -161,7 +200,12 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     public void AddPoint(Vector2 screenPos)
     {
-        if (_isEraser) { EraseAt(screenPos); return; }
+        if (_isEraser)
+        {
+            EraseAt(screenPos);
+            return;
+        }
+
         if (_document.Strokes.Count == 0) return;
         var worldPos = ScreenToWorld(screenPos);
         _document.Strokes[^1].Points.Add(worldPos);
@@ -179,6 +223,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             if (IsStrokeHitByEraser(_document.Strokes[i], worldPos, radius))
                 toRemove.Add(i);
         }
+
         if (toRemove.Count == 0) return;
         if (saveState) _document.SaveState();
         else _document.IsDirty = true;
@@ -186,7 +231,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             _document.Strokes.RemoveAt(toRemove[i]);
         _dirty = true;
     }
-    
+
     public void RequestRadialMenuIcons() => _radialMenu?.RequestIcons(_textAtlas!);
 
     private static bool IsStrokeHitByEraser(Stroke stroke, Vector2 eraserPos, float eraserRadius)
@@ -201,6 +246,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             if (PointToSegmentDistanceSq(eraserPos, pts[i], pts[i + 1]) < thresholdSq)
                 return true;
         }
+
         return false;
     }
 
@@ -215,7 +261,6 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     public void EndStroke() => _dirty = true;
 
-    // ==================== SELECTION TOOL ====================
     public void ClearSelection()
     {
         SelectedStrokes.Clear();
@@ -268,6 +313,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             SetDirty();
             return;
         }
+
         if (CurrentSelectionState == SelectionState.None) return;
 
         var mouseWorld = ScreenToWorld(screenPos);
@@ -300,33 +346,25 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
             Vector2 newMin = minB;
             Vector2 newMax = maxB;
-            
+
             switch (_activeHandle)
             {
                 case 0:
                 case 3:
-                case 5:
-                    newMin.X = mouseWorld.X;
-                    break;
+                case 5: newMin.X = mouseWorld.X; break;
                 case 2:
                 case 4:
-                case 7:
-                    newMax.X = mouseWorld.X;
-                    break;
+                case 7: newMax.X = mouseWorld.X; break;
             }
-            
+
             switch (_activeHandle)
             {
                 case 0:
                 case 1:
-                case 2:
-                    newMin.Y = mouseWorld.Y;
-                    break;
+                case 2: newMin.Y = mouseWorld.Y; break;
                 case 5:
                 case 6:
-                case 7:
-                    newMax.Y = mouseWorld.Y;
-                    break;
+                case 7: newMax.Y = mouseWorld.Y; break;
             }
 
             Vector2 origSize = maxB - minB;
@@ -356,6 +394,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
                 stroke.Points[i] = Vector2.Transform(origPts[i], m);
             }
         }
+
         SetDirty();
     }
 
@@ -380,10 +419,16 @@ public sealed unsafe class StrokeRenderer : IDisposable
                     for (int i = 0; i < s.Points.Count - 1; i++)
                     {
                         float d = PointToSegmentDistanceSq(clickWorld, s.Points[i], s.Points[i + 1]);
-                        if (d < minDist) { minDist = d; closest = s; }
+                        if (d < minDist)
+                        {
+                            minDist = d;
+                            closest = s;
+                        }
                     }
                 }
-                if (closest != null && minDist < (closest.Width * 0.5f + 10f / _camera.Zoom) * (closest.Width * 0.5f + 10f / _camera.Zoom))
+
+                if (closest != null && minDist < (closest.Width * 0.5f + 10f / _camera.Zoom) *
+                    (closest.Width * 0.5f + 10f / _camera.Zoom))
                 {
                     SelectedStrokes.Clear();
                     SelectedStrokes.Add(closest);
@@ -402,6 +447,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
                 }
             }
         }
+
         CurrentSelectionState = SelectionState.None;
         SetDirty();
     }
@@ -417,6 +463,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             if (Vector2.DistanceSquared(screenPos, handles[i]) < 150f)
                 return i;
         }
+
         return -1;
     }
 
@@ -424,10 +471,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
     {
         return new Vector2[]
         {
-            new(minS.X, minS.Y), new((minS.X+maxS.X)/2, minS.Y), new(maxS.X, minS.Y),
-            new(minS.X, (minS.Y+maxS.Y)/2), new(maxS.X, (minS.Y+maxS.Y)/2),
-            new(minS.X, maxS.Y), new((minS.X+maxS.X)/2, maxS.Y), new(maxS.X, maxS.Y),
-            new((minS.X+maxS.X)/2, minS.Y - 25f)
+            new(minS.X, minS.Y), new((minS.X + maxS.X) / 2, minS.Y), new(maxS.X, minS.Y),
+            new(minS.X, (minS.Y + maxS.Y) / 2), new(maxS.X, (minS.Y + maxS.Y) / 2),
+            new(minS.X, maxS.Y), new((minS.X + maxS.X) / 2, maxS.Y), new(maxS.X, maxS.Y),
+            new((minS.X + maxS.X) / 2, minS.Y - 25f)
         };
     }
 
@@ -441,6 +488,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             min = Vector2.Min(min, b.Min);
             max = Vector2.Max(max, b.Max);
         }
+
         return (min, max);
     }
 
@@ -453,10 +501,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
             min = Vector2.Min(min, p);
             max = Vector2.Max(max, p);
         }
+
         return (min, max);
     }
 
-    // ==================== QUICKSHAPE ====================
     public void ApplyQuickShape()
     {
         if (_document.Strokes.Count == 0) return;
@@ -498,6 +546,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         {
             stroke.Points = GenerateLine(stroke.Points[0], stroke.Points[^1]);
         }
+
         _dirty = true;
         _document.IsDirty = true;
     }
@@ -535,12 +584,18 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private List<Vector2> RDP(List<Vector2> points, float epsilon)
     {
         if (points.Count < 3) return points.ToList();
-        float maxDist = 0; int index = 0;
+        float maxDist = 0;
+        int index = 0;
         for (int i = 1; i < points.Count - 1; i++)
         {
             float d = PointToSegmentDistanceSq(points[i], points[0], points[^1]);
-            if (d > maxDist) { maxDist = d; index = i; }
+            if (d > maxDist)
+            {
+                maxDist = d;
+                index = i;
+            }
         }
+
         List<Vector2> result = new();
         if (maxDist > epsilon * epsilon)
         {
@@ -554,6 +609,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             result.Add(points[0]);
             result.Add(points[^1]);
         }
+
         return result;
     }
 
@@ -561,7 +617,8 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     private List<Vector2> GenerateRectangle(Vector2 min, Vector2 max)
     {
-        return new List<Vector2> { new(min.X, min.Y), new(max.X, min.Y), new(max.X, max.Y), new(min.X, max.Y), new(min.X, min.Y) };
+        return new List<Vector2>
+            { new(min.X, min.Y), new(max.X, min.Y), new(max.X, max.Y), new(min.X, max.Y), new(min.X, min.Y) };
     }
 
     private List<Vector2> GenerateTriangle(List<Vector2> pts) => new() { pts[0], pts[1], pts[2], pts[0] };
@@ -578,11 +635,11 @@ public sealed unsafe class StrokeRenderer : IDisposable
             float a = i * MathF.PI * 2f / segments;
             pts.Add(center + new Vector2(MathF.Cos(a) * rx, MathF.Sin(a) * ry));
         }
+
         pts.Add(pts[0]);
         return pts;
     }
 
-    // ==================== GPU DATA UPLOAD ====================
     private void UpdateStrokeDataBuffers()
     {
         uint totalPoints = 0;
@@ -597,7 +654,6 @@ public sealed unsafe class StrokeRenderer : IDisposable
         int circleSegments = Settings.StrokeCircleSegments;
         uint totalVertices = totalPoints * (uint)circleSegments * 3 + totalSegments * 6;
 
-        // Resize Vertex Buffer
         ulong requiredVertexSize = totalVertices * (ulong)sizeof(Vertex);
         if (_strokeVertexBuffer.Handle == 0 || _strokeBufferAllocatedSize < requiredVertexSize)
         {
@@ -607,10 +663,12 @@ public sealed unsafe class StrokeRenderer : IDisposable
                 _context.Vk.DestroyBuffer(_context.Device, _strokeVertexBuffer, null);
                 _context.Vk.FreeMemory(_context.Device, _strokeBufferMemory, null);
             }
+
             var allocSize = Math.Max(requiredVertexSize * 2, 1UL << 20);
             CreateStrokeVertexBuffer(allocSize);
             _strokeBufferAllocatedSize = allocSize;
         }
+
         _strokeVertexCount = totalVertices;
 
         var infos = new StrokeInfo[_document.Strokes.Count];
@@ -648,7 +706,6 @@ public sealed unsafe class StrokeRenderer : IDisposable
             segmentVertexOffset += (uint)Math.Max(0, s.Points.Count - 1) * 6;
         }
 
-        // Upload StrokeInfo
         ulong infoSize = (ulong)(infos.Length * sizeof(StrokeInfo));
         if (infoSize > 0)
         {
@@ -660,6 +717,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
                     _context.Vk.DestroyBuffer(_context.Device, _strokeInfoBuffer, null);
                     _context.Vk.FreeMemory(_context.Device, _strokeInfoMemory, null);
                 }
+
                 CreateStorageBuffer(Math.Max(infoSize * 2, 256), out _strokeInfoBuffer, out _strokeInfoMemory);
                 _strokeInfoAllocatedSize = Math.Max(infoSize * 2, 256);
                 UpdateComputeDescriptorSet();
@@ -672,7 +730,6 @@ public sealed unsafe class StrokeRenderer : IDisposable
             _context.Vk.UnmapMemory(_context.Device, _strokeInfoMemory);
         }
 
-        // Upload StrokePoints
         ulong pointSize = (ulong)(points.Length * sizeof(StrokePoint));
         if (pointSize > 0)
         {
@@ -684,6 +741,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
                     _context.Vk.DestroyBuffer(_context.Device, _strokePointBuffer, null);
                     _context.Vk.FreeMemory(_context.Device, _strokePointMemory, null);
                 }
+
                 CreateStorageBuffer(Math.Max(pointSize * 2, 256), out _strokePointBuffer, out _strokePointMemory);
                 _strokePointAllocatedSize = Math.Max(pointSize * 2, 256);
                 UpdateComputeDescriptorSet();
@@ -703,27 +761,65 @@ public sealed unsafe class StrokeRenderer : IDisposable
         {
             UpdateStrokeDataBuffers();
 
-            // UI Vertices still generated on CPU (they change per frame and are simple)
-            _uiVertices.Clear();
+            _uiCommands.Clear();
             _textAtlas?.BeginFrame();
 
-            if (IsSelectMode) RenderSelectionUI(_uiVertices);
-            if (_radialMenu?.IsOpen == true) _radialMenu.RenderUI(_uiVertices);
-            if (_libraryPanel?.IsOpen == true) _libraryPanel.RenderToVertices(_uiVertices, new Vector2(_extent.Width, _extent.Height));
+            if (IsSelectMode) RenderSelectionUI(_uiCommands);
+            if (_radialMenu?.IsOpen == true) _radialMenu.RenderUI(_uiCommands);
+            if (_libraryPanel?.IsOpen == true)
+                _libraryPanel.RenderToVertices(_uiCommands, new Vector2(_extent.Width, _extent.Height));
 
-            UpdateUIVertexBuffer();
-            _textAtlas?.UploadFrameVertices();
+            // Prepare UI Commands for GPU
+            uint uiOffset = 0;
+            for (int i = 0; i < _uiCommands.Count; i++)
+            {
+                var cmd = _uiCommands[i];
+                cmd.Params.W = uiOffset;
+                _uiCommands[i] = cmd;
+
+                uint type = (uint)cmd.Params.Y;
+                if (type == 0 || type == 2) uiOffset += 6;
+                else if (type == 1) uiOffset += (uint)cmd.Params.Z * 3;
+                else if (type == 3) uiOffset += 24;
+                else if (type == 4) uiOffset += 3;
+            }
+
+            _uiVertexCount = uiOffset;
+
+            UpdateUIBuffers();
+            _textAtlas?.UpdateTextCompute();
+
             _dirty = false;
         }
     }
 
-    private void UpdateUIVertexBuffer()
+    private void UpdateUIBuffers()
     {
-        _uiVertexCount = (uint)_uiVertices.Count;
-        if (_uiVertices.Count == 0) return;
+        if (_uiCommands.Count == 0) return;
 
-        var requiredSize = (ulong)(sizeof(Vertex) * _uiVertices.Count);
-        if (_uiVertexBuffer.Handle == 0 || _uiVertexBufferAllocatedSize < requiredSize)
+        ulong cmdSize = (ulong)(_uiCommands.Count * sizeof(UICommand));
+        if (_uiCommandAllocatedSize < cmdSize)
+        {
+            if (_uiCommandBuffer.Handle != 0)
+            {
+                _context.Vk.DeviceWaitIdle(_context.Device);
+                _context.Vk.DestroyBuffer(_context.Device, _uiCommandBuffer, null);
+                _context.Vk.FreeMemory(_context.Device, _uiCommandMemory, null);
+            }
+            CreateStorageBuffer(Math.Max(cmdSize * 2, 1UL << 16), out _uiCommandBuffer, out _uiCommandMemory);
+            _uiCommandAllocatedSize = Math.Max(cmdSize * 2, 1UL << 16);
+            UpdateUIComputeDescriptorSet();
+        }
+
+        // Мапим только размер валидных команд
+        void* mappedCmd;
+        _context.Vk.MapMemory(_context.Device, _uiCommandMemory, 0, cmdSize, 0, &mappedCmd);
+        fixed (UICommand* src = _uiCommands.ToArray())
+            System.Buffer.MemoryCopy(src, mappedCmd, cmdSize, cmdSize);
+        _context.Vk.UnmapMemory(_context.Device, _uiCommandMemory);
+
+        ulong requiredVertexSize = _uiVertexCount * (ulong)sizeof(Vertex);
+        if (_uiVertexBuffer.Handle == 0 || _uiVertexBufferAllocatedSize < requiredVertexSize)
         {
             if (_uiVertexBuffer.Handle != 0)
             {
@@ -731,27 +827,25 @@ public sealed unsafe class StrokeRenderer : IDisposable
                 _context.Vk.DestroyBuffer(_context.Device, _uiVertexBuffer, null);
                 _context.Vk.FreeMemory(_context.Device, _uiVertexBufferMemory, null);
             }
-            var allocSize = Math.Max(requiredSize * 2, 1UL << 16);
-            CreateBuffer(allocSize, BufferUsageFlags.VertexBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, out _uiVertexBuffer, out _uiVertexBufferMemory);
+            var allocSize = Math.Max(requiredVertexSize * 2, 1UL << 16);
+            CreateBuffer(allocSize, BufferUsageFlags.VertexBufferBit | BufferUsageFlags.StorageBufferBit, MemoryPropertyFlags.DeviceLocalBit, out _uiVertexBuffer, out _uiVertexBufferMemory);
             _uiVertexBufferAllocatedSize = allocSize;
+            UpdateUIComputeDescriptorSet();
         }
-
-        void* mapped;
-        _context.Vk.MapMemory(_context.Device, _uiVertexBufferMemory, 0, requiredSize, 0, &mapped);
-        var span = CollectionsMarshal.AsSpan(_uiVertices);
-        fixed (Vertex* src = &MemoryMarshal.GetReference(span))
-            System.Buffer.MemoryCopy(src, mapped, requiredSize, requiredSize);
-        _context.Vk.UnmapMemory(_context.Device, _uiVertexBufferMemory);
     }
 
-    // ==================== RENDER ====================
+    public void DispatchAllComputes(CommandBuffer cmd)
+    {
+        DispatchCompute(cmd);
+        DispatchUICompute(cmd);
+        _textAtlas?.DispatchCompute(cmd);
+    }
+
     public void Render(CommandBuffer cmd)
     {
-        // 1. Dispatch Compute Shader to generate stroke vertices
-        DispatchCompute(cmd);
-
         var vp = stackalloc Viewport[1];
-        vp[0] = new Viewport { X = 0, Y = 0, Width = _extent.Width, Height = _extent.Height, MinDepth = 0, MaxDepth = 1 };
+        vp[0] = new Viewport
+            { X = 0, Y = 0, Width = _extent.Width, Height = _extent.Height, MinDepth = 0, MaxDepth = 1 };
         var sc = stackalloc Rect2D[1];
         sc[0] = new Rect2D { Offset = new Offset2D(0, 0), Extent = _extent };
         _context.Vk.CmdSetViewport(cmd, 0, 1, vp);
@@ -761,7 +855,6 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
         var offset = 0ul;
 
-        // 2. Draw Strokes (GPU generated)
         if (_strokeVertexCount > 0 && _strokeVertexBuffer.Handle != 0)
         {
             var vbArr = stackalloc Silk.NET.Vulkan.Buffer[1];
@@ -770,11 +863,11 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
             var transform = stackalloc Matrix4x4[1];
             transform[0] = ComputeCameraTransform();
-            _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4), transform);
+            _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4),
+                transform);
             _context.Vk.CmdDraw(cmd, _strokeVertexCount, 1, 0, 0);
         }
 
-        // 3. Draw UI (CPU generated)
         if (_uiVertexCount > 0 && _uiVertexBuffer.Handle != 0)
         {
             var vbArr = stackalloc Silk.NET.Vulkan.Buffer[1];
@@ -783,7 +876,8 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
             var transform = stackalloc Matrix4x4[1];
             transform[0] = Matrix4x4.CreateOrthographicOffCenter(0, _extent.Width, 0, _extent.Height, -1f, 1f);
-            _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4), transform);
+            _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4),
+                transform);
             _context.Vk.CmdDraw(cmd, _uiVertexCount, 1, 0, 0);
         }
 
@@ -795,7 +889,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         if (_strokeVertexCount == 0) return;
 
         _context.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Compute, _computePipeline);
-        
+
         var descSet = _computeDescSet;
         _context.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _computeLayout, 0, 1, &descSet, 0, null);
 
@@ -804,9 +898,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
         {
             CircleSegments = (uint)Settings.StrokeCircleSegments.Value,
             TotalStrokes = (uint)_document.Strokes.Count,
-            Mode = 0 // Points
+            Mode = 0
         };
-        _context.Vk.CmdPushConstants(cmd, _computeLayout, ShaderStageFlags.ComputeBit, 0, (uint)sizeof(ComputePushConstants), pc);
+        _context.Vk.CmdPushConstants(cmd, _computeLayout, ShaderStageFlags.ComputeBit, 0,
+            (uint)sizeof(ComputePushConstants), pc);
 
         uint groupSize = 64;
         uint totalPoints = 0;
@@ -826,13 +921,13 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
         if (totalSegments > 0)
         {
-            pc[0].Mode = 1; // Segments
-            _context.Vk.CmdPushConstants(cmd, _computeLayout, ShaderStageFlags.ComputeBit, 0, (uint)sizeof(ComputePushConstants), pc);
+            pc[0].Mode = 1;
+            _context.Vk.CmdPushConstants(cmd, _computeLayout, ShaderStageFlags.ComputeBit, 0,
+                (uint)sizeof(ComputePushConstants), pc);
             uint segGroups = (totalSegments + groupSize - 1) / groupSize;
             _context.Vk.CmdDispatch(cmd, segGroups, 1, 1);
         }
 
-        // Memory Barrier: Compute Write -> Vertex Attribute Read
         var barriers = stackalloc BufferMemoryBarrier[1];
         barriers[0] = new BufferMemoryBarrier
         {
@@ -846,14 +941,40 @@ public sealed unsafe class StrokeRenderer : IDisposable
             Size = Vk.WholeSize
         };
 
-        _context.Vk.CmdPipelineBarrier(
-            cmd,
-            PipelineStageFlags.ComputeShaderBit,
-            PipelineStageFlags.VertexInputBit,
-            0,
-            0, null,
-            1, barriers,
-            0, null);
+        _context.Vk.CmdPipelineBarrier(cmd, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.VertexInputBit, 0,
+            0, null, 1, barriers, 0, null);
+    }
+
+    private void DispatchUICompute(CommandBuffer cmd)
+    {
+        if (_uiVertexCount == 0 || _uiCommands.Count == 0) return;
+
+        _context.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Compute, _uiComputePipeline);
+        var descSet = _uiComputeDescSet;
+        _context.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _uiComputeLayout, 0, 1, &descSet, 0, null);
+
+        uint cmdCount = (uint)_uiCommands.Count;
+        _context.Vk.CmdPushConstants(cmd, _uiComputeLayout, ShaderStageFlags.ComputeBit, 0, (uint)sizeof(uint), &cmdCount);
+
+        uint groupSize = 64;
+        uint groups = (cmdCount + groupSize - 1) / groupSize;
+        _context.Vk.CmdDispatch(cmd, groups, 1, 1);
+
+        var barriers = stackalloc BufferMemoryBarrier[1];
+        barriers[0] = new BufferMemoryBarrier
+        {
+            SType = StructureType.BufferMemoryBarrier,
+            SrcAccessMask = AccessFlags.ShaderWriteBit,
+            DstAccessMask = AccessFlags.VertexAttributeReadBit,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Buffer = _uiVertexBuffer,
+            Offset = 0,
+            Size = Vk.WholeSize
+        };
+
+        _context.Vk.CmdPipelineBarrier(cmd, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.VertexInputBit, 0,
+            0, null, 1, barriers, 0, null);
     }
 
     private Matrix4x4 ComputeCameraTransform()
@@ -865,46 +986,104 @@ public sealed unsafe class StrokeRenderer : IDisposable
         return view * proj;
     }
 
-    // ==================== Vulkan Pipelines ====================
     private void CreateGraphicsPipeline()
     {
         var vertShader = LoadShader("Shaders/stroke.vert.spv");
         var fragShader = LoadShader("Shaders/stroke.frag.spv");
 
-        var vertStage = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.VertexBit, Module = vertShader, PName = (byte*)SilkMarshal.StringToPtr("main") };
-        var fragStage = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.FragmentBit, Module = fragShader, PName = (byte*)SilkMarshal.StringToPtr("main") };
+        var vertStage = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.VertexBit,
+            Module = vertShader, PName = (byte*)SilkMarshal.StringToPtr("main")
+        };
+        var fragStage = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.FragmentBit,
+            Module = fragShader, PName = (byte*)SilkMarshal.StringToPtr("main")
+        };
 
         var shaderStages = stackalloc PipelineShaderStageCreateInfo[2] { vertStage, fragStage };
 
-        var binding = new VertexInputBindingDescription { Binding = 0, Stride = (uint)sizeof(Vertex), InputRate = VertexInputRate.Vertex };
+        var binding = new VertexInputBindingDescription
+            { Binding = 0, Stride = (uint)sizeof(Vertex), InputRate = VertexInputRate.Vertex };
         var attributes = stackalloc VertexInputAttributeDescription[2];
-        attributes[0] = new VertexInputAttributeDescription { Location = 0, Binding = 0, Format = Format.R32G32Sfloat, Offset = (uint)Marshal.OffsetOf<Vertex>("Position") };
-        attributes[1] = new VertexInputAttributeDescription { Location = 1, Binding = 0, Format = Format.R32G32B32A32Sfloat, Offset = (uint)Marshal.OffsetOf<Vertex>("Color") };
+        attributes[0] = new VertexInputAttributeDescription
+        {
+            Location = 0, Binding = 0, Format = Format.R32G32Sfloat, Offset = (uint)Marshal.OffsetOf<Vertex>("Position")
+        };
+        attributes[1] = new VertexInputAttributeDescription
+        {
+            Location = 1, Binding = 0, Format = Format.R32G32B32A32Sfloat,
+            Offset = (uint)Marshal.OffsetOf<Vertex>("Color")
+        };
 
-        var vertexInput = new PipelineVertexInputStateCreateInfo { SType = StructureType.PipelineVertexInputStateCreateInfo, VertexBindingDescriptionCount = 1, PVertexBindingDescriptions = &binding, VertexAttributeDescriptionCount = 2, PVertexAttributeDescriptions = attributes };
-        var inputAssembly = new PipelineInputAssemblyStateCreateInfo { SType = StructureType.PipelineInputAssemblyStateCreateInfo, Topology = PrimitiveTopology.TriangleList };
+        var vertexInput = new PipelineVertexInputStateCreateInfo
+        {
+            SType = StructureType.PipelineVertexInputStateCreateInfo, VertexBindingDescriptionCount = 1,
+            PVertexBindingDescriptions = &binding, VertexAttributeDescriptionCount = 2,
+            PVertexAttributeDescriptions = attributes
+        };
+        var inputAssembly = new PipelineInputAssemblyStateCreateInfo
+            { SType = StructureType.PipelineInputAssemblyStateCreateInfo, Topology = PrimitiveTopology.TriangleList };
 
         var dynamicStates = stackalloc DynamicState[2] { DynamicState.Viewport, DynamicState.Scissor };
-        var dynamicStateInfo = new PipelineDynamicStateCreateInfo { SType = StructureType.PipelineDynamicStateCreateInfo, DynamicStateCount = 2, PDynamicStates = dynamicStates };
+        var dynamicStateInfo = new PipelineDynamicStateCreateInfo
+        {
+            SType = StructureType.PipelineDynamicStateCreateInfo, DynamicStateCount = 2, PDynamicStates = dynamicStates
+        };
 
         var vp = stackalloc Viewport[1];
         vp[0] = new Viewport { Width = 1, Height = 1, MinDepth = 0, MaxDepth = 1 };
         var sc = stackalloc Rect2D[1];
         sc[0] = new Rect2D { Extent = new Extent2D { Width = 1, Height = 1 } };
-        var viewportState = new PipelineViewportStateCreateInfo { SType = StructureType.PipelineViewportStateCreateInfo, ViewportCount = 1, PViewports = vp, ScissorCount = 1, PScissors = sc };
+        var viewportState = new PipelineViewportStateCreateInfo
+        {
+            SType = StructureType.PipelineViewportStateCreateInfo, ViewportCount = 1, PViewports = vp, ScissorCount = 1,
+            PScissors = sc
+        };
 
-        var rasterizer = new PipelineRasterizationStateCreateInfo { SType = StructureType.PipelineRasterizationStateCreateInfo, PolygonMode = PolygonMode.Fill, CullMode = CullModeFlags.None, LineWidth = 1.0f };
-        var multisampling = new PipelineMultisampleStateCreateInfo { SType = StructureType.PipelineMultisampleStateCreateInfo, RasterizationSamples = _context.GetSampleCount() };
+        var rasterizer = new PipelineRasterizationStateCreateInfo
+        {
+            SType = StructureType.PipelineRasterizationStateCreateInfo, PolygonMode = PolygonMode.Fill,
+            CullMode = CullModeFlags.None, LineWidth = 1.0f
+        };
+        var multisampling = new PipelineMultisampleStateCreateInfo
+        {
+            SType = StructureType.PipelineMultisampleStateCreateInfo, RasterizationSamples = _context.GetSampleCount()
+        };
 
-        var colorBlendAttachment = new PipelineColorBlendAttachmentState { BlendEnable = true, SrcColorBlendFactor = BlendFactor.SrcAlpha, DstColorBlendFactor = BlendFactor.OneMinusSrcAlpha, ColorBlendOp = BlendOp.Add, SrcAlphaBlendFactor = BlendFactor.One, DstAlphaBlendFactor = BlendFactor.Zero, AlphaBlendOp = BlendOp.Add, ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit | ColorComponentFlags.ABit };
-        var colorBlending = new PipelineColorBlendStateCreateInfo { SType = StructureType.PipelineColorBlendStateCreateInfo, AttachmentCount = 1, PAttachments = &colorBlendAttachment };
+        var colorBlendAttachment = new PipelineColorBlendAttachmentState
+        {
+            BlendEnable = true, SrcColorBlendFactor = BlendFactor.SrcAlpha,
+            DstColorBlendFactor = BlendFactor.OneMinusSrcAlpha, ColorBlendOp = BlendOp.Add,
+            SrcAlphaBlendFactor = BlendFactor.One, DstAlphaBlendFactor = BlendFactor.Zero, AlphaBlendOp = BlendOp.Add,
+            ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit |
+                             ColorComponentFlags.ABit
+        };
+        var colorBlending = new PipelineColorBlendStateCreateInfo
+        {
+            SType = StructureType.PipelineColorBlendStateCreateInfo, AttachmentCount = 1,
+            PAttachments = &colorBlendAttachment
+        };
 
-        var pushConstant = new PushConstantRange { StageFlags = ShaderStageFlags.VertexBit, Size = (uint)sizeof(Matrix4x4) };
-        var pipelineLayoutInfo = new PipelineLayoutCreateInfo { SType = StructureType.PipelineLayoutCreateInfo, PushConstantRangeCount = 1, PPushConstantRanges = &pushConstant };
+        var pushConstant = new PushConstantRange
+            { StageFlags = ShaderStageFlags.VertexBit, Size = (uint)sizeof(Matrix4x4) };
+        var pipelineLayoutInfo = new PipelineLayoutCreateInfo
+        {
+            SType = StructureType.PipelineLayoutCreateInfo, PushConstantRangeCount = 1,
+            PPushConstantRanges = &pushConstant
+        };
 
         _context.Vk.CreatePipelineLayout(_context.Device, &pipelineLayoutInfo, null, out _pipelineLayout);
 
-        var pipelineInfo = new GraphicsPipelineCreateInfo { SType = StructureType.GraphicsPipelineCreateInfo, StageCount = 2, PStages = shaderStages, PVertexInputState = &vertexInput, PInputAssemblyState = &inputAssembly, PViewportState = &viewportState, PRasterizationState = &rasterizer, PMultisampleState = &multisampling, PColorBlendState = &colorBlending, PDynamicState = &dynamicStateInfo, Layout = _pipelineLayout, RenderPass = _renderPass.RenderPass, Subpass = 0 };
+        var pipelineInfo = new GraphicsPipelineCreateInfo
+        {
+            SType = StructureType.GraphicsPipelineCreateInfo, StageCount = 2, PStages = shaderStages,
+            PVertexInputState = &vertexInput, PInputAssemblyState = &inputAssembly, PViewportState = &viewportState,
+            PRasterizationState = &rasterizer, PMultisampleState = &multisampling, PColorBlendState = &colorBlending,
+            PDynamicState = &dynamicStateInfo, Layout = _pipelineLayout, RenderPass = _renderPass.RenderPass,
+            Subpass = 0
+        };
 
         _context.Vk.CreateGraphicsPipelines(_context.Device, default, 1, &pipelineInfo, null, out _pipeline);
 
@@ -916,34 +1095,44 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     private void CreateComputeResources()
     {
-        // 1. Descriptor Set Layout
         var bindings = stackalloc DescriptorSetLayoutBinding[3];
-        bindings[0] = new DescriptorSetLayoutBinding { Binding = 0, DescriptorType = DescriptorType.StorageBuffer, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit };
-        bindings[1] = new DescriptorSetLayoutBinding { Binding = 1, DescriptorType = DescriptorType.StorageBuffer, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit };
-        bindings[2] = new DescriptorSetLayoutBinding { Binding = 2, DescriptorType = DescriptorType.StorageBuffer, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit };
+        bindings[0] = new DescriptorSetLayoutBinding
+        {
+            Binding = 0, DescriptorType = DescriptorType.StorageBuffer, DescriptorCount = 1,
+            StageFlags = ShaderStageFlags.ComputeBit
+        };
+        bindings[1] = new DescriptorSetLayoutBinding
+        {
+            Binding = 1, DescriptorType = DescriptorType.StorageBuffer, DescriptorCount = 1,
+            StageFlags = ShaderStageFlags.ComputeBit
+        };
+        bindings[2] = new DescriptorSetLayoutBinding
+        {
+            Binding = 2, DescriptorType = DescriptorType.StorageBuffer, DescriptorCount = 1,
+            StageFlags = ShaderStageFlags.ComputeBit
+        };
 
-        var layoutInfo = new DescriptorSetLayoutCreateInfo { SType = StructureType.DescriptorSetLayoutCreateInfo, BindingCount = 3, PBindings = bindings };
+        var layoutInfo = new DescriptorSetLayoutCreateInfo
+            { SType = StructureType.DescriptorSetLayoutCreateInfo, BindingCount = 3, PBindings = bindings };
         _context.Vk.CreateDescriptorSetLayout(_context.Device, &layoutInfo, null, out _computeDescSetLayout);
 
-        // 2. Descriptor Pool
         var poolSize = new DescriptorPoolSize { Type = DescriptorType.StorageBuffer, DescriptorCount = 3 };
-        var poolInfo = new DescriptorPoolCreateInfo { SType = StructureType.DescriptorPoolCreateInfo, PoolSizeCount = 1, PPoolSizes = &poolSize, MaxSets = 1 };
+        var poolInfo = new DescriptorPoolCreateInfo
+            { SType = StructureType.DescriptorPoolCreateInfo, PoolSizeCount = 1, PPoolSizes = &poolSize, MaxSets = 1 };
         _context.Vk.CreateDescriptorPool(_context.Device, &poolInfo, null, out _computeDescPool);
 
-        // 3. Descriptor Set
         fixed (DescriptorSetLayout* pSetLayout = &_computeDescSetLayout)
-{
-    var allocInfo = new DescriptorSetAllocateInfo
-    {
-        SType = StructureType.DescriptorSetAllocateInfo,
-        DescriptorPool = _computeDescPool,
-        DescriptorSetCount = 1,
-        PSetLayouts = pSetLayout
-    };
-    _context.Vk.AllocateDescriptorSets(_context.Device, &allocInfo, out _computeDescSet);
-}
+        {
+            var allocInfo = new DescriptorSetAllocateInfo
+            {
+                SType = StructureType.DescriptorSetAllocateInfo,
+                DescriptorPool = _computeDescPool,
+                DescriptorSetCount = 1,
+                PSetLayouts = pSetLayout
+            };
+            _context.Vk.AllocateDescriptorSets(_context.Device, &allocInfo, out _computeDescSet);
+        }
 
-        // 4. Compute Pipeline
         var computeShader = LoadShader("Shaders/stroke.comp.spv");
         var stage = new PipelineShaderStageCreateInfo
         {
@@ -953,7 +1142,8 @@ public sealed unsafe class StrokeRenderer : IDisposable
             PName = (byte*)SilkMarshal.StringToPtr("main")
         };
 
-        var pushConstant = new PushConstantRange { StageFlags = ShaderStageFlags.ComputeBit, Size = (uint)sizeof(ComputePushConstants) };
+        var pushConstant = new PushConstantRange
+            { StageFlags = ShaderStageFlags.ComputeBit, Size = (uint)sizeof(ComputePushConstants) };
         fixed (DescriptorSetLayout* pSetLayout = &_computeDescSetLayout)
         {
             var pipelineLayoutInfo = new PipelineLayoutCreateInfo
@@ -974,6 +1164,76 @@ public sealed unsafe class StrokeRenderer : IDisposable
             Layout = _computeLayout
         };
         _context.Vk.CreateComputePipelines(_context.Device, default, 1, &pipelineInfo, null, out _computePipeline);
+
+        SilkMarshal.Free((nint)stage.PName);
+        _context.Vk.DestroyShaderModule(_context.Device, computeShader, null);
+    }
+
+        private void CreateUIComputeResources()
+    {
+        var bindings = stackalloc DescriptorSetLayoutBinding[2];
+        bindings[0] = new DescriptorSetLayoutBinding
+        {
+            Binding = 0, DescriptorType = DescriptorType.StorageBuffer, DescriptorCount = 1,
+            StageFlags = ShaderStageFlags.ComputeBit
+        };
+        bindings[1] = new DescriptorSetLayoutBinding
+        {
+            Binding = 1, DescriptorType = DescriptorType.StorageBuffer, DescriptorCount = 1,
+            StageFlags = ShaderStageFlags.ComputeBit
+        };
+
+        var layoutInfo = new DescriptorSetLayoutCreateInfo
+            { SType = StructureType.DescriptorSetLayoutCreateInfo, BindingCount = 2, PBindings = bindings };
+        _context.Vk.CreateDescriptorSetLayout(_context.Device, &layoutInfo, null, out _uiComputeDescSetLayout);
+
+        var poolSize = new DescriptorPoolSize { Type = DescriptorType.StorageBuffer, DescriptorCount = 2 };
+        var poolInfo = new DescriptorPoolCreateInfo
+            { SType = StructureType.DescriptorPoolCreateInfo, PoolSizeCount = 1, PPoolSizes = &poolSize, MaxSets = 1 };
+        _context.Vk.CreateDescriptorPool(_context.Device, &poolInfo, null, out _uiComputeDescPool);
+
+        fixed (DescriptorSetLayout* pSetLayout = &_uiComputeDescSetLayout)
+        {
+            var allocInfo = new DescriptorSetAllocateInfo
+            {
+                SType = StructureType.DescriptorSetAllocateInfo,
+                DescriptorPool = _uiComputeDescPool,
+                DescriptorSetCount = 1,
+                PSetLayouts = pSetLayout
+            };
+            _context.Vk.AllocateDescriptorSets(_context.Device, &allocInfo, out _uiComputeDescSet);
+        }
+
+        var computeShader = LoadShader("Shaders/ui.comp.spv");
+        var stage = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.ComputeBit,
+            Module = computeShader,
+            PName = (byte*)SilkMarshal.StringToPtr("main")
+        };
+
+        var pushConstant = new PushConstantRange { StageFlags = ShaderStageFlags.ComputeBit, Size = (uint)sizeof(uint) };
+        fixed (DescriptorSetLayout* pSetLayout = &_uiComputeDescSetLayout)
+        {
+            var pipelineLayoutInfo = new PipelineLayoutCreateInfo
+            {
+                SType = StructureType.PipelineLayoutCreateInfo,
+                SetLayoutCount = 1,
+                PSetLayouts = pSetLayout,
+                PushConstantRangeCount = 1,
+                PPushConstantRanges = &pushConstant
+            };
+            _context.Vk.CreatePipelineLayout(_context.Device, &pipelineLayoutInfo, null, out _uiComputeLayout);
+        }
+
+        var pipelineInfo = new ComputePipelineCreateInfo
+        {
+            SType = StructureType.ComputePipelineCreateInfo,
+            Stage = stage,
+            Layout = _uiComputeLayout
+        };
+        _context.Vk.CreateComputePipelines(_context.Device, default, 1, &pipelineInfo, null, out _uiComputePipeline);
 
         SilkMarshal.Free((nint)stage.PName);
         _context.Vk.DestroyShaderModule(_context.Device, computeShader, null);
@@ -1000,7 +1260,34 @@ public sealed unsafe class StrokeRenderer : IDisposable
                 PBufferInfo = bufferInfos + i
             };
         }
+
         _context.Vk.UpdateDescriptorSets(_context.Device, 3, writes, 0, null);
+    }
+
+    private void UpdateUIComputeDescriptorSet()
+    {
+        if (_uiCommandBuffer.Handle == 0 || _uiVertexBuffer.Handle == 0) return;
+
+        var bufferInfos = stackalloc DescriptorBufferInfo[2];
+        bufferInfos[0] = new DescriptorBufferInfo { Buffer = _uiCommandBuffer, Offset = 0, Range = Vk.WholeSize };
+        bufferInfos[1] = new DescriptorBufferInfo { Buffer = _uiVertexBuffer, Offset = 0, Range = Vk.WholeSize };
+
+        var writes = stackalloc WriteDescriptorSet[2];
+        for (int i = 0; i < 2; i++)
+        {
+            writes[i] = new WriteDescriptorSet
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _uiComputeDescSet,
+                DstBinding = (uint)i,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                PBufferInfo = bufferInfos + i
+            };
+        }
+
+        _context.Vk.UpdateDescriptorSets(_context.Device, 2, writes, 0, null);
     }
 
     private ShaderModule LoadShader(string path)
@@ -1008,7 +1295,8 @@ public sealed unsafe class StrokeRenderer : IDisposable
         var code = File.ReadAllBytes(path);
         fixed (byte* pCode = code)
         {
-            var createInfo = new ShaderModuleCreateInfo { SType = StructureType.ShaderModuleCreateInfo, CodeSize = (nuint)code.Length, PCode = (uint*)pCode };
+            var createInfo = new ShaderModuleCreateInfo
+                { SType = StructureType.ShaderModuleCreateInfo, CodeSize = (nuint)code.Length, PCode = (uint*)pCode };
             _context.Vk.CreateShaderModule(_context.Device, &createInfo, null, out var module);
             return module;
         }
@@ -1016,13 +1304,22 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     private void CreateStrokeVertexBuffer(ulong size)
     {
-        var bufferInfo = new BufferCreateInfo { SType = StructureType.BufferCreateInfo, Size = size, Usage = BufferUsageFlags.VertexBufferBit | BufferUsageFlags.StorageBufferBit, SharingMode = SharingMode.Exclusive };
+        var bufferInfo = new BufferCreateInfo
+        {
+            SType = StructureType.BufferCreateInfo, Size = size,
+            Usage = BufferUsageFlags.VertexBufferBit | BufferUsageFlags.StorageBufferBit,
+            SharingMode = SharingMode.Exclusive
+        };
         _context.Vk.CreateBuffer(_context.Device, &bufferInfo, null, out _strokeVertexBuffer);
 
         MemoryRequirements memReq;
         _context.Vk.GetBufferMemoryRequirements(_context.Device, _strokeVertexBuffer, &memReq);
 
-        var allocInfo = new MemoryAllocateInfo { SType = StructureType.MemoryAllocateInfo, AllocationSize = memReq.Size, MemoryTypeIndex = FindMemoryType(memReq.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit) };
+        var allocInfo = new MemoryAllocateInfo
+        {
+            SType = StructureType.MemoryAllocateInfo, AllocationSize = memReq.Size,
+            MemoryTypeIndex = FindMemoryType(memReq.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit)
+        };
         _context.Vk.AllocateMemory(_context.Device, &allocInfo, null, out _strokeBufferMemory);
         _context.Vk.BindBufferMemory(_context.Device, _strokeVertexBuffer, _strokeBufferMemory, 0);
 
@@ -1031,26 +1328,42 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     private void CreateStorageBuffer(ulong size, out Silk.NET.Vulkan.Buffer buffer, out DeviceMemory memory)
     {
-        var bufferInfo = new BufferCreateInfo { SType = StructureType.BufferCreateInfo, Size = size, Usage = BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit, SharingMode = SharingMode.Exclusive };
+        var bufferInfo = new BufferCreateInfo
+        {
+            SType = StructureType.BufferCreateInfo, Size = size,
+            Usage = BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
+            SharingMode = SharingMode.Exclusive
+        };
         _context.Vk.CreateBuffer(_context.Device, &bufferInfo, null, out buffer);
 
         MemoryRequirements memReq;
         _context.Vk.GetBufferMemoryRequirements(_context.Device, buffer, &memReq);
 
-        var allocInfo = new MemoryAllocateInfo { SType = StructureType.MemoryAllocateInfo, AllocationSize = memReq.Size, MemoryTypeIndex = FindMemoryType(memReq.MemoryTypeBits, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit) };
+        var allocInfo = new MemoryAllocateInfo
+        {
+            SType = StructureType.MemoryAllocateInfo, AllocationSize = memReq.Size,
+            MemoryTypeIndex = FindMemoryType(memReq.MemoryTypeBits,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit)
+        };
         _context.Vk.AllocateMemory(_context.Device, &allocInfo, null, out memory);
         _context.Vk.BindBufferMemory(_context.Device, buffer, memory, 0);
     }
 
-    private void CreateBuffer(ulong size, BufferUsageFlags usage, MemoryPropertyFlags properties, out Silk.NET.Vulkan.Buffer buffer, out DeviceMemory memory)
+    private void CreateBuffer(ulong size, BufferUsageFlags usage, MemoryPropertyFlags properties,
+        out Silk.NET.Vulkan.Buffer buffer, out DeviceMemory memory)
     {
-        var bufferInfo = new BufferCreateInfo { SType = StructureType.BufferCreateInfo, Size = size, Usage = usage, SharingMode = SharingMode.Exclusive };
+        var bufferInfo = new BufferCreateInfo
+            { SType = StructureType.BufferCreateInfo, Size = size, Usage = usage, SharingMode = SharingMode.Exclusive };
         _context.Vk.CreateBuffer(_context.Device, &bufferInfo, null, out buffer);
 
         MemoryRequirements memReq;
         _context.Vk.GetBufferMemoryRequirements(_context.Device, buffer, &memReq);
 
-        var allocInfo = new MemoryAllocateInfo { SType = StructureType.MemoryAllocateInfo, AllocationSize = memReq.Size, MemoryTypeIndex = FindMemoryType(memReq.MemoryTypeBits, properties) };
+        var allocInfo = new MemoryAllocateInfo
+        {
+            SType = StructureType.MemoryAllocateInfo, AllocationSize = memReq.Size,
+            MemoryTypeIndex = FindMemoryType(memReq.MemoryTypeBits, properties)
+        };
         _context.Vk.AllocateMemory(_context.Device, &allocInfo, null, out memory);
         _context.Vk.BindBufferMemory(_context.Device, buffer, memory, 0);
     }
@@ -1065,6 +1378,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
             if ((typeFilter & (1u << i)) != 0 && (memProps.MemoryTypes[i].PropertyFlags & properties) == properties)
                 return (uint)i;
         }
+
         throw new Exception("Failed to find suitable memory type");
     }
 
@@ -1080,18 +1394,25 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _dirty = true;
     }
 
-    public void Undo() { _document.Undo(); _dirty = true; }
-    public void Redo() { _document.Redo(); _dirty = true; }
+    public void Undo()
+    {
+        _document.Undo();
+        _dirty = true;
+    }
 
-    // ==================== UI DRAWING HELPERS ====================
-    // (Оставлены без изменений для UI)
-    private void RenderSelectionUI(List<Vertex> vertices)
+    public void Redo()
+    {
+        _document.Redo();
+        _dirty = true;
+    }
+
+    private void RenderSelectionUI(List<UICommand> cmds)
     {
         if (CurrentSelectionState == SelectionState.DrawingBox)
         {
             var minS1 = Vector2.Min(_selectionStartScreen, _selectionEndScreen);
             var maxS1 = Vector2.Max(_selectionStartScreen, _selectionEndScreen);
-            DrawRectOutline(vertices, minS1, maxS1 - minS1, new Vector4(0.4f, 0.78f, 1.0f, 0.8f), 1.5f);
+            DrawRectOutline(cmds, minS1, maxS1 - minS1, new Vector4(0.4f, 0.78f, 1.0f, 0.8f), 1.5f);
         }
 
         if (SelectedStrokes.Count == 0) return;
@@ -1100,78 +1421,97 @@ public sealed unsafe class StrokeRenderer : IDisposable
         var minS = WorldToScreen(bbox.Min);
         var maxS = WorldToScreen(bbox.Max);
 
-        DrawRectOutline(vertices, minS, maxS - minS, new Vector4(0.4f, 0.78f, 1.0f, 0.9f), 1.5f);
+        DrawRectOutline(cmds, minS, maxS - minS, new Vector4(0.4f, 0.78f, 1.0f, 0.9f), 1.5f);
 
         Vector2[] handles = GetHandlePositions(minS, maxS);
         float handleSize = 8f;
         for (int i = 0; i < 8; i++)
         {
-            DrawRect(vertices, handles[i] - new Vector2(handleSize / 2, handleSize / 2), new Vector2(handleSize, handleSize), new Vector4(0.9f, 0.9f, 0.9f, 0.9f));
+            DrawRect(cmds, handles[i] - new Vector2(handleSize / 2, handleSize / 2),
+                new Vector2(handleSize, handleSize), new Vector4(0.9f, 0.9f, 0.9f, 0.9f));
         }
-        DrawCircle(vertices, handles[8], handleSize, new Vector4(0.9f, 0.9f, 0.9f, 0.9f), 16);
-        DrawLine(vertices, handles[1], handles[8], new Vector4(0.4f, 0.78f, 1.0f, 0.9f), 1.5f);
+
+        DrawCircle(cmds, handles[8], handleSize, new Vector4(0.9f, 0.9f, 0.9f, 0.9f), 16);
+        DrawLine(cmds, handles[1], handles[8], new Vector4(0.4f, 0.78f, 1.0f, 0.9f), 1.5f);
     }
 
-    private static void DrawRect(List<Vertex> v, Vector2 pos, Vector2 size, Vector4 color)
+    // UI DRAWING HELPERS (Now generating UICommands)
+    protected static void DrawRect(List<UICommand> cmds, Vector2 pos, Vector2 size, Vector4 color)
     {
-        var p1 = pos; var p2 = pos + new Vector2(size.X, 0);
-        var p3 = pos + size; var p4 = pos + new Vector2(0, size.Y);
-
-        v.Add(new Vertex { Position = p1, Color = color });
-        v.Add(new Vertex { Position = p2, Color = color });
-        v.Add(new Vertex { Position = p3, Color = color });
-        v.Add(new Vertex { Position = p1, Color = color });
-        v.Add(new Vertex { Position = p3, Color = color });
-        v.Add(new Vertex { Position = p4, Color = color });
+        cmds.Add(new UICommand
+            { P1P2 = new Vector4(pos.X, pos.Y, size.X, size.Y), Color = color, Params = new Vector4(0, 0, 0, 0) });
     }
 
-    private static void DrawRectOutline(List<Vertex> v, Vector2 pos, Vector2 size, Vector4 color, float thickness)
+    protected static void DrawRectOutline(List<UICommand> cmds, Vector2 pos, Vector2 size, Vector4 color,
+        float thickness)
     {
-        DrawRect(v, pos, new Vector2(size.X, thickness), color);
-        DrawRect(v, new Vector2(pos.X, pos.Y + size.Y - thickness), new Vector2(size.X, thickness), color);
-        DrawRect(v, pos, new Vector2(thickness, size.Y), color);
-        DrawRect(v, new Vector2(pos.X + size.X - thickness, pos.Y), new Vector2(thickness, size.Y), color);
-    }
-
-    private static void DrawCircle(List<Vertex> v, Vector2 center, float r, Vector4 color, int segments)
-    {
-        float step = MathF.PI * 2f / segments;
-        for (int i = 0; i < segments; i++)
+        cmds.Add(new UICommand
         {
-            float a1 = i * step; float a2 = (i + 1) * step;
-            v.Add(new Vertex { Position = center, Color = color });
-            v.Add(new Vertex { Position = center + new Vector2(MathF.Cos(a1), MathF.Sin(a1)) * r, Color = color });
-            v.Add(new Vertex { Position = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * r, Color = color });
-        }
+            P1P2 = new Vector4(pos.X, pos.Y, size.X, size.Y), Color = color, Params = new Vector4(thickness, 3, 0, 0)
+        });
     }
 
-    private static void DrawLine(List<Vertex> v, Vector2 p1, Vector2 p2, Vector4 color, float thickness)
+    protected static void DrawCircle(List<UICommand> cmds, Vector2 center, float r, Vector4 color, int segments)
     {
-        var dir = Vector2.Normalize(p2 - p1);
-        var perp = new Vector2(-dir.Y, dir.X) * (thickness * 0.5f);
-        v.Add(new Vertex { Position = p1 + perp, Color = color });
-        v.Add(new Vertex { Position = p1 - perp, Color = color });
-        v.Add(new Vertex { Position = p2 + perp, Color = color });
-        v.Add(new Vertex { Position = p2 + perp, Color = color });
-        v.Add(new Vertex { Position = p1 - perp, Color = color });
-        v.Add(new Vertex { Position = p2 - perp, Color = color });
+        cmds.Add(new UICommand
+            { P1P2 = new Vector4(center.X, center.Y, r, 0), Color = color, Params = new Vector4(0, 1, segments, 0) });
+    }
+
+    protected static void DrawLine(List<UICommand> cmds, Vector2 p1, Vector2 p2, Vector4 color, float thickness)
+    {
+        cmds.Add(new UICommand
+            { P1P2 = new Vector4(p1.X, p1.Y, p2.X, p2.Y), Color = color, Params = new Vector4(thickness, 2, 0, 0) });
     }
 
     public void Dispose()
     {
         _context.Vk.DeviceWaitIdle(_context.Device);
 
-        if (_strokeVertexBuffer.Handle != 0) { _context.Vk.DestroyBuffer(_context.Device, _strokeVertexBuffer, null); _context.Vk.FreeMemory(_context.Device, _strokeBufferMemory, null); }
-        if (_strokeInfoBuffer.Handle != 0) { _context.Vk.DestroyBuffer(_context.Device, _strokeInfoBuffer, null); _context.Vk.FreeMemory(_context.Device, _strokeInfoMemory, null); }
-        if (_strokePointBuffer.Handle != 0) { _context.Vk.DestroyBuffer(_context.Device, _strokePointBuffer, null); _context.Vk.FreeMemory(_context.Device, _strokePointMemory, null); }
-        if (_uiVertexBuffer.Handle != 0) { _context.Vk.DestroyBuffer(_context.Device, _uiVertexBuffer, null); _context.Vk.FreeMemory(_context.Device, _uiVertexBufferMemory, null); }
+        if (_strokeVertexBuffer.Handle != 0)
+        {
+            _context.Vk.DestroyBuffer(_context.Device, _strokeVertexBuffer, null);
+            _context.Vk.FreeMemory(_context.Device, _strokeBufferMemory, null);
+        }
+
+        if (_strokeInfoBuffer.Handle != 0)
+        {
+            _context.Vk.DestroyBuffer(_context.Device, _strokeInfoBuffer, null);
+            _context.Vk.FreeMemory(_context.Device, _strokeInfoMemory, null);
+        }
+
+        if (_strokePointBuffer.Handle != 0)
+        {
+            _context.Vk.DestroyBuffer(_context.Device, _strokePointBuffer, null);
+            _context.Vk.FreeMemory(_context.Device, _strokePointMemory, null);
+        }
+
+        if (_uiVertexBuffer.Handle != 0)
+        {
+            _context.Vk.DestroyBuffer(_context.Device, _uiVertexBuffer, null);
+            _context.Vk.FreeMemory(_context.Device, _uiVertexBufferMemory, null);
+        }
+
+        if (_uiCommandBuffer.Handle != 0)
+        {
+            _context.Vk.DestroyBuffer(_context.Device, _uiCommandBuffer, null);
+            _context.Vk.FreeMemory(_context.Device, _uiCommandMemory, null);
+        }
 
         if (_pipeline.Handle != 0) _context.Vk.DestroyPipeline(_context.Device, _pipeline, null);
         if (_pipelineLayout.Handle != 0) _context.Vk.DestroyPipelineLayout(_context.Device, _pipelineLayout, null);
+
         if (_computePipeline.Handle != 0) _context.Vk.DestroyPipeline(_context.Device, _computePipeline, null);
         if (_computeLayout.Handle != 0) _context.Vk.DestroyPipelineLayout(_context.Device, _computeLayout, null);
         if (_computeDescPool.Handle != 0) _context.Vk.DestroyDescriptorPool(_context.Device, _computeDescPool, null);
-        if (_computeDescSetLayout.Handle != 0) _context.Vk.DestroyDescriptorSetLayout(_context.Device, _computeDescSetLayout, null);
+        if (_computeDescSetLayout.Handle != 0)
+            _context.Vk.DestroyDescriptorSetLayout(_context.Device, _computeDescSetLayout, null);
+
+        if (_uiComputePipeline.Handle != 0) _context.Vk.DestroyPipeline(_context.Device, _uiComputePipeline, null);
+        if (_uiComputeLayout.Handle != 0) _context.Vk.DestroyPipelineLayout(_context.Device, _uiComputeLayout, null);
+        if (_uiComputeDescPool.Handle != 0)
+            _context.Vk.DestroyDescriptorPool(_context.Device, _uiComputeDescPool, null);
+        if (_uiComputeDescSetLayout.Handle != 0)
+            _context.Vk.DestroyDescriptorSetLayout(_context.Device, _uiComputeDescSetLayout, null);
 
         _textAtlas?.Dispose();
     }

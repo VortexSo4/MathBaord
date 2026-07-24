@@ -506,26 +506,26 @@ public class SettingsPanel : IDisposable
             atlas.Request(TextBox.ToString());
     }
 
-    public void RenderToVertices(List<Vertex> vertices, Vector2 screenSize)
+    public void RenderToVertices(List<UICommand> cmds, Vector2 screenSize)
     {
         if (!IsOpen) return;
 
         _screenSize = screenSize;
         var atlas = _renderer.TextAtlas;
 
-        DrawRect(vertices, Vector2.Zero, screenSize, new Vector4(0, 0, 0, 0.55f));
+        DrawRect(cmds, Vector2.Zero, screenSize, new Vector4(0, 0, 0, 0.55f));
 
         float px = (screenSize.X - PanelWidth) * 0.5f;
         float py = (screenSize.Y - PanelHeight) * 0.5f;
 
-        DrawRect(vertices, new Vector2(px, py), new Vector2(PanelWidth, PanelHeight), PanelBgColor);
-        DrawRectOutline(vertices, new Vector2(px, py), new Vector2(PanelWidth, PanelHeight), OutlineColor, 2f);
+        DrawRect(cmds, new Vector2(px, py), new Vector2(PanelWidth, PanelHeight), PanelBgColor);
+        DrawRectOutline(cmds, new Vector2(px, py), new Vector2(PanelWidth, PanelHeight), OutlineColor, 2f);
 
         float contentTop = py + TitleBarHeight;
         float contentBottom = py + PanelHeight - BottomBarHeight;
         float contentHeight = contentBottom - contentTop;
 
-        DrawRect(vertices, new Vector2(px, contentTop), new Vector2(PanelWidth, contentHeight), new Vector4(0.06f, 0.06f, 0.085f, 1f));
+        DrawRect(cmds, new Vector2(px, contentTop), new Vector2(PanelWidth, contentHeight), new Vector4(0.06f, 0.06f, 0.085f, 1f));
 
         _hitRegions.Clear();
         _dropdownOptionRegions.Clear();
@@ -561,7 +561,7 @@ public class SettingsPanel : IDisposable
                           _mousePos.Y >= itemY && _mousePos.Y <= itemY + ItemHeight && !_isDraggingScrollbar;
 
             if (isHover && item.Type != SettingType.Numeric && item.Type != SettingType.IntNumeric)
-                DrawRect(vertices, new Vector2(px + 2, itemY), new Vector2(PanelWidth - 4, ItemHeight), HoverColor);
+                DrawRect(cmds, new Vector2(px + 2, itemY), new Vector2(PanelWidth - 4, ItemHeight), HoverColor);
 
             var nameSize = atlas.Measure(item.Name);
             atlas.Emit(item.Name, new Vector2(px + Padding, itemY + (ItemHeight - nameSize.Y) * 0.5f), TextColor);
@@ -572,19 +572,19 @@ public class SettingsPanel : IDisposable
             {
                 case SettingType.Numeric:
                 case SettingType.IntNumeric:
-                    RenderTextInputField(vertices, atlas, i, inputX, inputY, item);
+                    RenderTextInputField(cmds, atlas, i, inputX, inputY, item);
                     _hitRegions.Add((i, inputX, inputY, InputFieldWidth, InputFieldHeight, item.Type));
                     break;
                 case SettingType.Enum:
-                    RenderDropdownField(vertices, atlas, i, inputX, inputY, item);
+                    RenderDropdownField(cmds, atlas, i, inputX, inputY, item);
                     _hitRegions.Add((i, inputX, inputY, InputFieldWidth, InputFieldHeight, item.Type));
                     break;
                 case SettingType.Bool:
-                    RenderBoolToggle(vertices, atlas, inputX, inputY, item);
+                    RenderBoolToggle(cmds, atlas, inputX, inputY, item);
                     _hitRegions.Add((i, inputX, inputY, InputFieldWidth, InputFieldHeight, item.Type));
                     break;
                 case SettingType.Action:
-                    RenderActionButton(vertices, atlas, inputX, inputY, item);
+                    RenderActionButton(cmds, atlas, inputX, inputY, item);
                     _hitRegions.Add((i, inputX, inputY, InputFieldWidth, InputFieldHeight, item.Type));
                     break;
             }
@@ -599,12 +599,12 @@ public class SettingsPanel : IDisposable
             float sbHeight = Math.Max(30f, contentHeight * (contentHeight / totalContentHeight));
             float sbY = contentTop + (_scrollY / maxScroll) * (contentHeight - sbHeight);
             _scrollbarBounds = new Vector4(px + PanelWidth - ScrollbarWidth - 2f, sbY, ScrollbarWidth, sbHeight);
-            DrawRect(vertices, new Vector2(_scrollbarBounds.X, _scrollbarBounds.Y),
+            DrawRect(cmds, new Vector2(_scrollbarBounds.X, _scrollbarBounds.Y),
                 new Vector2(_scrollbarBounds.Z, _scrollbarBounds.W), ScrollbarColor);
         }
 
         // Рендер верхней панели ПЕРЕД dropdown, но ПОСЛЕ элементов
-        DrawRect(vertices, new Vector2(px, py), new Vector2(PanelWidth, TitleBarHeight), TitleBarColor);
+        DrawRect(cmds, new Vector2(px, py), new Vector2(PanelWidth, TitleBarHeight), TitleBarColor);
         var title = Localization.Get("settings_title", "Settings");
         var titleSize = atlas.Measure(title);
         atlas.Emit(title, new Vector2(px + (PanelWidth - titleSize.X) * 0.5f, py + (TitleBarHeight - titleSize.Y) * 0.5f), TextColor);
@@ -614,13 +614,13 @@ public class SettingsPanel : IDisposable
         float closeBtnY = py + (TitleBarHeight - closeBtnSize) * 0.5f;
         _closeButtonBounds = new Vector4(closeBtnX, closeBtnY, closeBtnSize, closeBtnSize);
         bool closeHover = HitTest(_closeButtonBounds, _mousePos);
-        DrawRect(vertices, new Vector2(closeBtnX, closeBtnY), new Vector2(closeBtnSize, closeBtnSize),
+        DrawRect(cmds, new Vector2(closeBtnX, closeBtnY), new Vector2(closeBtnSize, closeBtnSize),
             closeHover ? new Vector4(0.42f, 0.22f, 0.22f, 1f) : CancelButtonBgColor);
         var xSize = atlas.Measure("X");
         atlas.Emit("X", new Vector2(closeBtnX + (closeBtnSize - xSize.X) * 0.5f, closeBtnY + (closeBtnSize - xSize.Y) * 0.5f), TextColor);
 
         // Рендер нижней панели ПЕРЕД dropdown, но ПОСЛЕ элементов
-        DrawRect(vertices, new Vector2(px, py + PanelHeight - BottomBarHeight),
+        DrawRect(cmds, new Vector2(px, py + PanelHeight - BottomBarHeight),
             new Vector2(PanelWidth, BottomBarHeight), TitleBarColor);
 
         float btnY = py + PanelHeight - BottomBarHeight + (BottomBarHeight - 36f) * 0.5f;
@@ -630,28 +630,28 @@ public class SettingsPanel : IDisposable
         float resetX = px + Padding;
         _resetButtonBounds = new Vector4(resetX, btnY, btnW, btnH);
         bool resetHover = HitTest(_resetButtonBounds, _mousePos);
-        DrawTextButton(vertices, atlas, Localization.Get("settings_reset", "Reset"), _resetButtonBounds,
+        DrawTextButton(cmds, atlas, Localization.Get("settings_reset", "Reset"), _resetButtonBounds,
             resetHover ? new Vector4(0.30f, 0.20f, 0.20f, 1f) : CancelButtonBgColor);
 
         float saveX = px + PanelWidth - btnW - Padding;
         _saveButtonBounds = new Vector4(saveX, btnY, btnW, btnH);
         bool saveHover = HitTest(_saveButtonBounds, _mousePos);
-        DrawTextButton(vertices, atlas, Localization.Get("dialog_button_save", "Save"), _saveButtonBounds,
+        DrawTextButton(cmds, atlas, Localization.Get("dialog_button_save", "Save"), _saveButtonBounds,
             saveHover ? new Vector4(0.30f, 0.50f, 0.85f, 1f) : ButtonBgColor);
 
         // Рендер выпадающего списка в самом конце — поверх всего
         if (_openDropdownIndex >= 0 && _openDropdownIndex < _items.Count)
-            RenderDropdownList(vertices, atlas, contentTop, inputX, dropdownListY);
+            RenderDropdownList(cmds, atlas, contentTop, inputX, dropdownListY);
     }
 
-    private void RenderTextInputField(List<Vertex> vertices, TextAtlas atlas, int index, float x, float y, SettingItem item)
+    private void RenderTextInputField(List<UICommand> cmds, TextAtlas atlas, int index, float x, float y, SettingItem item)
     {
         bool isActive = _activeFieldIndex == index;
         Vector4 bg = isActive ? InputFocusBgColor : InputBgColor;
         Vector4 outline = isActive ? FocusOutlineColor : OutlineColor;
 
-        DrawRect(vertices, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), bg);
-        DrawRectOutline(vertices, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), outline, isActive ? 2f : 1f);
+        DrawRect(cmds, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), bg);
+        DrawRectOutline(cmds, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), outline, isActive ? 2f : 1f);
 
         if (isActive)
         {
@@ -663,7 +663,7 @@ public class SettingsPanel : IDisposable
                 string selText = text.Substring(TextBox.SelStart, TextBox.SelEnd - TextBox.SelStart);
                 var beforeSize = atlas.Measure(beforeSel);
                 var selSize = atlas.Measure(selText);
-                DrawRect(vertices, new Vector2(x + 10f + beforeSize.X, y + 4f),
+                DrawRect(cmds, new Vector2(x + 10f + beforeSize.X, y + 4f),
                     new Vector2(selSize.X, InputFieldHeight - 8f), new Vector4(0.2f, 0.4f, 0.8f, 0.6f));
             }
 
@@ -678,7 +678,7 @@ public class SettingsPanel : IDisposable
                 var beforeSize = atlas.Measure(beforeCursor);
                 float cursorX = x + 10f + beforeSize.X + 1f;
                 float cursorH = Math.Max(inputSize.Y - 6f, 12f);
-                DrawRect(vertices, new Vector2(cursorX, y + (InputFieldHeight - cursorH) * 0.5f),
+                DrawRect(cmds, new Vector2(cursorX, y + (InputFieldHeight - cursorH) * 0.5f),
                     new Vector2(2f, cursorH), new Vector4(0.9f, 0.9f, 0.95f, 1f));
             }
         }
@@ -690,15 +690,15 @@ public class SettingsPanel : IDisposable
         }
     }
 
-    private void RenderDropdownField(List<Vertex> vertices, TextAtlas atlas, int index, float x, float y, SettingItem item)
+    private void RenderDropdownField(List<UICommand> cmds, TextAtlas atlas, int index, float x, float y, SettingItem item)
     {
         bool isOpen = _openDropdownIndex == index;
         bool isHover = _mousePos.X >= x && _mousePos.X <= x + InputFieldWidth &&
                        _mousePos.Y >= y && _mousePos.Y <= y + InputFieldHeight;
         Vector4 bg = isOpen ? InputFocusBgColor : (isHover ? new Vector4(0.10f, 0.10f, 0.14f, 1f) : InputBgColor);
 
-        DrawRect(vertices, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), bg);
-        DrawRectOutline(vertices, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), OutlineColor, 1f);
+        DrawRect(cmds, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), bg);
+        DrawRectOutline(cmds, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), OutlineColor, 1f);
 
         string val = item.GetValue();
         var valSize = atlas.Measure(val);
@@ -709,13 +709,13 @@ public class SettingsPanel : IDisposable
         atlas.Emit(arrow, new Vector2(x + InputFieldWidth - arrowSize.X - 10f, y + (InputFieldHeight - arrowSize.Y) * 0.5f), TextColor);
     }
 
-    private void RenderDropdownList(List<Vertex> vertices, TextAtlas atlas, float contentTop, float inputX, float listY)
+    private void RenderDropdownList(List<UICommand> cmds, TextAtlas atlas, float contentTop, float inputX, float listY)
     {
         var item = _items[_openDropdownIndex];
         float listH = item.Options!.Count * DropdownOptionHeight;
 
-        DrawRect(vertices, new Vector2(inputX, listY), new Vector2(InputFieldWidth, listH), DropdownBgColor);
-        DrawRectOutline(vertices, new Vector2(inputX, listY), new Vector2(InputFieldWidth, listH), OutlineColor, 1f);
+        DrawRect(cmds, new Vector2(inputX, listY), new Vector2(InputFieldWidth, listH), DropdownBgColor);
+        DrawRectOutline(cmds, new Vector2(inputX, listY), new Vector2(InputFieldWidth, listH), OutlineColor, 1f);
 
         _dropdownOptionRegions.Clear();
         string currentVal = item.GetValue();
@@ -728,9 +728,9 @@ public class SettingsPanel : IDisposable
             bool isSelected = item.Options[i] == currentVal;
 
             if (isSelected)
-                DrawRect(vertices, new Vector2(inputX, optY), new Vector2(InputFieldWidth, DropdownOptionHeight), DropdownSelectedColor);
+                DrawRect(cmds, new Vector2(inputX, optY), new Vector2(InputFieldWidth, DropdownOptionHeight), DropdownSelectedColor);
             else if (isHover)
-                DrawRect(vertices, new Vector2(inputX, optY), new Vector2(InputFieldWidth, DropdownOptionHeight), DropdownHoverColor);
+                DrawRect(cmds, new Vector2(inputX, optY), new Vector2(InputFieldWidth, DropdownOptionHeight), DropdownHoverColor);
 
             var optSize = atlas.Measure(item.Options[i]);
             atlas.Emit(item.Options[i], new Vector2(inputX + 10f, optY + (DropdownOptionHeight - optSize.Y) * 0.5f), TextColor);
@@ -739,62 +739,47 @@ public class SettingsPanel : IDisposable
         }
     }
 
-    private void RenderBoolToggle(List<Vertex> vertices, TextAtlas atlas, float x, float y, SettingItem item)
+    private void RenderBoolToggle(List<UICommand> cmds, TextAtlas atlas, float x, float y, SettingItem item)
     {
         bool val = item.GetValue() == "True";
         Vector4 bg = val ? BoolOnColor : BoolOffColor;
         bool isHover = _mousePos.X >= x && _mousePos.X <= x + InputFieldWidth &&
                        _mousePos.Y >= y && _mousePos.Y <= y + InputFieldHeight;
 
-        DrawRect(vertices, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight),
+        DrawRect(cmds, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight),
             isHover ? Vector4.Lerp(bg, Vector4.One, 0.15f) : bg);
-        DrawRectOutline(vertices, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), OutlineColor, 1f);
+        DrawRectOutline(cmds, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), OutlineColor, 1f);
 
         string label = val ? "ON" : "OFF";
         var labelSize = atlas.Measure(label);
         atlas.Emit(label, new Vector2(x + (InputFieldWidth - labelSize.X) * 0.5f, y + (InputFieldHeight - labelSize.Y) * 0.5f), TextColor);
     }
 
-    private void RenderActionButton(List<Vertex> vertices, TextAtlas atlas, float x, float y, SettingItem item)
+    private void RenderActionButton(List<UICommand> cmds, TextAtlas atlas, float x, float y, SettingItem item)
     {
         bool isHover = _mousePos.X >= x && _mousePos.X <= x + InputFieldWidth &&
                        _mousePos.Y >= y && _mousePos.Y <= y + InputFieldHeight;
         Vector4 bg = isHover ? new Vector4(0.30f, 0.40f, 0.60f, 1f) : new Vector4(0.20f, 0.25f, 0.40f, 1f);
 
-        DrawRect(vertices, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), bg);
-        DrawRectOutline(vertices, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), OutlineColor, 1f);
+        DrawRect(cmds, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), bg);
+        DrawRectOutline(cmds, new Vector2(x, y), new Vector2(InputFieldWidth, InputFieldHeight), OutlineColor, 1f);
 
         var nameSize = atlas.Measure(item.Name);
         atlas.Emit(item.Name, new Vector2(x + (InputFieldWidth - nameSize.X) * 0.5f, y + (InputFieldHeight - nameSize.Y) * 0.5f), TextColor);
     }
 
-    private void DrawTextButton(List<Vertex> v, TextAtlas atlas, string text, Vector4 bounds, Vector4 bg)
+    private void DrawTextButton(List<UICommand> cmd, TextAtlas atlas, string text, Vector4 bounds, Vector4 bg)
     {
-        DrawRect(v, new Vector2(bounds.X, bounds.Y), new Vector2(bounds.Z, bounds.W), bg);
+        DrawRect(cmd, new Vector2(bounds.X, bounds.Y), new Vector2(bounds.Z, bounds.W), bg);
         var size = atlas.Measure(text);
         atlas.Emit(text, new Vector2(bounds.X + (bounds.Z - size.X) * 0.5f, bounds.Y + (bounds.W - size.Y) * 0.5f), TextColor);
     }
 
-    private static void DrawRectOutline(List<Vertex> v, Vector2 pos, Vector2 size, Vector4 color, float thickness)
-    {
-        DrawRect(v, pos, new Vector2(size.X, thickness), color);
-        DrawRect(v, new Vector2(pos.X, pos.Y + size.Y - thickness), new Vector2(size.X, thickness), color);
-        DrawRect(v, pos, new Vector2(thickness, size.Y), color);
-        DrawRect(v, new Vector2(pos.X + size.X - thickness, pos.Y), new Vector2(thickness, size.Y), color);
-    }
+    private static void DrawRectOutline(List<UICommand> cmds, Vector2 pos, Vector2 size, Vector4 color, float thickness)
+        => cmds.Add(new UICommand { P1P2 = new Vector4(pos.X, pos.Y, size.X, size.Y), Color = color, Params = new Vector4(thickness, 3, 0, 0) });
 
-    private static void DrawRect(List<Vertex> v, Vector2 pos, Vector2 size, Vector4 color)
-    {
-        var p1 = pos; var p2 = pos + new Vector2(size.X, 0);
-        var p3 = pos + size; var p4 = pos + new Vector2(0, size.Y);
-
-        v.Add(new Vertex { Position = p1, Color = color });
-        v.Add(new Vertex { Position = p2, Color = color });
-        v.Add(new Vertex { Position = p3, Color = color });
-        v.Add(new Vertex { Position = p1, Color = color });
-        v.Add(new Vertex { Position = p3, Color = color });
-        v.Add(new Vertex { Position = p4, Color = color });
-    }
+    private static void DrawRect(List<UICommand> cmds, Vector2 pos, Vector2 size, Vector4 color)
+        => cmds.Add(new UICommand { P1P2 = new Vector4(pos.X, pos.Y, size.X, size.Y), Color = color, Params = new Vector4(0, 0, 0, 0) });
 
     public void Dispose() { }
 }

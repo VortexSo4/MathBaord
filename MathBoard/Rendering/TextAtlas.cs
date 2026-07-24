@@ -1,4 +1,4 @@
-﻿﻿using System.Numerics;
+﻿using System.Numerics;
 using System.Runtime.InteropServices;
 using Silk.NET.Vulkan;
 using Silk.NET.Core.Native;
@@ -11,6 +11,15 @@ public sealed unsafe class TextAtlas : IDisposable
     private const int AtlasWidth = 1024;
     private const int AtlasHeight = 1024;
     private const int Padding = 2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TextCommand
+    {
+        public Vector4 PosSize;
+        public Vector4 Color;
+        public Vector4 UV;
+        public Vector4 Params; // X = offset
+    }
 
     public readonly struct Entry
     {
@@ -53,7 +62,19 @@ public sealed unsafe class TextAtlas : IDisposable
     private DeviceMemory _vertexBufferMemory;
     private ulong _vertexBufferAllocatedSize;
     private uint _vertexCount;
-    private readonly List<TextVertex> _frameVertices = new();
+    
+    private readonly List<TextCommand> _textCommands = new();
+
+    // Text Compute Pipeline
+    private Pipeline _textComputePipeline;
+    private PipelineLayout _textComputeLayout;
+    private DescriptorSetLayout _textComputeDescSetLayout;
+    private DescriptorPool _textComputeDescPool;
+    private DescriptorSet _textComputeDescSet;
+
+    private Silk.NET.Vulkan.Buffer _commandBuffer;
+    private DeviceMemory _commandMemory;
+    private ulong _commandAllocatedSize;
 
     public TextAtlas(VulkanContext context, RenderPassManager renderPass, CommandManager commandManager)
     {
@@ -64,7 +85,6 @@ public sealed unsafe class TextAtlas : IDisposable
 
     public void Initialize()
     {
-        // Принудительно находим шрифт, поддерживающий кириллицу (буква 'А')
         _typeface = SKFontManager.Default.MatchCharacter('А') 
                     ?? SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Normal)
                     ?? SKTypeface.FromFamilyName("Arial")
@@ -74,7 +94,7 @@ public sealed unsafe class TextAtlas : IDisposable
         {
             Typeface = _typeface,
             TextSize = 16f,
-            Color = SKColors.White, // Белый текст позволяет тонировать через fragColor
+            Color = SKColors.White,
             IsAntialias = true,
             SubpixelText = true,
             TextEncoding = SKTextEncoding.Utf8
@@ -86,6 +106,7 @@ public sealed unsafe class TextAtlas : IDisposable
         CreateDescriptorPool();
         CreateDescriptorSet();
         CreatePipeline();
+        CreateTextComputeResources();
     }
 
     public void BeginBuild()
@@ -130,7 +151,6 @@ public sealed unsafe class TextAtlas : IDisposable
             _imageCache[path] = bmp;
         }
 
-        // BUGFIX: Раньше здесь был баг с дублированием упаковки, вызывавший артефакты с иконками поверх русского текста
         PackAndAddEntry(path, bmp.Width, bmp.Height, out var entry);
         return entry;
     }
@@ -224,7 +244,7 @@ public sealed unsafe class TextAtlas : IDisposable
         _context.Vk.FreeMemory(_context.Device, stagingMemory, null);
     }
 
-    public void BeginFrame() => _frameVertices.Clear();
+    public void BeginFrame() => _textCommands.Clear();
 
     public Vector2 Emit(string text, Vector2 pos, Vector4 color)
     {
@@ -240,19 +260,12 @@ public sealed unsafe class TextAtlas : IDisposable
 
     private Vector2 EmitEntry(Entry e, Vector2 pos, Vector2 size, Vector4 color)
     {
-        var p1 = pos;
-        var p2 = pos + new Vector2(size.X, 0);
-        var p3 = pos + new Vector2(size.X, size.Y);
-        var p4 = pos + new Vector2(0, size.Y);
-
-        _frameVertices.Add(new TextVertex { Position = p1, UV = new Vector2(e.U0, e.V0), Color = color });
-        _frameVertices.Add(new TextVertex { Position = p2, UV = new Vector2(e.U1, e.V0), Color = color });
-        _frameVertices.Add(new TextVertex { Position = p3, UV = new Vector2(e.U1, e.V1), Color = color });
-
-        _frameVertices.Add(new TextVertex { Position = p1, UV = new Vector2(e.U0, e.V0), Color = color });
-        _frameVertices.Add(new TextVertex { Position = p3, UV = new Vector2(e.U1, e.V1), Color = color });
-        _frameVertices.Add(new TextVertex { Position = p4, UV = new Vector2(e.U0, e.V1), Color = color });
-
+        _textCommands.Add(new TextCommand
+        {
+            PosSize = new Vector4(pos.X, pos.Y, size.X, size.Y),
+            Color = color,
+            UV = new Vector4(e.U0, e.V0, e.U1, e.V1)
+        });
         return size;
     }
 
@@ -266,14 +279,43 @@ public sealed unsafe class TextAtlas : IDisposable
         return new Vector2(w, m.Descent - m.Ascent);
     }
 
-    public void UploadFrameVertices()
+        public void UpdateTextCompute()
     {
-        _vertexCount = (uint)_frameVertices.Count;
-        if (_frameVertices.Count == 0) return;
+        if (_textCommands.Count == 0) { _vertexCount = 0; return; }
 
-        ulong requiredSize = (ulong)(sizeof(TextVertex) * _frameVertices.Count);
+        uint offset = 0;
+        for (int i = 0; i < _textCommands.Count; i++)
+        {
+            var cmd = _textCommands[i];
+            cmd.Params.X = offset;
+            _textCommands[i] = cmd;
+            offset += 6;
+        }
+        _vertexCount = offset;
 
-        if (_vertexBuffer.Handle == 0 || _vertexBufferAllocatedSize < requiredSize)
+        ulong cmdSize = (ulong)(_textCommands.Count * sizeof(TextCommand));
+        if (_commandAllocatedSize < cmdSize)
+        {
+            if (_commandBuffer.Handle != 0)
+            {
+                _context.Vk.DeviceWaitIdle(_context.Device);
+                _context.Vk.DestroyBuffer(_context.Device, _commandBuffer, null);
+                _context.Vk.FreeMemory(_context.Device, _commandMemory, null);
+            }
+            CreateStorageBuffer(Math.Max(cmdSize * 2, 1UL << 16), out _commandBuffer, out _commandMemory);
+            _commandAllocatedSize = Math.Max(cmdSize * 2, 1UL << 16);
+            UpdateTextComputeDescriptorSet();
+        }
+
+        // Мапим только размер валидных команд
+        void* mappedCmd;
+        _context.Vk.MapMemory(_context.Device, _commandMemory, 0, cmdSize, 0, &mappedCmd);
+        fixed (TextCommand* src = _textCommands.ToArray())
+            System.Buffer.MemoryCopy(src, mappedCmd, cmdSize, cmdSize);
+        _context.Vk.UnmapMemory(_context.Device, _commandMemory);
+
+        ulong requiredVertexSize = _vertexCount * (ulong)sizeof(TextVertex);
+        if (_vertexBuffer.Handle == 0 || _vertexBufferAllocatedSize < requiredVertexSize)
         {
             if (_vertexBuffer.Handle != 0)
             {
@@ -282,19 +324,43 @@ public sealed unsafe class TextAtlas : IDisposable
                 _context.Vk.FreeMemory(_context.Device, _vertexBufferMemory, null);
             }
 
-            ulong allocSize = Math.Max(requiredSize * 2, 1UL << 16);
-            CreateBuffer(allocSize, BufferUsageFlags.VertexBufferBit,
-                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-                out _vertexBuffer, out _vertexBufferMemory);
+            ulong allocSize = Math.Max(requiredVertexSize * 2, 1UL << 16);
+            CreateBuffer(allocSize, BufferUsageFlags.VertexBufferBit | BufferUsageFlags.StorageBufferBit,
+                MemoryPropertyFlags.DeviceLocalBit, out _vertexBuffer, out _vertexBufferMemory);
             _vertexBufferAllocatedSize = allocSize;
+            UpdateTextComputeDescriptorSet();
         }
+    }
 
-        void* mapped;
-        _context.Vk.MapMemory(_context.Device, _vertexBufferMemory, 0, requiredSize, 0, &mapped);
-        var span = CollectionsMarshal.AsSpan(_frameVertices);
-        fixed (TextVertex* src = &MemoryMarshal.GetReference(span))
-            System.Buffer.MemoryCopy(src, mapped, requiredSize, requiredSize);
-        _context.Vk.UnmapMemory(_context.Device, _vertexBufferMemory);
+    public void DispatchCompute(CommandBuffer cmd)
+    {
+        if (_vertexCount == 0 || _textCommands.Count == 0) return;
+
+        _context.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Compute, _textComputePipeline);
+        var descSet = _textComputeDescSet;
+        _context.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _textComputeLayout, 0, 1, &descSet, 0, null);
+
+        uint cmdCount = (uint)_textCommands.Count;
+        _context.Vk.CmdPushConstants(cmd, _textComputeLayout, ShaderStageFlags.ComputeBit, 0, (uint)sizeof(uint), &cmdCount);
+
+        uint groupSize = 64;
+        uint groups = (cmdCount + groupSize - 1) / groupSize;
+        _context.Vk.CmdDispatch(cmd, groups, 1, 1);
+
+        var barriers = stackalloc BufferMemoryBarrier[1];
+        barriers[0] = new BufferMemoryBarrier
+        {
+            SType = StructureType.BufferMemoryBarrier,
+            SrcAccessMask = AccessFlags.ShaderWriteBit,
+            DstAccessMask = AccessFlags.VertexAttributeReadBit,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Buffer = _vertexBuffer,
+            Offset = 0,
+            Size = Vk.WholeSize
+        };
+
+        _context.Vk.CmdPipelineBarrier(cmd, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.VertexInputBit, 0, 0, null, 1, barriers, 0, null);
     }
 
     public void Render(CommandBuffer cmd, Extent2D extent)
@@ -314,6 +380,91 @@ public sealed unsafe class TextAtlas : IDisposable
         _context.Vk.CmdPushConstants(cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(Matrix4x4), transform);
 
         _context.Vk.CmdDraw(cmd, _vertexCount, 1, 0, 0);
+    }
+
+        private void CreateTextComputeResources()
+    {
+        var bindings = stackalloc DescriptorSetLayoutBinding[2];
+        bindings[0] = new DescriptorSetLayoutBinding { Binding = 0, DescriptorType = DescriptorType.StorageBuffer, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit };
+        bindings[1] = new DescriptorSetLayoutBinding { Binding = 1, DescriptorType = DescriptorType.StorageBuffer, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit };
+
+        var layoutInfo = new DescriptorSetLayoutCreateInfo { SType = StructureType.DescriptorSetLayoutCreateInfo, BindingCount = 2, PBindings = bindings };
+        _context.Vk.CreateDescriptorSetLayout(_context.Device, &layoutInfo, null, out _textComputeDescSetLayout);
+
+        var poolSize = new DescriptorPoolSize { Type = DescriptorType.StorageBuffer, DescriptorCount = 2 };
+        var poolInfo = new DescriptorPoolCreateInfo { SType = StructureType.DescriptorPoolCreateInfo, PoolSizeCount = 1, PPoolSizes = &poolSize, MaxSets = 1 };
+        _context.Vk.CreateDescriptorPool(_context.Device, &poolInfo, null, out _textComputeDescPool);
+
+        fixed (DescriptorSetLayout* pSetLayout = &_textComputeDescSetLayout)
+        {
+            var allocInfo = new DescriptorSetAllocateInfo
+            {
+                SType = StructureType.DescriptorSetAllocateInfo,
+                DescriptorPool = _textComputeDescPool,
+                DescriptorSetCount = 1,
+                PSetLayouts = pSetLayout
+            };
+            _context.Vk.AllocateDescriptorSets(_context.Device, &allocInfo, out _textComputeDescSet);
+        }
+
+        var computeShader = LoadShader("Shaders/text.comp.spv");
+        var stage = new PipelineShaderStageCreateInfo
+        {
+            SType = StructureType.PipelineShaderStageCreateInfo,
+            Stage = ShaderStageFlags.ComputeBit,
+            Module = computeShader,
+            PName = (byte*)SilkMarshal.StringToPtr("main")
+        };
+
+        var pushConstant = new PushConstantRange { StageFlags = ShaderStageFlags.ComputeBit, Size = (uint)sizeof(uint) };
+        fixed (DescriptorSetLayout* pSetLayout = &_textComputeDescSetLayout)
+        {
+            var pipelineLayoutInfo = new PipelineLayoutCreateInfo
+            {
+                SType = StructureType.PipelineLayoutCreateInfo,
+                SetLayoutCount = 1,
+                PSetLayouts = pSetLayout,
+                PushConstantRangeCount = 1,
+                PPushConstantRanges = &pushConstant
+            };
+            _context.Vk.CreatePipelineLayout(_context.Device, &pipelineLayoutInfo, null, out _textComputeLayout);
+        }
+
+        var pipelineInfo = new ComputePipelineCreateInfo
+        {
+            SType = StructureType.ComputePipelineCreateInfo,
+            Stage = stage,
+            Layout = _textComputeLayout
+        };
+        _context.Vk.CreateComputePipelines(_context.Device, default, 1, &pipelineInfo, null, out _textComputePipeline);
+
+        SilkMarshal.Free((nint)stage.PName);
+        _context.Vk.DestroyShaderModule(_context.Device, computeShader, null);
+    }
+
+    private void UpdateTextComputeDescriptorSet()
+    {
+        if (_commandBuffer.Handle == 0 || _vertexBuffer.Handle == 0) return;
+
+        var bufferInfos = stackalloc DescriptorBufferInfo[2];
+        bufferInfos[0] = new DescriptorBufferInfo { Buffer = _commandBuffer, Offset = 0, Range = Vk.WholeSize };
+        bufferInfos[1] = new DescriptorBufferInfo { Buffer = _vertexBuffer, Offset = 0, Range = Vk.WholeSize };
+
+        var writes = stackalloc WriteDescriptorSet[2];
+        for (int i = 0; i < 2; i++)
+        {
+            writes[i] = new WriteDescriptorSet
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _textComputeDescSet,
+                DstBinding = (uint)i,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1,
+                PBufferInfo = bufferInfos + i
+            };
+        }
+        _context.Vk.UpdateDescriptorSets(_context.Device, 2, writes, 0, null);
     }
 
     private void CreateEmptyImage()
@@ -758,6 +909,30 @@ public sealed unsafe class TextAtlas : IDisposable
         _context.Vk.BindBufferMemory(_context.Device, buffer, memory, 0);
     }
 
+    private void CreateStorageBuffer(ulong size, out Silk.NET.Vulkan.Buffer buffer, out DeviceMemory memory)
+    {
+        var bufferInfo = new BufferCreateInfo
+        {
+            SType = StructureType.BufferCreateInfo,
+            Size = size,
+            Usage = BufferUsageFlags.StorageBufferBit | BufferUsageFlags.TransferDstBit,
+            SharingMode = SharingMode.Exclusive
+        };
+        _context.Vk.CreateBuffer(_context.Device, &bufferInfo, null, out buffer);
+
+        MemoryRequirements memReq;
+        _context.Vk.GetBufferMemoryRequirements(_context.Device, buffer, &memReq);
+
+        var allocInfo = new MemoryAllocateInfo
+        {
+            SType = StructureType.MemoryAllocateInfo,
+            AllocationSize = memReq.Size,
+            MemoryTypeIndex = FindMemoryType(memReq.MemoryTypeBits, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit)
+        };
+        _context.Vk.AllocateMemory(_context.Device, &allocInfo, null, out memory);
+        _context.Vk.BindBufferMemory(_context.Device, buffer, memory, 0);
+    }
+
     private uint FindMemoryType(uint typeFilter, MemoryPropertyFlags properties)
     {
         PhysicalDeviceMemoryProperties memProps;
@@ -778,6 +953,12 @@ public sealed unsafe class TextAtlas : IDisposable
             _context.Vk.DestroyBuffer(_context.Device, _vertexBuffer, null);
             _context.Vk.FreeMemory(_context.Device, _vertexBufferMemory, null);
         }
+        
+        if (_commandBuffer.Handle != 0)
+        {
+            _context.Vk.DestroyBuffer(_context.Device, _commandBuffer, null);
+            _context.Vk.FreeMemory(_context.Device, _commandMemory, null);
+        }
 
         if (_pipeline.Handle != 0) _context.Vk.DestroyPipeline(_context.Device, _pipeline, null);
         if (_pipelineLayout.Handle != 0) _context.Vk.DestroyPipelineLayout(_context.Device, _pipelineLayout, null);
@@ -789,6 +970,11 @@ public sealed unsafe class TextAtlas : IDisposable
         if (_imageView.Handle != 0) _context.Vk.DestroyImageView(_context.Device, _imageView, null);
         if (_image.Handle != 0) _context.Vk.DestroyImage(_context.Device, _image, null);
         if (_imageMemory.Handle != 0) _context.Vk.FreeMemory(_context.Device, _imageMemory, null);
+        
+        if (_textComputePipeline.Handle != 0) _context.Vk.DestroyPipeline(_context.Device, _textComputePipeline, null);
+        if (_textComputeLayout.Handle != 0) _context.Vk.DestroyPipelineLayout(_context.Device, _textComputeLayout, null);
+        if (_textComputeDescPool.Handle != 0) _context.Vk.DestroyDescriptorPool(_context.Device, _textComputeDescPool, null);
+        if (_textComputeDescSetLayout.Handle != 0) _context.Vk.DestroyDescriptorSetLayout(_context.Device, _textComputeDescSetLayout, null);
 
         _paint?.Dispose();
         _typeface?.Dispose();

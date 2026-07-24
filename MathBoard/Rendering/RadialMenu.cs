@@ -1,4 +1,4 @@
-﻿﻿using System.Numerics;
+﻿using System.Numerics;
 using MathBoard.Core;
 
 namespace MathBoard.Rendering;
@@ -354,7 +354,7 @@ public class RadialMenu
         }
     }
 
-    public void RenderUI(List<Vertex> vertices)
+    public void RenderUI(List<UICommand> cmds)
     {
         if (!IsOpen) return;
 
@@ -367,13 +367,13 @@ public class RadialMenu
 
         if (_isPickingColor || _isPickingBackground)
         {
-            RenderColorPicker(vertices);
+            RenderColorPicker(cmds);
             return;
         }
 
         if (_isAdjustingThickness)
         {
-            DrawThicknessPreview(vertices);
+            DrawThicknessPreview(cmds);
             return;
         }
 
@@ -400,13 +400,13 @@ public class RadialMenu
                 fillColor = isSelected ? selectColor : bgColor;
             }
 
-            DrawAnnularSector(vertices, Position, InnerRadius - 3, OuterRadius + 4, start, end, outlineColor, 32);
-            DrawAnnularSector(vertices, Position, InnerRadius, OuterRadius, start, end, fillColor, 32);
+            DrawAnnularSector(cmds, Position, InnerRadius - 3, OuterRadius + 4, start, end, outlineColor, 32);
+            DrawAnnularSector(cmds, Position, InnerRadius, OuterRadius, start, end, fillColor, 32);
             
-            if (!_isColorMenuOpen) DrawIcon(vertices, i, isSelected);
+            if (!_isColorMenuOpen) DrawIcon(cmds, i, isSelected);
         }
 
-        DrawCenterButton(vertices, centerColor, outlineColor);
+        DrawCenterButton(cmds, centerColor, outlineColor);
 
         string tooltip = null;
         if (_selectedIndex >= 0)
@@ -440,18 +440,18 @@ public class RadialMenu
             float pad = 6f;
             float bgX = pos.X + 15f;
             float bgY = pos.Y - size.Y - 15f;
-            DrawRect(vertices, new Vector2(bgX, bgY), new Vector2(size.X + pad * 2, size.Y + pad * 2), new Vector4(0, 0, 0, 0.8f));
+            DrawRect(cmds, new Vector2(bgX, bgY), new Vector2(size.X + pad * 2, size.Y + pad * 2), new Vector4(0, 0, 0, 0.8f));
             _renderer.TextAtlas.Emit(tooltip, new Vector2(bgX + pad, bgY + pad), Vector4.One);
         }
     }
 
-    private void RenderColorPicker(List<Vertex> vertices)
+    private void RenderColorPicker(List<UICommand> cmds)
     {
         var bgColor = new Vector4(0.10f, 0.10f, 0.13f, 0.97f);
         var outlineColor = new Vector4(0.85f, 0.85f, 0.90f, 0.4f);
         var previewColor = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
 
-        DrawCircle(vertices, Position, PickerOuterRadius + 8f, bgColor, 64);
+        DrawCircle(cmds, Position, PickerOuterRadius + 8f, bgColor, 64);
 
         float r1 = PickerCenterRadius + 6f;
         float r2 = r1 + PickerRingWidth;
@@ -459,24 +459,24 @@ public class RadialMenu
         float r3 = r2 + gap + PickerRingWidth;
         float r4 = r3 + gap + PickerRingWidth;
 
-        DrawHueRing(vertices, Position, r1, r2, 128);
-        if (_activePickerRing == 0) DrawRingBorder(vertices, Position, r1, r2, new Vector4(1, 1, 1, 0.8f), 3f);
-        DrawRingIndicator(vertices, Position, (r1 + r2) * 0.5f, _pickerHue);
+        DrawHueRing(cmds, Position, r1, r2, 128);
+        if (_activePickerRing == 0) DrawRingBorder(cmds, Position, r1, r2, new Vector4(1, 1, 1, 0.8f), 3f);
+        DrawRingIndicator(cmds, Position, (r1 + r2) * 0.5f, _pickerHue);
 
-        DrawSatValRing(vertices, Position, r2 + gap, r3, _pickerHue, true, 128);
-        if (_activePickerRing == 1) DrawRingBorder(vertices, Position, r2 + gap, r3, new Vector4(1, 1, 1, 0.8f), 3f);
-        DrawRingIndicator(vertices, Position, (r2 + gap + r3) * 0.5f, _pickerSaturation);
+        DrawSatValRing(cmds, Position, r2 + gap, r3, _pickerHue, true, 128);
+        if (_activePickerRing == 1) DrawRingBorder(cmds, Position, r2 + gap, r3, new Vector4(1, 1, 1, 0.8f), 3f);
+        DrawRingIndicator(cmds, Position, (r2 + gap + r3) * 0.5f, _pickerSaturation);
 
-        DrawSatValRing(vertices, Position, r3 + gap, r4, _pickerHue, false, 128);
-        if (_activePickerRing == 2) DrawRingBorder(vertices, Position, r3 + gap, r4, new Vector4(1, 1, 1, 0.8f), 3f);
-        DrawRingIndicator(vertices, Position, (r3 + gap + r4) * 0.5f, _pickerValue);
+        DrawSatValRing(cmds, Position, r3 + gap, r4, _pickerHue, false, 128);
+        if (_activePickerRing == 2) DrawRingBorder(cmds, Position, r3 + gap, r4, new Vector4(1, 1, 1, 0.8f), 3f);
+        DrawRingIndicator(cmds, Position, (r3 + gap + r4) * 0.5f, _pickerValue);
 
-        DrawCircle(vertices, Position, PickerCenterRadius + 3f, outlineColor, 48);
-        DrawCircle(vertices, Position, PickerCenterRadius, previewColor, 48);
-        DrawCheckmark(vertices, Position);
+        DrawCircle(cmds, Position, PickerCenterRadius + 3f, outlineColor, 48);
+        DrawCircle(cmds, Position, PickerCenterRadius, previewColor, 48);
+        DrawCheckmark(cmds, Position);
     }
 
-    private static void DrawHueRing(List<Vertex> vertices, Vector2 center, float r1, float r2, int segments)
+    private static void DrawHueRing(List<UICommand> cmds, Vector2 center, float r1, float r2, int segments)
     {
         float step = MathF.PI * 2f / segments;
         for (int i = 0; i < segments; i++)
@@ -490,17 +490,12 @@ public class RadialMenu
             var inner2 = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * r1;
             var outer2 = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * r2;
 
-            vertices.Add(new Vertex { Position = inner1, Color = c1 });
-            vertices.Add(new Vertex { Position = outer1, Color = c1 });
-            vertices.Add(new Vertex { Position = inner2, Color = c2 });
-
-            vertices.Add(new Vertex { Position = outer1, Color = c1 });
-            vertices.Add(new Vertex { Position = outer2, Color = c2 });
-            vertices.Add(new Vertex { Position = inner2, Color = c2 });
+            cmds.Add(new UICommand { P1P2 = new Vector4(inner1.X, inner1.Y, outer1.X, outer1.Y), Color = c1, Params = new Vector4(outer2.X, 4, outer2.Y, 0) });
+            cmds.Add(new UICommand { P1P2 = new Vector4(inner1.X, inner1.Y, outer2.X, outer2.Y), Color = c2, Params = new Vector4(inner2.X, 4, inner2.Y, 0) });
         }
     }
 
-    private static void DrawSatValRing(List<Vertex> vertices, Vector2 center, float r1, float r2, float hue, bool isSaturation, int segments)
+    private static void DrawSatValRing(List<UICommand> cmds, Vector2 center, float r1, float r2, float hue, bool isSaturation, int segments)
     {
         float step = MathF.PI * 2f / segments;
         float startAngle = -MathF.PI * 0.5f;
@@ -518,68 +513,58 @@ public class RadialMenu
             var inner2 = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * r1;
             var outer2 = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * r2;
 
-            vertices.Add(new Vertex { Position = inner1, Color = c1 });
-            vertices.Add(new Vertex { Position = outer1, Color = c1 });
-            vertices.Add(new Vertex { Position = inner2, Color = c2 });
-
-            vertices.Add(new Vertex { Position = outer1, Color = c1 });
-            vertices.Add(new Vertex { Position = outer2, Color = c2 });
-            vertices.Add(new Vertex { Position = inner2, Color = c2 });
+            cmds.Add(new UICommand { P1P2 = new Vector4(inner1.X, inner1.Y, outer1.X, outer1.Y), Color = c1, Params = new Vector4(outer2.X, 4, outer2.Y, 0) });
+            cmds.Add(new UICommand { P1P2 = new Vector4(inner1.X, inner1.Y, outer2.X, outer2.Y), Color = c2, Params = new Vector4(inner2.X, 4, inner2.Y, 0) });
         }
     }
 
-    private void DrawRingBorder(List<Vertex> vertices, Vector2 center, float r1, float r2, Vector4 color, float thickness)
+    private void DrawRingBorder(List<UICommand> cmds, Vector2 center, float r1, float r2, Vector4 color, float thickness)
     {
         int segs = 128; float step = MathF.PI * 2f / segs;
         for (int i = 0; i < segs; i++)
         {
             float a1 = i * step; float a2 = (i + 1) * step;
-            DrawLineSegment(vertices, center, r2 - thickness * 0.5f, r2 + thickness * 0.5f, a1, a2, color);
-            DrawLineSegment(vertices, center, r1 - thickness * 0.5f, r1 + thickness * 0.5f, a1, a2, color);
+            DrawLineSegment(cmds, center, r2 - thickness * 0.5f, r2 + thickness * 0.5f, a1, a2, color);
+            DrawLineSegment(cmds, center, r1 - thickness * 0.5f, r1 + thickness * 0.5f, a1, a2, color);
         }
     }
 
-    private static void DrawLineSegment(List<Vertex> v, Vector2 center, float r1, float r2, float a1, float a2, Vector4 color)
+    private static void DrawLineSegment(List<UICommand> cmds, Vector2 center, float r1, float r2, float a1, float a2, Vector4 color)
     {
         var inner1 = center + new Vector2(MathF.Cos(a1), MathF.Sin(a1)) * r1;
         var outer1 = center + new Vector2(MathF.Cos(a1), MathF.Sin(a1)) * r2;
         var inner2 = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * r1;
         var outer2 = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * r2;
 
-        v.Add(new Vertex { Position = inner1, Color = color });
-        v.Add(new Vertex { Position = outer1, Color = color });
-        v.Add(new Vertex { Position = inner2, Color = color });
-
-        v.Add(new Vertex { Position = outer1, Color = color });
-        v.Add(new Vertex { Position = outer2, Color = color });
-        v.Add(new Vertex { Position = inner2, Color = color });
+        cmds.Add(new UICommand { P1P2 = new Vector4(inner1.X, inner1.Y, outer1.X, outer1.Y), Color = color, Params = new Vector4(outer2.X, 4, outer2.Y, 0) });
+        cmds.Add(new UICommand { P1P2 = new Vector4(inner1.X, inner1.Y, outer2.X, outer2.Y), Color = color, Params = new Vector4(inner2.X, 4, inner2.Y, 0) });
     }
 
-    private void DrawRingIndicator(List<Vertex> vertices, Vector2 center, float radius, float normalizedValue)
+    private void DrawRingIndicator(List<UICommand> cmds, Vector2 center, float radius, float normalizedValue)
     {
         float angle = normalizedValue * MathF.PI * 2f - MathF.PI * 0.5f;
         var pos = center + new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * radius;
-        DrawCircle(vertices, pos, 7f, new Vector4(1, 1, 1, 0.95f), 20);
-        DrawCircle(vertices, pos, 4f, new Vector4(0.05f, 0.05f, 0.08f, 0.9f), 16);
+        DrawCircle(cmds, pos, 7f, new Vector4(1, 1, 1, 0.95f), 20);
+        DrawCircle(cmds, pos, 4f, new Vector4(0.05f, 0.05f, 0.08f, 0.9f), 16);
     }
 
-    private void DrawCheckmark(List<Vertex> vertices, Vector2 center)
+    private void DrawCheckmark(List<UICommand> cmds, Vector2 center)
     {
         var color = new Vector4(0.1f, 0.1f, 0.1f, 0.8f);
         var p1 = center + new Vector2(-6, 0);
         var p2 = center + new Vector2(-2, 5);
         var p3 = center + new Vector2(7, -5);
-        DrawLine(vertices, p1, p2, color, 3f);
-        DrawLine(vertices, p2, p3, color, 3f);
+        DrawLine(cmds, p1, p2, color, 3f);
+        DrawLine(cmds, p2, p3, color, 3f);
     }
 
-    private void DrawCenterButton(List<Vertex> vertices, Vector4 fill, Vector4 outline)
+    private void DrawCenterButton(List<UICommand> cmds, Vector4 fill, Vector4 outline)
     {
-        DrawCircle(vertices, Position, CenterRadius + 5, outline, 48);
-        DrawCircle(vertices, Position, CenterRadius, fill, 48);
+        DrawCircle(cmds, Position, CenterRadius + 5, outline, 48);
+        DrawCircle(cmds, Position, CenterRadius, fill, 48);
         var cross = new Vector4(0.92f, 0.92f, 0.95f, 0.9f);
-        DrawLine(vertices, Position + new Vector2(-11, -11), Position + new Vector2(11, 11), cross, 5f);
-        DrawLine(vertices, Position + new Vector2(11, -11), Position + new Vector2(-11, 11), cross, 5f);
+        DrawLine(cmds, Position + new Vector2(-11, -11), Position + new Vector2(11, 11), cross, 5f);
+        DrawLine(cmds, Position + new Vector2(11, -11), Position + new Vector2(-11, 11), cross, 5f);
     }
 
     private void OpenBackgroundPicker()
@@ -602,15 +587,15 @@ public class RadialMenu
         Close();
     }
 
-    private void DrawThicknessPreview(List<Vertex> vertices)
+    private void DrawThicknessPreview(List<UICommand> cmds)
     {
         var zoom = _renderer.Camera.Zoom;
         float screenRadius = _previewThickness * zoom;
-        DrawCircle(vertices, Position, screenRadius + 4f, new Vector4(0.15f, 0.15f, 0.18f, 0.9f), 56);
-        DrawCircle(vertices, Position, Math.Max(screenRadius - 4f, 1f), new Vector4(0.97f, 0.97f, 0.98f, 1.0f), 56);
+        DrawCircle(cmds, Position, screenRadius + 4f, new Vector4(0.15f, 0.15f, 0.18f, 0.9f), 56);
+        DrawCircle(cmds, Position, Math.Max(screenRadius - 4f, 1f), new Vector4(0.97f, 0.97f, 0.98f, 1.0f), 56);
     }
 
-    private void DrawIcon(List<Vertex> vertices, int sectorIndex, bool isSelected)
+    private void DrawIcon(List<UICommand> cmds, int sectorIndex, bool isSelected)
     {
         float angle = sectorIndex * MathF.PI * 2f / SectorCount + RenderAngleOffset;
         var iconCenter = Position + new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * IconRadius;
@@ -638,7 +623,7 @@ public class RadialMenu
         }
     }
 
-    private static void DrawAnnularSector(List<Vertex> v, Vector2 center, float r1, float r2, float start, float end, Vector4 color, int segments)
+    private static void DrawAnnularSector(List<UICommand> cmds, Vector2 center, float r1, float r2, float start, float end, Vector4 color, int segments)
     {
         float step = (end - start) / segments;
         for (int i = 0; i < segments; i++)
@@ -649,51 +634,19 @@ public class RadialMenu
             var inner2 = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * r1;
             var outer2 = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * r2;
 
-            v.Add(new Vertex { Position = inner1, Color = color });
-            v.Add(new Vertex { Position = outer1, Color = color });
-            v.Add(new Vertex { Position = inner2, Color = color });
-            v.Add(new Vertex { Position = outer1, Color = color });
-            v.Add(new Vertex { Position = outer2, Color = color });
-            v.Add(new Vertex { Position = inner2, Color = color });
+            cmds.Add(new UICommand { P1P2 = new Vector4(inner1.X, inner1.Y, outer1.X, outer1.Y), Color = color, Params = new Vector4(outer2.X, 4, outer2.Y, 0) });
+            cmds.Add(new UICommand { P1P2 = new Vector4(inner1.X, inner1.Y, outer2.X, outer2.Y), Color = color, Params = new Vector4(inner2.X, 4, inner2.Y, 0) });
         }
     }
 
-    private static void DrawCircle(List<Vertex> v, Vector2 center, float r, Vector4 color, int segments)
-    {
-        float step = MathF.PI * 2f / segments;
-        for (int i = 0; i < segments; i++)
-        {
-            float a1 = i * step; float a2 = (i + 1) * step;
-            v.Add(new Vertex { Position = center, Color = color });
-            v.Add(new Vertex { Position = center + new Vector2(MathF.Cos(a1), MathF.Sin(a1)) * r, Color = color });
-            v.Add(new Vertex { Position = center + new Vector2(MathF.Cos(a2), MathF.Sin(a2)) * r, Color = color });
-        }
-    }
+    private static void DrawCircle(List<UICommand> cmds, Vector2 center, float r, Vector4 color, int segments)
+        => cmds.Add(new UICommand { P1P2 = new Vector4(center.X, center.Y, r, 0), Color = color, Params = new Vector4(0, 1, segments, 0) });
 
-    private static void DrawLine(List<Vertex> v, Vector2 p1, Vector2 p2, Vector4 color, float thickness)
-    {
-        var dir = Vector2.Normalize(p2 - p1);
-        var perp = new Vector2(-dir.Y, dir.X) * (thickness * 0.5f);
-        v.Add(new Vertex { Position = p1 + perp, Color = color });
-        v.Add(new Vertex { Position = p1 - perp, Color = color });
-        v.Add(new Vertex { Position = p2 + perp, Color = color });
-        v.Add(new Vertex { Position = p2 + perp, Color = color });
-        v.Add(new Vertex { Position = p1 - perp, Color = color });
-        v.Add(new Vertex { Position = p2 - perp, Color = color });
-    }
+    private static void DrawLine(List<UICommand> cmds, Vector2 p1, Vector2 p2, Vector4 color, float thickness)
+        => cmds.Add(new UICommand { P1P2 = new Vector4(p1.X, p1.Y, p2.X, p2.Y), Color = color, Params = new Vector4(thickness, 2, 0, 0) });
 
-    private static void DrawRect(List<Vertex> v, Vector2 pos, Vector2 size, Vector4 color)
-    {
-        var p1 = pos; var p2 = pos + new Vector2(size.X, 0);
-        var p3 = pos + size; var p4 = pos + new Vector2(0, size.Y);
-
-        v.Add(new Vertex { Position = p1, Color = color });
-        v.Add(new Vertex { Position = p2, Color = color });
-        v.Add(new Vertex { Position = p3, Color = color });
-        v.Add(new Vertex { Position = p1, Color = color });
-        v.Add(new Vertex { Position = p3, Color = color });
-        v.Add(new Vertex { Position = p4, Color = color });
-    }
+    private static void DrawRect(List<UICommand> cmds, Vector2 pos, Vector2 size, Vector4 color)
+        => cmds.Add(new UICommand { P1P2 = new Vector4(pos.X, pos.Y, size.X, size.Y), Color = color, Params = new Vector4(0, 0, 0, 0) });
 
     private static Vector4 HsvToRgb(float h, float s, float v)
     {

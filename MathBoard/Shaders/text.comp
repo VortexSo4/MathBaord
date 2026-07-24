@@ -1,0 +1,39 @@
+#version 460
+layout(local_size_x = 64) in;
+
+struct TextCommand {
+    vec4 posSize;
+    vec4 color;
+    vec4 uv;
+    vec4 params; // x=offset
+};
+
+struct TextVertex {
+    vec2 pos;
+    vec2 uv;
+    vec4 color;
+};
+
+layout(std430, binding = 0) readonly buffer CommandBuffer { TextCommand commands[]; };
+layout(std430, binding = 1) writeonly buffer VertexBuffer { TextVertex vertices[]; };
+layout(push_constant) uniform PC {
+    uint cmdCount;
+} pc;
+
+void main() {
+    uint cmdId = gl_GlobalInvocationID.x;
+    if (cmdId >= pc.cmdCount) return;
+
+    TextCommand cmd = commands[cmdId];
+    vec2 p = cmd.posSize.xy;
+    vec2 s = cmd.posSize.zw;
+    uint offset = uint(cmd.params.x);
+
+    vertices[offset + 0] = TextVertex(p, cmd.uv.xy, cmd.color);
+    vertices[offset + 1] = TextVertex(p + vec2(s.x, 0), cmd.uv.zy, cmd.color);
+    vertices[offset + 2] = TextVertex(p + vec2(s.x, s.y), cmd.uv.zw, cmd.color);
+
+    vertices[offset + 3] = TextVertex(p, cmd.uv.xy, cmd.color);
+    vertices[offset + 4] = TextVertex(p + vec2(s.x, s.y), cmd.uv.zw, cmd.color);
+    vertices[offset + 5] = TextVertex(p + vec2(0, s.y), cmd.uv.xw, cmd.color);
+}

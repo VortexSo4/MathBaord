@@ -1,0 +1,103 @@
+#version 460
+layout(local_size_x = 64) in;
+
+struct UICommand {
+    vec4 p1p2;      // xy = pos/p1, zw = size/p2
+    vec4 color;
+    vec4 params;    // x=thickness/p3.x, y=type, z=segments/p3.z, w=offset
+};
+
+struct Vertex {
+    vec2 pos;
+    vec4 color;
+};
+
+layout(std430, binding = 0) readonly buffer CommandBuffer { UICommand commands[]; };
+layout(std430, binding = 1) writeonly buffer VertexBuffer { Vertex vertices[]; };
+
+layout(push_constant) uniform PC {
+    uint cmdCount;
+} pc;
+
+void main() {
+    uint cmdId = gl_GlobalInvocationID.x;
+    if (cmdId >= pc.cmdCount) return;
+
+    UICommand cmd = commands[cmdId];
+    uint type = uint(cmd.params.y);
+    uint offset = uint(cmd.params.w);
+
+    if (type == 0u) { // Rect
+        vec2 p = cmd.p1p2.xy;
+        vec2 s = cmd.p1p2.zw;
+        vertices[offset + 0] = Vertex(p, cmd.color);
+        vertices[offset + 1] = Vertex(p + vec2(s.x, 0), cmd.color);
+        vertices[offset + 2] = Vertex(p + vec2(s.x, s.y), cmd.color);
+        vertices[offset + 3] = Vertex(p, cmd.color);
+        vertices[offset + 4] = Vertex(p + vec2(s.x, s.y), cmd.color);
+        vertices[offset + 5] = Vertex(p + vec2(0, s.y), cmd.color);
+    } else if (type == 1u) { // Circle
+        vec2 c = cmd.p1p2.xy;
+        float r = cmd.p1p2.z;
+        uint seg = uint(cmd.params.z);
+        float PI = 3.14159265359;
+        for (uint i = 0; i < seg; i++) {
+            float a1 = float(i) * 2.0 * PI / float(seg);
+            float a2 = float(i + 1) * 2.0 * PI / float(seg);
+            vertices[offset + i*3 + 0] = Vertex(c, cmd.color);
+            vertices[offset + i*3 + 1] = Vertex(c + vec2(cos(a1), sin(a1)) * r, cmd.color);
+            vertices[offset + i*3 + 2] = Vertex(c + vec2(cos(a2), sin(a2)) * r, cmd.color);
+        }
+    } else if (type == 2u) { // Line
+        vec2 p1 = cmd.p1p2.xy;
+        vec2 p2 = cmd.p1p2.zw;
+        float t = cmd.params.x * 0.5;
+        vec2 dir = normalize(p2 - p1);
+        vec2 perp = vec2(-dir.y, dir.x) * t;
+        vertices[offset + 0] = Vertex(p1 + perp, cmd.color);
+        vertices[offset + 1] = Vertex(p1 - perp, cmd.color);
+        vertices[offset + 2] = Vertex(p2 + perp, cmd.color);
+        vertices[offset + 3] = Vertex(p2 + perp, cmd.color);
+        vertices[offset + 4] = Vertex(p1 - perp, cmd.color);
+        vertices[offset + 5] = Vertex(p2 - perp, cmd.color);
+    } else if (type == 3u) { // RectOutline
+        vec2 p = cmd.p1p2.xy;
+        vec2 s = cmd.p1p2.zw;
+        float t = cmd.params.x;
+        // 4 rects
+        vertices[offset + 0] = Vertex(p, cmd.color);
+        vertices[offset + 1] = Vertex(p + vec2(s.x, 0), cmd.color);
+        vertices[offset + 2] = Vertex(p + vec2(s.x, t), cmd.color);
+        vertices[offset + 3] = Vertex(p, cmd.color);
+        vertices[offset + 4] = Vertex(p + vec2(s.x, t), cmd.color);
+        vertices[offset + 5] = Vertex(p + vec2(0, t), cmd.color);
+
+        vertices[offset + 6] = Vertex(p + vec2(0, s.y - t), cmd.color);
+        vertices[offset + 7] = Vertex(p + vec2(s.x, s.y - t), cmd.color);
+        vertices[offset + 8] = Vertex(p + vec2(s.x, s.y), cmd.color);
+        vertices[offset + 9] = Vertex(p + vec2(0, s.y - t), cmd.color);
+        vertices[offset + 10] = Vertex(p + vec2(s.x, s.y), cmd.color);
+        vertices[offset + 11] = Vertex(p + vec2(0, s.y), cmd.color);
+
+        vertices[offset + 12] = Vertex(p + vec2(0, t), cmd.color);
+        vertices[offset + 13] = Vertex(p + vec2(t, t), cmd.color);
+        vertices[offset + 14] = Vertex(p + vec2(t, s.y - t), cmd.color);
+        vertices[offset + 15] = Vertex(p + vec2(0, t), cmd.color);
+        vertices[offset + 16] = Vertex(p + vec2(t, s.y - t), cmd.color);
+        vertices[offset + 17] = Vertex(p + vec2(0, s.y - t), cmd.color);
+
+        vertices[offset + 18] = Vertex(p + vec2(s.x - t, t), cmd.color);
+        vertices[offset + 19] = Vertex(p + vec2(s.x, t), cmd.color);
+        vertices[offset + 20] = Vertex(p + vec2(s.x, s.y - t), cmd.color);
+        vertices[offset + 21] = Vertex(p + vec2(s.x - t, t), cmd.color);
+        vertices[offset + 22] = Vertex(p + vec2(s.x, s.y - t), cmd.color);
+        vertices[offset + 23] = Vertex(p + vec2(s.x - t, s.y - t), cmd.color);
+    } else if (type == 4u) { // Triangle
+        vec2 p1 = cmd.p1p2.xy;
+        vec2 p2 = cmd.p1p2.zw;
+        vec2 p3 = vec2(cmd.params.x, cmd.params.z);
+        vertices[offset + 0] = Vertex(p1, cmd.color);
+        vertices[offset + 1] = Vertex(p2, cmd.color);
+        vertices[offset + 2] = Vertex(p3, cmd.color);
+    }
+}
