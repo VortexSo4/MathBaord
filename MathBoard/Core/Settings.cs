@@ -7,7 +7,8 @@ namespace MathBoard.Core;
 
 public static class Settings
 {
-    private static readonly string Path = "MathBoardSettings.json";
+    private static readonly string AppDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MathBoard");
+    private static readonly string SettingPath = Path.Combine(AppDataDir, "MathBoardSettings.json");
 
     // ====================== ОДИН ИСТОЧНИК ПРАВДЫ ======================
     private static class Defaults
@@ -23,7 +24,7 @@ public static class Settings
 
         public static readonly string DefaultBackgroundColor = "#121212";
 
-        public const string LibraryRootPath = "Lessons";
+        public static readonly string LibraryRootPath = Path.Combine( Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MathBoard", "Lessons");
         public const int AutoSaveIntervalMinutes = 1;
         public const bool LibraryPanelOnTop = true;
 
@@ -118,7 +119,7 @@ public static class Settings
 
     public static void Load()
     {
-        if (!File.Exists(Path))
+        if (!File.Exists(SettingPath))
         {
             Save();
             return;
@@ -126,7 +127,7 @@ public static class Settings
 
         try
         {
-            var json = File.ReadAllText(Path);
+            var json = File.ReadAllText(SettingPath);
             using var doc = JsonDocument.Parse(json);
 
             if (doc.RootElement.TryGetProperty("Values", out var valuesElem))
@@ -204,7 +205,7 @@ public static class Settings
             };
 
             var json = JsonSerializer.Serialize(data, _jsonOptions);
-            File.WriteAllText(Path, json);
+            File.WriteAllText(SettingPath, json);
         }
         catch
         {

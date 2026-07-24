@@ -3,7 +3,9 @@ using Silk.NET.Windowing;
 using MathBoard.Rendering;
 using Silk.NET.Maths;
 
-using var logFile = File.CreateText("latest.log");
+string logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MathBoard");
+Directory.CreateDirectory(logDir);
+using var logFile = File.CreateText(Path.Combine(logDir, "latest.log"));
 Console.SetOut(logFile);
 Console.SetError(logFile);
 

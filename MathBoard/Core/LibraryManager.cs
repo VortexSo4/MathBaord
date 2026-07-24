@@ -203,7 +203,7 @@ public class LibraryManager
 
     public void LoadLastSave()
     {
-        string lastSave = "AutoSave.mathboard";
+        string lastSave = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"MathBoard","AutoSave.mathboard");
         if (File.Exists(lastSave))
         {
             _document.LoadFromFile(lastSave);
