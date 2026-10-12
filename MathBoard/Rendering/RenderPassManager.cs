@@ -1,4 +1,4 @@
-﻿using Silk.NET.Vulkan;
+using Silk.NET.Vulkan;
 
 namespace MathBoard.Rendering;
 
@@ -23,34 +23,12 @@ public sealed unsafe class RenderPassManager : IDisposable
 
     private void CreateRenderPass()
     {
-        SampleCountFlags samples = _context.GetSampleCount();
-        // Принудительно используем 4 сэмпла, если поддерживается, иначе 2 или 1
-        if (samples >= SampleCountFlags.Count4Bit)
-            samples = SampleCountFlags.Count4Bit;
-        else if (samples >= SampleCountFlags.Count2Bit)
-            samples = SampleCountFlags.Count2Bit;
-        else
-            samples = SampleCountFlags.Count1Bit;
-
-        // 1. Мультисэмпловый цветовой аттачмент
+        // Single-sampled: all shapes are anti-aliased analytically in prim.frag.
         AttachmentDescription colorAttachment = new()
         {
             Format = _swapchain.ImageFormat,
-            Samples = samples,
-            LoadOp = AttachmentLoadOp.Clear,
-            StoreOp = AttachmentStoreOp.DontCare, // не сохраняем, только resolve
-            StencilLoadOp = AttachmentLoadOp.DontCare,
-            StencilStoreOp = AttachmentStoreOp.DontCare,
-            InitialLayout = ImageLayout.Undefined,
-            FinalLayout = ImageLayout.ColorAttachmentOptimal
-        };
-
-        // 2. Resolve аттачмент (обычный, один сэмпл) – это swapchain изображение
-        AttachmentDescription resolveAttachment = new()
-        {
-            Format = _swapchain.ImageFormat,
             Samples = SampleCountFlags.Count1Bit,
-            LoadOp = AttachmentLoadOp.DontCare,
+            LoadOp = AttachmentLoadOp.Clear,
             StoreOp = AttachmentStoreOp.Store,
             StencilLoadOp = AttachmentLoadOp.DontCare,
             StencilStoreOp = AttachmentStoreOp.DontCare,
@@ -59,27 +37,32 @@ public sealed unsafe class RenderPassManager : IDisposable
         };
 
         AttachmentReference colorRef = new() { Attachment = 0, Layout = ImageLayout.ColorAttachmentOptimal };
-        AttachmentReference resolveRef = new() { Attachment = 1, Layout = ImageLayout.ColorAttachmentOptimal };
 
         SubpassDescription subpass = new()
         {
             PipelineBindPoint = PipelineBindPoint.Graphics,
             ColorAttachmentCount = 1,
-            PColorAttachments = &colorRef,
-            PResolveAttachments = &resolveRef
+            PColorAttachments = &colorRef
         };
 
-        var attachments = stackalloc AttachmentDescription[2];
-        attachments[0] = colorAttachment;
-        attachments[1] = resolveAttachment;
+        SubpassDependency dependency = new()
+        {
+            SrcSubpass = Vk.SubpassExternal,
+            DstSubpass = 0,
+            SrcStageMask = PipelineStageFlags.ColorAttachmentOutputBit,
+            DstStageMask = PipelineStageFlags.ColorAttachmentOutputBit,
+            DstAccessMask = AccessFlags.ColorAttachmentWriteBit
+        };
 
         RenderPassCreateInfo createInfo = new()
         {
             SType = StructureType.RenderPassCreateInfo,
-            AttachmentCount = 2,
-            PAttachments = attachments,
+            AttachmentCount = 1,
+            PAttachments = &colorAttachment,
             SubpassCount = 1,
-            PSubpasses = &subpass
+            PSubpasses = &subpass,
+            DependencyCount = 1,
+            PDependencies = &dependency
         };
 
         var result = _context.Vk.CreateRenderPass(_context.Device, &createInfo, null, out _renderPass);

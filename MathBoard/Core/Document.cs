@@ -1,77 +1,46 @@
-﻿using System.Numerics;
+using System.Numerics;
 
 namespace MathBoard.Core;
 
 public class Document
 {
+    private const int MaxHistory = 50;
+
     public List<Stroke> Strokes { get; } = [];
     public bool IsDirty { get; set; } = false;
 
-    private readonly Stack<List<Stroke>> _history = new();
-    private readonly Stack<List<Stroke>> _redoStack = new();
-    private bool _isUndoing = false;
+    // Snapshots share point lists with the live strokes, so a finished stroke's list must be
+    // replaced rather than modified. Only the stroke that is being drawn gets points appended.
+    private readonly List<List<Stroke>> _history = new();
+    private readonly List<List<Stroke>> _redoStack = new();
+
+    private List<Stroke> Snapshot() =>
+        [..Strokes.Select(s => new Stroke { Width = s.Width, Color = s.Color, Points = s.Points })];
 
     public void SaveState()
     {
-        if (_isUndoing) return;
-
         IsDirty = true;
         _redoStack.Clear();
-        _history.Push([
-            ..Strokes.Select(s => new Stroke
-            {
-                Width = s.Width,
-                Color = s.Color,
-                Points = [..s.Points]
-            })
-        ]);
-
-        if (_history.Count > 50)
-            _history.Pop();
+        _history.Add(Snapshot());
+        if (_history.Count > MaxHistory)
+            _history.RemoveAt(0);
     }
 
-    public void Undo()
+    public bool Undo() => Restore(_history, _redoStack);
+
+    public bool Redo() => Restore(_redoStack, _history);
+
+    private bool Restore(List<List<Stroke>> from, List<List<Stroke>> to)
     {
-        if (_history.Count == 0) return;
-        _isUndoing = true;
-        _redoStack.Push([
-            ..Strokes.Select(s => new Stroke
-            {
-                Width = s.Width,
-                Color = s.Color,
-                Points = [..s.Points]
-            })
-        ]);
-        
+        if (from.Count == 0) return false;
+        to.Add(Snapshot());
         Strokes.Clear();
-        var previous = _history.Pop();
-        foreach (var s in previous)
-            Strokes.Add(s);
-        
-        _isUndoing = false;
+        Strokes.AddRange(from[^1]);
+        from.RemoveAt(from.Count - 1);
         IsDirty = true;
+        return true;
     }
 
-    public void Redo()
-    {
-        if (_redoStack.Count == 0) return;
-        
-        _history.Push([
-            ..Strokes.Select(s => new Stroke
-            {
-                Width = s.Width,
-                Color = s.Color,
-                Points = [..s.Points]
-            })
-        ]);
-        
-        Strokes.Clear();
-        var next = _redoStack.Pop();
-        foreach (var s in next)
-            Strokes.Add(s);
-        IsDirty = true;
-    }
-    
     public void Clear()
     {
         Strokes.Clear();
@@ -79,16 +48,16 @@ public class Document
         _redoStack.Clear();
         IsDirty = false;
     }
-    
+
     public void SaveToFile(string path)
     {
         using var stream = File.Create(path);
         using var writer = new BinaryWriter(stream);
-    
+
         // Сигнатура "MTHB" и версия
         writer.Write(0x4D544842); // 'MTHB' as int
         writer.Write((byte)1);    // версия
-    
+
         writer.Write(Strokes.Count);
         foreach (var stroke in Strokes)
         {
@@ -108,19 +77,18 @@ public class Document
                 writer.Write(p.Y);
             }
         }
-        IsDirty = false;
     }
 
     public void LoadFromFile(string path)
     {
         using var stream = File.OpenRead(path);
         using var reader = new BinaryReader(stream);
-    
+
         int sig = reader.ReadInt32();
         if (sig != 0x4D544842) throw new InvalidDataException("Not a MathBoard file");
         byte version = reader.ReadByte();
         if (version != 1) throw new InvalidDataException($"Unsupported version {version}");
-    
+
         int strokeCount = reader.ReadInt32();
         var newStrokes = new List<Stroke>();
         for (int i = 0; i < strokeCount; i++)
@@ -135,11 +103,11 @@ public class Document
             }
             newStrokes.Add(new Stroke { Color = color, Width = width, Points = points });
         }
-    
+
         // Заменяем содержимое
         Strokes.Clear();
         Strokes.AddRange(newStrokes);
-    
+
         // Сбрасываем историю
         _history.Clear();
         _redoStack.Clear();

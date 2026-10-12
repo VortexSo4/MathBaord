@@ -1,6 +1,7 @@
 ﻿using System.Globalization;
 using System.Numerics;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Reflection;
 
 namespace MathBoard.Core;
@@ -48,8 +49,23 @@ public static class Settings
         public const float RadialMenuInnerRadius = 56f;
         public const float RadialMenuCenterRadius = 46f;
 
-        public const int StrokeCircleSegments = 14;
-        public const int UIRingSegments = 128;
+        public static readonly QuickButtonConfig[] QuickButtons =
+        [
+            new(UiAction.ToggleLibrary, 0f, 0f, 34f, 34f),
+            new(UiAction.Undo, 1f, 0f, -138f, 34f),
+            new(UiAction.Redo, 1f, 0f, -86f, 34f),
+            new(UiAction.Save, 1f, 0f, -34f, 34f),
+            new(UiAction.Brush, 1f, 0.5f, -34f, -78f),
+            new(UiAction.Eraser, 1f, 0.5f, -34f, -26f),
+            new(UiAction.Select, 1f, 0.5f, -34f, 26f),
+            new(UiAction.Pan, 1f, 0.5f, -34f, 78f),
+            new(UiAction.Color1, 0.5f, 1f, -52f, -34f),
+            new(UiAction.Color2, 0.5f, 1f, 0f, -34f),
+            new(UiAction.Color3, 0.5f, 1f, 52f, -34f),
+            new(UiAction.ZoomOut, 1f, 1f, -138f, -34f),
+            new(UiAction.FitView, 1f, 1f, -86f, -34f),
+            new(UiAction.ZoomIn, 1f, 1f, -34f, -34f)
+        ];
     }
 
     // ====================== Настройки ======================
@@ -84,8 +100,8 @@ public static class Settings
     public static Setting<float> RadialMenuInnerRadius { get; } = new(Defaults.RadialMenuInnerRadius);
     public static Setting<float> RadialMenuCenterRadius { get; } = new(Defaults.RadialMenuCenterRadius);
 
-    public static Setting<int> StrokeCircleSegments { get; } = new(Defaults.StrokeCircleSegments);
-    public static Setting<int> UIRingSegments { get; } = new(Defaults.UIRingSegments);
+    /// <summary>Visible quick buttons. Replace the array when changing it: the default instance is shared.</summary>
+    public static Setting<QuickButtonConfig[]> QuickButtons { get; } = new(Defaults.QuickButtons);
 
     // ====================== Вспомогательный класс ======================
     public class Setting<T>
@@ -106,7 +122,8 @@ public static class Settings
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {
         WriteIndented = true,
-        IncludeFields = true
+        IncludeFields = true,
+        Converters = { new JsonStringEnumConverter() }
     };
 
     // ====================== АВТОМАТИКА (рефлексия) ======================
@@ -261,3 +278,6 @@ public static class Settings
         public Dictionary<string, object> Values { get; set; } = new();
     }
 }
+
+/// <summary>A quick button centered at <c>anchor * screenSize + offset</c>.</summary>
+public sealed record QuickButtonConfig(UiAction Action, float AnchorX, float AnchorY, float OffsetX, float OffsetY);

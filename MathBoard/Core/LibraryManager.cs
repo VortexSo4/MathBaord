@@ -1,46 +1,74 @@
-﻿using System.Numerics;
 using MathBoard.Rendering;
 
 namespace MathBoard.Core;
 
 public class LibraryManager
 {
+    private const string Extension = ".mathboard";
+
     private readonly Document _document;
     private readonly StrokeRenderer _renderer;
-    private DateTime _lastAutoSave = DateTime.MinValue;
-    
+    private DateTime _lastAutoSave = DateTime.Now;
+
+    /// <summary>File the canvas was loaded from or last saved to; null for a new canvas.</summary>
+    public string? CurrentPath { get; private set; }
+    public string? CurrentName => CurrentPath == null ? null : Path.GetFileNameWithoutExtension(CurrentPath);
+
     public bool IsDocumentDirty() => _document.IsDirty;
 
-    public void NewFile()
-    {
-        _document.Clear();
-        _renderer.ClearSelection();
-        _renderer.SetDirty();
-    }
+    private static string AutoSavePath => Path.Combine(Settings.LibraryRootPath, "AutoSave" + Extension);
 
     public LibraryManager(Document document, StrokeRenderer renderer)
     {
         _document = document;
         _renderer = renderer;
-        Settings.Load();
         EnsureLibraryRoot();
     }
 
-    private void EnsureLibraryRoot()
+    private static void EnsureLibraryRoot()
     {
         if (!Directory.Exists(Settings.LibraryRootPath))
             Directory.CreateDirectory(Settings.LibraryRootPath);
+    }
+
+    public void NewFile()
+    {
+        _document.Clear();
+        CurrentPath = null;
+        _renderer.OnDocumentReplaced();
     }
 
     public string SaveCanvas(string? customName = null)
     {
         EnsureLibraryRoot();
         string name = customName ?? $"Untitled_{DateTime.Now:yyyy-MM-dd_HH-mm}";
-        string path = Path.Combine(Settings.LibraryRootPath, $"{name}.mathboard");
+        string path = Path.Combine(Settings.LibraryRootPath, name + Extension);
 
         _document.SaveToFile(path);
+        _document.IsDirty = false;
+        CurrentPath = path;
+        _renderer.SetDirty();
         Console.WriteLine($"Saved: {path}");
         return path;
+    }
+
+    /// <summary>Saves over the current file. Returns false when the canvas has no file yet.</summary>
+    public bool SaveCurrent()
+    {
+        if (CurrentPath == null) return false;
+        try
+        {
+            _document.SaveToFile(CurrentPath);
+            _document.IsDirty = false;
+            _renderer.SetDirty();
+            Console.WriteLine($"Saved: {CurrentPath}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Save failed: {ex.Message}");
+            return false;
+        }
     }
 
     public void DeleteFile(string path)
@@ -49,6 +77,7 @@ public class LibraryManager
         try
         {
             File.Delete(path);
+            if (IsCurrent(path)) CurrentPath = null;
             Console.WriteLine($"Deleted: {path}");
         }
         catch (Exception ex)
@@ -60,48 +89,14 @@ public class LibraryManager
     public void RenameFile(string oldPath, string newName)
     {
         if (!File.Exists(oldPath)) return;
-        try
-        {
-            string dir = Path.GetDirectoryName(oldPath) ?? Settings.LibraryRootPath.Value;
-            string newPath = Path.Combine(dir, $"{newName}.mathboard");
-            if (string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase)) return;
-            if (File.Exists(newPath))
-            {
-                Console.WriteLine($"Rename failed: destination already exists: {newPath}");
-                return;
-            }
-
-            File.Move(oldPath, newPath);
-            Console.WriteLine($"Renamed: {oldPath} -> {newPath}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Rename failed: {ex.Message}");
-        }
+        string dir = Path.GetDirectoryName(oldPath) ?? Settings.LibraryRootPath.Value;
+        MovePath(oldPath, Path.Combine(dir, newName + Extension), isDirectory: false);
     }
 
     public void MoveFile(string sourcePath, string destDir)
     {
-        if (!File.Exists(sourcePath)) return;
-        if (!Directory.Exists(destDir)) return;
-        try
-        {
-            string fileName = Path.GetFileName(sourcePath);
-            string destPath = Path.Combine(destDir, fileName);
-            if (string.Equals(sourcePath, destPath, StringComparison.OrdinalIgnoreCase)) return;
-            if (File.Exists(destPath))
-            {
-                Console.WriteLine($"Move failed: destination exists: {destPath}");
-                return;
-            }
-
-            File.Move(sourcePath, destPath);
-            Console.WriteLine($"Moved: {sourcePath} -> {destPath}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Move failed: {ex.Message}");
-        }
+        if (!File.Exists(sourcePath) || !Directory.Exists(destDir)) return;
+        MovePath(sourcePath, Path.Combine(destDir, Path.GetFileName(sourcePath)), isDirectory: false);
     }
 
     public void DeleteDirectory(string path)
@@ -110,6 +105,7 @@ public class LibraryManager
         try
         {
             Directory.Delete(path, recursive: true);
+            if (CurrentPath != null && IsInside(CurrentPath, path)) CurrentPath = null;
             Console.WriteLine($"Directory deleted: {path}");
         }
         catch (Exception ex)
@@ -121,55 +117,63 @@ public class LibraryManager
     public void RenameDirectory(string oldPath, string newName)
     {
         if (!Directory.Exists(oldPath)) return;
-        try
-        {
-            string parentDir = Path.GetDirectoryName(oldPath) ?? Settings.LibraryRootPath.Value;
-            string newPath = Path.Combine(parentDir, newName);
-            if (string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase)) return;
-            if (Directory.Exists(newPath))
-            {
-                Console.WriteLine($"RenameDirectory failed: destination already exists: {newPath}");
-                return;
-            }
-
-            Directory.Move(oldPath, newPath);
-            Console.WriteLine($"Directory renamed: {oldPath} -> {newPath}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"RenameDirectory failed: {ex.Message}");
-        }
+        string parentDir = Path.GetDirectoryName(oldPath) ?? Settings.LibraryRootPath.Value;
+        MovePath(oldPath, Path.Combine(parentDir, newName), isDirectory: true);
     }
 
     public void MoveDirectory(string sourcePath, string destDir)
     {
-        if (!Directory.Exists(sourcePath)) return;
-        if (!Directory.Exists(destDir)) return;
+        if (!Directory.Exists(sourcePath) || !Directory.Exists(destDir)) return;
+        string destPath = Path.Combine(destDir, Path.GetFileName(sourcePath));
+        if (IsInside(destPath, sourcePath))
+        {
+            Console.WriteLine("MoveDirectory failed: cannot move into own child");
+            return;
+        }
+
+        MovePath(sourcePath, destPath, isDirectory: true);
+    }
+
+    /// <summary>Returns the path an item would get when moved into <paramref name="destDir"/>, or null if that is not possible.</summary>
+    public static string? GetMoveDestination(string sourcePath, bool isDirectory, string destDir)
+    {
+        string destPath = Path.Combine(destDir, Path.GetFileName(sourcePath));
+        if (PathsEqual(sourcePath, destPath)) return null;
+        if (isDirectory && IsInside(destPath, sourcePath)) return null;
+        if (File.Exists(destPath) || Directory.Exists(destPath)) return null;
+        return destPath;
+    }
+
+    private void MovePath(string oldPath, string newPath, bool isDirectory)
+    {
+        if (PathsEqual(oldPath, newPath)) return;
         try
         {
-            string dirName = Path.GetFileName(sourcePath);
-            string destPath = Path.Combine(destDir, dirName);
-            if (string.Equals(sourcePath, destPath, StringComparison.OrdinalIgnoreCase)) return;
-            if (Directory.Exists(destPath))
+            if (File.Exists(newPath) || Directory.Exists(newPath))
             {
-                Console.WriteLine($"MoveDirectory failed: destination exists: {destPath}");
+                Console.WriteLine($"Move failed: destination already exists: {newPath}");
                 return;
             }
 
-            if (destPath.StartsWith(sourcePath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-            {
-                Console.WriteLine($"MoveDirectory failed: cannot move into own child");
-                return;
-            }
+            if (isDirectory) Directory.Move(oldPath, newPath);
+            else File.Move(oldPath, newPath);
 
-            Directory.Move(sourcePath, destPath);
-            Console.WriteLine($"Directory moved: {sourcePath} -> {destPath}");
+            if (CurrentPath != null && (IsCurrent(oldPath) || (isDirectory && IsInside(CurrentPath, oldPath))))
+                CurrentPath = newPath + CurrentPath[oldPath.Length..];
+            Console.WriteLine($"Moved: {oldPath} -> {newPath}");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"MoveDirectory failed: {ex.Message}");
+            Console.WriteLine($"Move failed: {ex.Message}");
         }
     }
+
+    private bool IsCurrent(string path) => CurrentPath != null && PathsEqual(CurrentPath, path);
+
+    private static bool PathsEqual(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsInside(string path, string directory) =>
+        path.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 
     public void CreateFolder(string parentDir, string folderName)
     {
@@ -185,15 +189,19 @@ public class LibraryManager
         }
     }
 
+    /// <summary>Periodically writes unsaved changes to AutoSave without touching the current file or dirty state.</summary>
     public void AutoSaveIfNeeded()
     {
         if ((DateTime.Now - _lastAutoSave).TotalMinutes < Settings.AutoSaveIntervalMinutes)
             return;
 
+        _lastAutoSave = DateTime.Now;
+        if (!_document.IsDirty) return;
+
         try
         {
-            SaveCanvas("AutoSave");
-            _lastAutoSave = DateTime.Now;
+            EnsureLibraryRoot();
+            _document.SaveToFile(AutoSavePath);
         }
         catch (Exception ex)
         {
@@ -203,12 +211,11 @@ public class LibraryManager
 
     public void LoadLastSave()
     {
-        string lastSave = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"MathBoard","AutoSave.mathboard");
-        if (File.Exists(lastSave))
-        {
-            _document.LoadFromFile(lastSave);
-            _renderer.SetDirty();
-        }
+        if (!File.Exists(AutoSavePath)) return;
+        LoadFile(AutoSavePath);
+        // The autosave is a recovery copy, not the user's file.
+        CurrentPath = null;
+        _document.IsDirty = true;
     }
 
     public void LoadFile(string path)
@@ -217,7 +224,8 @@ public class LibraryManager
         try
         {
             _document.LoadFromFile(path);
-            _renderer.SetDirty();
+            CurrentPath = path;
+            _renderer.OnDocumentReplaced();
             Console.WriteLine($"Loaded: {path}");
         }
         catch (Exception ex)

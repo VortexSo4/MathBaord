@@ -1,49 +1,67 @@
-﻿﻿using Silk.NET.Input;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using MathBoard.Rendering;
+using Silk.NET.Input;
 using Silk.NET.Windowing;
 
 namespace MathBoard.Core;
 
-public sealed class InputManager : IDisposable
+public sealed partial class InputManager : IDisposable
 {
+    // Moving farther than this always means "draw", even after the radial menu escape time.
+    private const float MenuCancelDistance = 12f;
+    private const double QuickShapeHoldSeconds = 1.0;
+
     private readonly IInputContext _input;
     private readonly StrokeRenderer _strokeRenderer;
     private readonly Camera _camera;
     private readonly Document _document;
     private readonly RadialMenu _radialMenu;
-    private readonly LibraryManager? _libraryManager;
-    private readonly LibraryPanel? _libraryPanel;
+    private readonly LibraryManager _libraryManager;
+    private readonly LibraryPanel _libraryPanel;
+    private readonly QuickBar _quickBar;
 
-    private IMouse? _mouse;
-    private IKeyboard? _keyboard;
-    private readonly IWindow _window;
-    public event Action? OnActivity;
-    public event Action? OnSceneChanged;
+    private readonly IMouse? _mouse;
+    private readonly IKeyboard? _keyboard;
 
-    private bool _isDrawing = false;
-    private bool _isErasing = false;
-    private Vector2 _lastPanPosition;
+    /// <summary>Who receives pointer events until the button that started the gesture is released.</summary>
+    private enum Capture { None, Panel, QuickBar, Radial, Canvas, Erase, Pan }
+
+    private Capture _capture = Capture.None;
+    private MouseButton _captureButton;
+
+    private bool _menuPending;
+    private bool _isDrawing;
+    private bool _isPanning;
     private Vector2 _mouseDownPos;
-
-    private bool _menuPending = false;
     private DateTime _mouseDownTime;
-
+    private Vector2 _lastPanPosition;
     private Vector2 _lastMovePos;
     private DateTime _lastMoveTime = DateTime.Now;
 
+    private Key? _repeatKey;
+    private DateTime _repeatAt;
+    private readonly TimeSpan _repeatDelay;
+    private readonly TimeSpan _repeatInterval;
+    private int _caretPhase;
+
+    public QuickBar QuickBar => _quickBar;
+
     public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document,
-        RadialMenu radialMenu, LibraryManager libraryManager, LibraryPanel? libraryPanel)
+        RadialMenu radialMenu, LibraryManager libraryManager, LibraryPanel libraryPanel)
     {
         _strokeRenderer = strokeRenderer;
         _camera = camera;
         _document = document;
-        _window = window;
-        _input = window.CreateInput();
         _radialMenu = radialMenu;
         _libraryManager = libraryManager;
         _libraryPanel = libraryPanel;
+        _quickBar = new QuickBar(strokeRenderer, Execute, IsActive, pos => _libraryPanel.IsOpen && pos.X < _libraryPanel.Width);
+        _libraryPanel.SettingsPanel.OnCustomizeQuickButtons = _quickBar.BeginEditing;
 
+        (_repeatDelay, _repeatInterval) = ReadKeyboardRepeat();
+
+        _input = window.CreateInput();
         _mouse = _input.Mice.FirstOrDefault();
         _keyboard = _input.Keyboards.FirstOrDefault();
 
@@ -58,381 +76,454 @@ public sealed class InputManager : IDisposable
         if (_keyboard != null)
         {
             _keyboard.KeyDown += OnKeyDown;
+            _keyboard.KeyUp += OnKeyUp;
             _keyboard.KeyChar += OnKeyChar;
         }
     }
 
-    public void Update()
+    /// <summary>True while timers are running that need the loop to tick at frame rate.</summary>
+    public bool NeedsFrequentUpdates =>
+        _menuPending || _isDrawing || _quickBar.IsPressed || _libraryPanel.NeedsUpdates ||
+        _libraryPanel.ActiveTextBox != null || _repeatKey != null;
+
+    public void Update(float dt)
     {
-        if (_libraryPanel?.IsDialogOpen == true)
+        var now = DateTime.Now;
+
+        if (_menuPending && !_radialMenu.IsOpen && (now - _mouseDownTime).TotalSeconds >= Settings.RadialMenuOpenThreshold)
         {
-            _strokeRenderer.SetDirty();
+            _menuPending = false;
+            if (_strokeRenderer.CurrentSelectionState == StrokeRenderer.SelectionState.DrawingBox)
+                _strokeRenderer.CurrentSelectionState = StrokeRenderer.SelectionState.None;
+            _radialMenu.OpenAt(_mouseDownPos);
+            _radialMenu.OnMouseDown(MousePosition);
+            _capture = Capture.Radial;
         }
 
-        if (_menuPending && !_radialMenu.IsOpen)
+        if (_isDrawing && _strokeRenderer.Tool == Tool.Brush && !_strokeRenderer.IsQuickShapeApplied &&
+            (now - _lastMoveTime).TotalSeconds > QuickShapeHoldSeconds)
         {
-            double elapsed = (DateTime.Now - _mouseDownTime).TotalSeconds;
-            if (elapsed >= Settings.RadialMenuOpenThreshold)
+            _strokeRenderer.ApplyQuickShape();
+            _strokeRenderer.IsQuickShapeApplied = true;
+        }
+
+        _quickBar.Update();
+        _libraryPanel.Update(dt);
+
+        var textBox = _libraryPanel.ActiveTextBox;
+        if (textBox != null)
+        {
+            if (_repeatKey is { } key && now >= _repeatAt && _keyboard != null)
             {
-                var currentPos = GetMousePosition(_mouse!, _window);
-                _radialMenu.OpenAt(_mouseDownPos);
-                _radialMenu.OnMouseDown(currentPos);
-                _menuPending = false;
-                
-                if (_strokeRenderer.IsSelectMode && _strokeRenderer.CurrentSelectionState == StrokeRenderer.SelectionState.DrawingBox)
-                {
-                    _strokeRenderer.CurrentSelectionState = StrokeRenderer.SelectionState.None;
-                }
+                textBox.HandleKey(key, IsCtrl, IsShift, _keyboard);
+                _repeatAt = now + _repeatInterval;
+                _strokeRenderer.SetDirty();
+            }
+
+            int phase = (int)((now - textBox.LastEditTime).TotalMilliseconds / 500);
+            if (phase != _caretPhase)
+            {
+                _caretPhase = phase;
                 _strokeRenderer.SetDirty();
             }
         }
-
-        if (_isDrawing && !_menuPending && !_strokeRenderer.IsSelectMode && _mouse != null)
+        else
         {
-            var currentPos = GetMousePosition(_mouse, _window);
-            if (Vector2.Distance(currentPos, _lastMovePos) < 1.0f)
-            {
-                if ((DateTime.Now - _lastMoveTime).TotalSeconds > 1.0)
-                {
-                    if (!_strokeRenderer.IsQuickShapeApplied)
-                    {
-                        _strokeRenderer.ApplyQuickShape();
-                        _strokeRenderer.IsQuickShapeApplied = true;
-                    }
-                }
-            }
-            else
-            {
-                _lastMovePos = currentPos;
-                _lastMoveTime = DateTime.Now;
-                _strokeRenderer.IsQuickShapeApplied = false;
-            }
+            _repeatKey = null;
         }
     }
+
+    private Vector2 MousePosition => _mouse?.Position ?? Vector2.Zero;
+    private bool IsCtrl => _keyboard?.IsKeyPressed(Key.ControlLeft) == true || _keyboard?.IsKeyPressed(Key.ControlRight) == true;
+    private bool IsShift => _keyboard?.IsKeyPressed(Key.ShiftLeft) == true || _keyboard?.IsKeyPressed(Key.ShiftRight) == true;
+
+    // ------------------------------------------------------------- actions
+
+    public void Execute(UiAction action)
+    {
+        switch (action)
+        {
+            case UiAction.ToggleLibrary:
+                _libraryPanel.Toggle();
+                break;
+            case UiAction.Undo:
+                _strokeRenderer.Undo();
+                break;
+            case UiAction.Redo:
+                _strokeRenderer.Redo();
+                break;
+            case UiAction.Save:
+                if (!_libraryManager.SaveCurrent()) _libraryPanel.OpenSaveDialog();
+                _libraryPanel.RefreshTree();
+                break;
+            case UiAction.NewFile:
+                if (_document.IsDirty) _libraryPanel.OpenNewFileDialog();
+                else _libraryManager.NewFile();
+                break;
+            case UiAction.OpenAutoSave:
+                _libraryManager.LoadLastSave();
+                break;
+            case UiAction.Settings:
+                _libraryPanel.OpenSettingsDialog();
+                break;
+            case UiAction.Brush:
+                _strokeRenderer.SetTool(Tool.Brush);
+                break;
+            case UiAction.Eraser:
+                _strokeRenderer.SetTool(Tool.Eraser);
+                break;
+            case UiAction.Select:
+                _strokeRenderer.SetTool(Tool.Select);
+                break;
+            case UiAction.Pan:
+                _strokeRenderer.SetTool(Tool.Pan);
+                break;
+            case UiAction.Color1 or UiAction.Color2 or UiAction.Color3:
+                _strokeRenderer.SetColor(Settings.Colors[action - UiAction.Color1]);
+                if (_strokeRenderer.Tool is Tool.Eraser or Tool.Pan) _strokeRenderer.SetTool(Tool.Brush);
+                break;
+            case UiAction.ZoomIn:
+                _strokeRenderer.ZoomAt(CanvasCenter, 1.25f);
+                break;
+            case UiAction.ZoomOut:
+                _strokeRenderer.ZoomAt(CanvasCenter, 0.8f);
+                break;
+            case UiAction.FitView:
+                _strokeRenderer.FitToContent();
+                break;
+        }
+
+        _strokeRenderer.SetDirty();
+    }
+
+    private bool IsActive(UiAction action) => action switch
+    {
+        UiAction.ToggleLibrary => _libraryPanel.IsOpen,
+        UiAction.Brush => _strokeRenderer.Tool == Tool.Brush,
+        UiAction.Eraser => _strokeRenderer.Tool == Tool.Eraser,
+        UiAction.Select => _strokeRenderer.Tool == Tool.Select,
+        UiAction.Pan => _strokeRenderer.Tool == Tool.Pan,
+        UiAction.Color1 or UiAction.Color2 or UiAction.Color3 =>
+            Vector4.DistanceSquared(_strokeRenderer.CurrentColor, Settings.Colors[action - UiAction.Color1]) < 1e-4f,
+        _ => false
+    };
+
+    private Vector2 CanvasCenter
+    {
+        get
+        {
+            var screen = _strokeRenderer.ScreenSize;
+            float left = _libraryPanel.IsOpen ? _libraryPanel.Width : 0f;
+            return new Vector2((left + screen.X) * 0.5f, screen.Y * 0.5f);
+        }
+    }
+
+    // ------------------------------------------------------------- mouse
 
     private void OnMouseDown(IMouse mouse, MouseButton button)
     {
-        OnActivity?.Invoke();
-        var pos = GetMousePosition(mouse, _window);
+        var pos = mouse.Position;
+        _strokeRenderer.SetDirty();
+        if (_capture != Capture.None) return;
 
-        if (_libraryPanel?.IsDialogOpen == true)
+        if (_libraryPanel.IsModalOpen)
         {
-            if (button == MouseButton.Left)
-                _libraryPanel.HandleMouseDown(pos, false);
-            else if (button == MouseButton.Right)
-                _libraryPanel.HandleMouseDown(pos, true);
-            return;
-        }
-
-        if (button == MouseButton.Left && _libraryPanel?.IsOpen == true && pos.X < _libraryPanel.Width)
-        {
-            if (_libraryPanel.HandleMouseDown(pos))
-                return;
-        }
-
-        if (button == MouseButton.Left && _radialMenu.IsOpen)
-        {
-            _radialMenu.OnMouseDown(pos);
-            return;
-        }
-
-        if (button == MouseButton.Left && _strokeRenderer.IsSelectMode)
-        {
-            _mouseDownPos = pos;
-            _mouseDownTime = DateTime.Now;
-            _menuPending = true;
-            
-            _strokeRenderer.HandleSelectionDown(pos);
-            _strokeRenderer.SetDirty();
-            return;
-        }
-
-        switch (button)
-        {
-            case MouseButton.Left:
-            {
-                _mouseDownPos = pos;
-                _mouseDownTime = DateTime.Now;
-                _menuPending = true;
-                break;
-            }
-            case MouseButton.Right:
-                _isErasing = true;
-                _document.SaveState();
-                _strokeRenderer.EraseAt(pos, saveState: false);
-                break;
-            case MouseButton.Middle:
-                _lastPanPosition = pos;
-                break;
-        }
-    }
-
-    private void OnMouseMove(IMouse mouse, Vector2 position)
-    {
-        OnActivity?.Invoke();
-
-        var pos = GetMousePosition(mouse, _window);
-
-        // Обновляем позицию мыши для панели, чтобы тултипы и подсветка работали сразу при наведении
-        if (_libraryPanel?.IsDialogOpen == true)
-        {
-            _libraryPanel.HandleMouseMove(pos);
-            _strokeRenderer.SetDirty();
-            return;
-        }
-
-        _lastMovePos = pos;
-        _lastMoveTime = DateTime.Now;
-
-        if (_libraryPanel != null && _libraryPanel.IsOpen && pos.X < _libraryPanel.Width)
-        {
-            _libraryPanel.HandleMouseMove(pos);
-            _strokeRenderer.SetDirty();
-            return;
-        }
-
-        if (_isErasing)
-        {
-            _strokeRenderer.EraseAt(pos, saveState: false);
-            _strokeRenderer.SetDirty();
-            return;
-        }
-
-        if (_radialMenu.IsOpen)
-        {
-            _radialMenu.OnMouseMove(pos);
-            _strokeRenderer.SetDirty();
-            return;
-        }
-
-        if (_strokeRenderer.IsSelectMode && _mouse?.IsButtonPressed(MouseButton.Left) == true)
-        {
-            if (_menuPending)
-            {
-                float elapsed = (float)(DateTime.Now - _mouseDownTime).TotalSeconds;
-                float dist = Vector2.Distance(_mouseDownPos, pos);
-
-                if (dist > Settings.RadialMenuEscapeDistance && elapsed < Settings.RadialMenuEscapeTime)
-                {
-                    _menuPending = false;
-                }
-                else
-                {
-                    return;
-                }
-            }
-            
-            _strokeRenderer.HandleSelectionMove(pos);
-            _strokeRenderer.SetDirty();
-            return;
-        }
-
-        if (_menuPending)
-        {
-            float elapsed = (float)(DateTime.Now - _mouseDownTime).TotalSeconds;
-            float dist = Vector2.Distance(_mouseDownPos, pos);
-
-            if (dist > Settings.RadialMenuEscapeDistance && elapsed < Settings.RadialMenuEscapeTime)
-            {
-                _menuPending = false;
-                _strokeRenderer.BeginStroke(_mouseDownPos);
-                _strokeRenderer.AddPoint(pos);
-                _isDrawing = true;
-                return;
-            }
-        }
-
-        if (_isDrawing)
-        {
-            _strokeRenderer.AddPoint(pos);
-        }
-        else if (_mouse?.IsButtonPressed(MouseButton.Middle) == true)
-        {
-            var delta = pos - _lastPanPosition;
-            _camera.Position += delta;
-            _lastPanPosition = pos;
-
-            if (_strokeRenderer.IsSelectMode || _strokeRenderer.SelectedStrokes.Count > 0)
-                _strokeRenderer.SetDirty();
-        }
-    }
-
-    private void OnMouseUp(IMouse mouse, MouseButton button)
-    {
-        OnActivity?.Invoke();
-
-        if (_libraryPanel?.IsDialogOpen == true)
-        {
-            // Пробрасываем отпускание мыши в панель настроек, чтобы сбросить скроллбар
-            if (button == MouseButton.Left && _libraryPanel.SettingsPanel.IsOpen)
-            {
-                _libraryPanel.SettingsPanel.HandleMouseUp(GetMousePosition(mouse, _window));
-            }
-            return;
-        }
-
-        var pos = GetMousePosition(mouse, _window);
-
-        if (button == MouseButton.Left && _libraryPanel != null &&
-            (_libraryPanel.IsDragging || _libraryPanel.HasPendingDrag))
-        {
-            _libraryPanel.HandleMouseUp(pos);
-            _strokeRenderer.SetDirty();
+            if (button == MouseButton.Left) Begin(Capture.Panel, button, () => _libraryPanel.HandleMouseDown(pos));
             return;
         }
 
         if (button == MouseButton.Left)
         {
             if (_radialMenu.IsOpen)
-            {
-                _radialMenu.OnMouseUp(pos);
-            }
-            else if (_strokeRenderer.IsSelectMode)
-            {
-                _strokeRenderer.HandleSelectionUp(pos);
-                _strokeRenderer.SetDirty();
-            }
-            else if (_isDrawing)
-            {
-                _strokeRenderer.EndStroke();
-                _isDrawing = false;
-                _strokeRenderer.IsQuickShapeApplied = false;
-            }
-            else if (_menuPending && !_radialMenu.IsOpen)
-            {
-                _strokeRenderer.BeginStroke(_mouseDownPos);
-                _strokeRenderer.AddPoint(pos);
-                _isDrawing = true;
-                _strokeRenderer.EndStroke();
-                _isDrawing = false;
-                _menuPending = false;
-            }
-
-            _menuPending = false;
-        }
-        else if (button == MouseButton.Right)
-        {
-            _isErasing = false;
-        }
-    }
-
-    private void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
-    {
-        OnActivity?.Invoke();
-
-        if (_libraryPanel?.IsDialogOpen == true)
-        {
-            bool ctrl = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
-            bool shift = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
-
-            if (key == Key.Enter) { _libraryPanel.ConfirmDialog(); _strokeRenderer.SetDirty(); return; }
-            if (key == Key.Escape) { _libraryPanel.CancelDialog(); _strokeRenderer.SetDirty(); return; }
-
-            if (!_libraryPanel.HasTextInput) return;
-
-            var tb = _libraryPanel.TextBox;
-            bool changed = false;
-
-            if (key == Key.Backspace) { tb.Backspace(ctrl); changed = true; }
-            else if (key == Key.Delete) { tb.Delete(ctrl); changed = true; }
-            else if (key == Key.Left) { tb.MoveCursor(-1, ctrl, shift); changed = true; }
-            else if (key == Key.Right) { tb.MoveCursor(1, ctrl, shift); changed = true; }
-            else if (key == Key.Home) { tb.MoveCursorToStart(shift); changed = true; }
-            else if (key == Key.End) { tb.MoveCursorToEnd(shift); changed = true; }
-            else if (ctrl && key == Key.A) { tb.SelectAll(); changed = true; }
-
-            if (changed) { _libraryPanel.RefreshDialogText(); _strokeRenderer.SetDirty(); }
+                Begin(Capture.Radial, button, () => _radialMenu.OnMouseDown(pos));
+            else if (_quickBar.Contains(pos))
+                Begin(Capture.QuickBar, button, () => _quickBar.OnMouseDown(pos));
+            else if (_libraryPanel.Contains(pos))
+                Begin(Capture.Panel, button, () => _libraryPanel.HandleMouseDown(pos));
+            else
+                Begin(Capture.Canvas, button, () => BeginCanvasPress(pos));
             return;
         }
 
-        bool isCtrlPressed = keyboard.IsKeyPressed(Key.ControlLeft) || keyboard.IsKeyPressed(Key.ControlRight);
-        bool isShiftPressed = keyboard.IsKeyPressed(Key.ShiftLeft) || keyboard.IsKeyPressed(Key.ShiftRight);
+        if (_radialMenu.IsOpen || _quickBar.IsEditing || _libraryPanel.Contains(pos)) return;
 
-        if (isCtrlPressed && key == Key.Z)
+        if (button == MouseButton.Right)
         {
-            if (isShiftPressed) _strokeRenderer.Redo();
-            else _strokeRenderer.Undo();
-            _strokeRenderer.SetDirty();
+            Begin(Capture.Erase, button, () =>
+            {
+                _strokeRenderer.BeginErase();
+                _strokeRenderer.EraseAt(pos);
+            });
         }
-
-        if (key == Key.E) { _strokeRenderer.ToggleEraser(); _strokeRenderer.SetDirty(); }
-        if (key == Key.Escape && _radialMenu.IsOpen) { _radialMenu.Close(); _strokeRenderer.SetDirty(); }
-        if (key == Key.L && isCtrlPressed) { _libraryPanel?.Toggle(); _strokeRenderer.SetDirty(); }
-
-        if (isCtrlPressed && key == Key.S) { _libraryManager?.SaveCanvas(); _libraryPanel?.RefreshTree(); }
-        else if (isCtrlPressed && key == Key.O) { _libraryManager?.LoadLastSave(); }
-        else if (isCtrlPressed && key == Key.N)
+        else if (button == MouseButton.Middle)
         {
-            if (_document.IsDirty)
-                _libraryPanel?.OpenNewFileDialog();
-            else
-                _libraryManager?.NewFile();
-            _strokeRenderer.SetDirty();
+            Begin(Capture.Pan, button, () => _lastPanPosition = pos);
         }
     }
 
-    private void OnKeyChar(IKeyboard keyboard, char c)
+    private void Begin(Capture capture, MouseButton button, Action start)
     {
-        if (_libraryPanel?.IsDialogOpen == true)
+        _capture = capture;
+        _captureButton = button;
+        start();
+    }
+
+    private void BeginCanvasPress(Vector2 pos)
+    {
+        _mouseDownPos = pos;
+        _mouseDownTime = DateTime.Now;
+        _menuPending = true;
+        _isPanning = false;
+        if (_strokeRenderer.Tool == Tool.Select)
+            _strokeRenderer.HandleSelectionDown(pos);
+    }
+
+    private void OnMouseMove(IMouse mouse, Vector2 position)
+    {
+        var pos = mouse.Position;
+
+        switch (_capture)
         {
-            _libraryPanel.HandleCharInput(c);
+            case Capture.Panel:
+                _libraryPanel.HandleMouseMove(pos);
+                return;
+            case Capture.QuickBar:
+                _quickBar.OnMouseMove(pos);
+                return;
+            case Capture.Radial:
+                _radialMenu.OnMouseMove(pos);
+                _strokeRenderer.SetDirty();
+                return;
+            case Capture.Erase:
+                _strokeRenderer.EraseAt(pos);
+                UpdateHover(pos);
+                return;
+            case Capture.Pan:
+                PanBy(pos - _lastPanPosition);
+                _lastPanPosition = pos;
+                return;
+            case Capture.Canvas:
+                MoveCanvasPress(pos);
+                return;
+        }
+
+        if (_libraryPanel.IsModalOpen || (_libraryPanel.IsOpen && pos.X < _libraryPanel.Width))
+            _libraryPanel.HandleMouseMove(pos);
+        if (_radialMenu.IsOpen)
+        {
+            _radialMenu.OnMouseMove(pos);
             _strokeRenderer.SetDirty();
         }
+
+        _quickBar.UpdateHover(pos);
+        UpdateHover(pos);
+    }
+
+    private void UpdateHover(Vector2 pos)
+    {
+        bool overCanvas = !_libraryPanel.Contains(pos) && !_quickBar.Contains(pos);
+        _strokeRenderer.HoverPosition = overCanvas ? pos : null;
+        if (_strokeRenderer.Tool == Tool.Eraser) _strokeRenderer.SetDirty();
+    }
+
+    private void MoveCanvasPress(Vector2 pos)
+    {
+        if (_menuPending)
+        {
+            float elapsed = (float)(DateTime.Now - _mouseDownTime).TotalSeconds;
+            float dist = Vector2.Distance(_mouseDownPos, pos);
+            bool escaped = (dist > Settings.RadialMenuEscapeDistance && elapsed < Settings.RadialMenuEscapeTime) ||
+                           dist > MenuCancelDistance;
+            if (!escaped) return;
+
+            _menuPending = false;
+            switch (_strokeRenderer.Tool)
+            {
+                case Tool.Brush:
+                case Tool.Eraser:
+                    _strokeRenderer.BeginStroke(_mouseDownPos);
+                    _isDrawing = true;
+                    break;
+                case Tool.Pan:
+                    _isPanning = true;
+                    _lastPanPosition = _mouseDownPos;
+                    break;
+            }
+        }
+
+        _lastMovePos = pos;
+        _lastMoveTime = DateTime.Now;
+        _strokeRenderer.IsQuickShapeApplied = false;
+
+        if (_isDrawing) _strokeRenderer.AddPoint(pos);
+        else if (_isPanning)
+        {
+            PanBy(pos - _lastPanPosition);
+            _lastPanPosition = pos;
+        }
+        else if (_strokeRenderer.Tool == Tool.Select) _strokeRenderer.HandleSelectionMove(pos);
+
+        UpdateHover(pos);
+    }
+
+    private void PanBy(Vector2 delta)
+    {
+        _camera.Position += delta;
+        _strokeRenderer.SetDirty();
+    }
+
+    private void OnMouseUp(IMouse mouse, MouseButton button)
+    {
+        var pos = mouse.Position;
+        _strokeRenderer.SetDirty();
+        if (_capture == Capture.None || button != _captureButton) return;
+
+        var capture = _capture;
+        _capture = Capture.None;
+
+        switch (capture)
+        {
+            case Capture.Panel:
+                _libraryPanel.HandleMouseUp(pos);
+                break;
+            case Capture.QuickBar:
+                _quickBar.OnMouseUp(pos);
+                break;
+            case Capture.Radial:
+                _radialMenu.OnMouseUp(pos);
+                break;
+            case Capture.Canvas:
+                EndCanvasPress(pos);
+                break;
+        }
+    }
+
+    private void EndCanvasPress(Vector2 pos)
+    {
+        var tool = _strokeRenderer.Tool;
+        if (_menuPending)
+        {
+            _menuPending = false;
+            if (tool is Tool.Brush or Tool.Eraser)
+            {
+                // A tap leaves a dot (or erases under the pen).
+                _strokeRenderer.BeginStroke(_mouseDownPos);
+                _strokeRenderer.AddPoint(pos);
+                _strokeRenderer.EndStroke();
+            }
+        }
+        else if (_isDrawing)
+        {
+            _strokeRenderer.EndStroke();
+        }
+
+        if (tool == Tool.Select) _strokeRenderer.HandleSelectionUp(pos);
+        _isDrawing = false;
+        _isPanning = false;
     }
 
     private void OnMouseWheel(IMouse mouse, ScrollWheel wheel)
     {
-        OnActivity?.Invoke();
+        var pos = mouse.Position;
+        if (_capture is Capture.Canvas or Capture.Radial) return;
 
-        if (_libraryPanel?.IsDialogOpen == true)
-        {
-            if (_libraryPanel.SettingsPanel.IsOpen)
-            {
-                _libraryPanel.HandleScroll(wheel.Y);
-                _strokeRenderer.SetDirty();
-            }
-            return;
-        }
-
-        var screenPos = GetMousePosition(mouse, _window);
-
-        bool ctrlPressed = _keyboard?.IsKeyPressed(Key.ControlLeft) == true ||
-                           _keyboard?.IsKeyPressed(Key.ControlRight) == true;
-        bool shiftPressed = _keyboard?.IsKeyPressed(Key.ShiftLeft) == true ||
-                            _keyboard?.IsKeyPressed(Key.ShiftRight) == true;
-
-        if (_libraryPanel?.IsOpen == true && screenPos.X < _libraryPanel.Width)
+        if (_libraryPanel.Contains(pos))
         {
             _libraryPanel.HandleScroll(wheel.Y);
-            _strokeRenderer.SetDirty();
             return;
         }
 
-        if (ctrlPressed)
-        {
-            var worldBefore = _strokeRenderer.ScreenToWorld(screenPos);
-            float zoomFactor = 1.0f + wheel.Y * Settings.CameraZoomSpeed;
-            _camera.Zoom = Math.Clamp(_camera.Zoom * zoomFactor, Settings.CameraMinZoom, Settings.CameraMaxZoom);
-            _camera.Position = screenPos - worldBefore * _camera.Zoom;
-        }
-        else if (shiftPressed)
-        {
-            _camera.Position += new Vector2(wheel.Y * Settings.CameraPanSpeed, 0);
-        }
-        else
-        {
-            _camera.Position += new Vector2(0, wheel.Y * Settings.CameraPanSpeed);
-        }
-
-        if (_strokeRenderer.IsSelectMode || _strokeRenderer.SelectedStrokes.Count > 0)
-            _strokeRenderer.SetDirty();
+        if (IsCtrl) _strokeRenderer.ZoomAt(pos, 1.0f + wheel.Y * Settings.CameraZoomSpeed);
+        else if (IsShift) PanBy(new Vector2(wheel.Y * Settings.CameraPanSpeed, 0));
+        else PanBy(new Vector2(0, wheel.Y * Settings.CameraPanSpeed));
     }
 
-    private static Vector2 GetMousePosition(IMouse mouse, IWindow window)
+    // ------------------------------------------------------------- keyboard
+
+    private void OnKeyDown(IKeyboard keyboard, Key key, int scancode)
     {
-        var pos = mouse.Position;
-        return new Vector2(pos.X, pos.Y);
+        _strokeRenderer.SetDirty();
+        bool ctrl = IsCtrl, shift = IsShift;
+
+        if (_libraryPanel.IsModalOpen)
+        {
+            if (key is Key.Enter or Key.KeypadEnter) _libraryPanel.ConfirmDialog();
+            else if (key == Key.Escape) _libraryPanel.CancelDialog();
+            else if (_libraryPanel.ActiveTextBox?.HandleKey(key, ctrl, shift, keyboard) == true &&
+                     key is Key.Left or Key.Right or Key.Backspace or Key.Delete)
+            {
+                _repeatKey = key;
+                _repeatAt = DateTime.Now + _repeatDelay;
+            }
+
+            return;
+        }
+
+        if (_quickBar.IsEditing)
+        {
+            if (key is Key.Escape or Key.Enter) _quickBar.FinishEditing();
+            return;
+        }
+
+        if (key == Key.Escape)
+        {
+            if (_radialMenu.IsOpen) _radialMenu.Close();
+            else _strokeRenderer.ClearSelection();
+            return;
+        }
+
+        if (_capture != Capture.None) return;
+
+        if (ctrl)
+        {
+            switch (key)
+            {
+                case Key.Z: Execute(shift ? UiAction.Redo : UiAction.Undo); break;
+                case Key.Y: Execute(UiAction.Redo); break;
+                case Key.S when shift: _libraryPanel.OpenSaveDialog(); break;
+                case Key.S: Execute(UiAction.Save); break;
+                case Key.O: Execute(UiAction.OpenAutoSave); break;
+                case Key.N: Execute(UiAction.NewFile); break;
+                case Key.L: Execute(UiAction.ToggleLibrary); break;
+            }
+        }
+        else if (key == Key.E)
+        {
+            Execute(_strokeRenderer.Tool == Tool.Eraser ? UiAction.Brush : UiAction.Eraser);
+        }
     }
+
+    private void OnKeyUp(IKeyboard keyboard, Key key, int scancode)
+    {
+        if (key == _repeatKey) _repeatKey = null;
+    }
+
+    private void OnKeyChar(IKeyboard keyboard, char c)
+    {
+        if (_libraryPanel.ActiveTextBox == null) return;
+        _libraryPanel.HandleCharInput(c);
+    }
+
+    /// <summary>Uses the user's Windows keyboard repeat delay and rate for held editing keys.</summary>
+    private static (TimeSpan Delay, TimeSpan Interval) ReadKeyboardRepeat()
+    {
+        const uint SPI_GETKEYBOARDSPEED = 0x000A;
+        const uint SPI_GETKEYBOARDDELAY = 0x0016;
+        int delay = 1, speed = 31;
+        if (OperatingSystem.IsWindows())
+        {
+            SystemParametersInfo(SPI_GETKEYBOARDDELAY, 0, ref delay, 0);
+            SystemParametersInfo(SPI_GETKEYBOARDSPEED, 0, ref speed, 0);
+        }
+
+        // Delay 0..3 maps to 250..1000 ms, speed 0..31 to roughly 2.5..30 repeats per second.
+        double rate = 2.5 + Math.Clamp(speed, 0, 31) * (27.5 / 31.0);
+        return (TimeSpan.FromMilliseconds(250 * (Math.Clamp(delay, 0, 3) + 1)), TimeSpan.FromSeconds(1.0 / rate));
+    }
+
+    [LibraryImport("user32.dll", EntryPoint = "SystemParametersInfoW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SystemParametersInfo(uint action, uint param, ref int value, uint winIni);
 
     public void Dispose()
     {
@@ -447,6 +538,7 @@ public sealed class InputManager : IDisposable
         if (_keyboard != null)
         {
             _keyboard.KeyDown -= OnKeyDown;
+            _keyboard.KeyUp -= OnKeyUp;
             _keyboard.KeyChar -= OnKeyChar;
         }
     }

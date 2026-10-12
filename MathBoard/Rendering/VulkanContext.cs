@@ -298,32 +298,19 @@ public sealed unsafe class VulkanContext : IDisposable
         _vk?.Dispose();
     }
     
-    public SampleCountFlags GetMaxUsableSampleCount()
+    public uint? TryFindMemoryType(uint typeFilter, MemoryPropertyFlags properties)
     {
-        PhysicalDeviceProperties props;
-        _vk.GetPhysicalDeviceProperties(_physicalDevice, &props);
-        var limits = props.Limits;
+        PhysicalDeviceMemoryProperties memProps;
+        _vk.GetPhysicalDeviceMemoryProperties(_physicalDevice, &memProps);
+        for (int i = 0; i < memProps.MemoryTypeCount; i++)
+        {
+            if ((typeFilter & (1u << i)) != 0 && (memProps.MemoryTypes[i].PropertyFlags & properties) == properties)
+                return (uint)i;
+        }
 
-        var colorSamples = limits.FramebufferColorSampleCounts;
-        var depthSamples = limits.FramebufferDepthSampleCounts;
-        var maxSamples = (SampleCountFlags)Math.Min((uint)colorSamples, (uint)depthSamples);
+        return null;
+    }
 
-        if (maxSamples.HasFlag(SampleCountFlags.Count64Bit)) return SampleCountFlags.Count64Bit;
-        if (maxSamples.HasFlag(SampleCountFlags.Count32Bit)) return SampleCountFlags.Count32Bit;
-        if (maxSamples.HasFlag(SampleCountFlags.Count16Bit)) return SampleCountFlags.Count16Bit;
-        if (maxSamples.HasFlag(SampleCountFlags.Count8Bit))  return SampleCountFlags.Count8Bit;
-        if (maxSamples.HasFlag(SampleCountFlags.Count4Bit))  return SampleCountFlags.Count4Bit;
-        if (maxSamples.HasFlag(SampleCountFlags.Count2Bit))  return SampleCountFlags.Count2Bit;
-        return SampleCountFlags.Count1Bit;
-    }
-    
-    public SampleCountFlags GetSampleCount()
-    {
-        var maxSamples = GetMaxUsableSampleCount();
-        if (maxSamples >= SampleCountFlags.Count4Bit)
-            return SampleCountFlags.Count4Bit;
-        if (maxSamples >= SampleCountFlags.Count2Bit)
-            return SampleCountFlags.Count2Bit;
-        return SampleCountFlags.Count1Bit;
-    }
+    public uint FindMemoryType(uint typeFilter, MemoryPropertyFlags properties) =>
+        TryFindMemoryType(typeFilter, properties) ?? throw new Exception($"No memory type with {properties}");
 }

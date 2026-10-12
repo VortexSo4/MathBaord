@@ -1,13 +1,23 @@
-﻿﻿using System.Numerics;
-using System.Text;
+using System.Numerics;
 using MathBoard.Core;
 
 namespace MathBoard.Rendering;
 
 public class LibraryPanel : IDisposable
 {
+    private const float HeaderHeight = 64f;
+    private const float ToolbarHeight = 52f;
+    private const float BottomBarHeight = 56f;
+    private const float RowHeight = 34f;
+    private const float Indent = 18f;
+    private const float ActionSize = 28f;
+    private const float DragThreshold = 6f;
+    private const double AutoExpandSeconds = 0.6;
+    private const double HighlightSeconds = 1.4;
+    private const string PlaceholderKey = "\0placeholder";
+
     public bool IsOpen { get; private set; } = true;
-    public float Width { get; set; } = 340f;
+    public float Width { get; } = 340f;
 
     private readonly StrokeRenderer _renderer;
     private readonly LibraryManager _libraryManager;
@@ -15,218 +25,65 @@ public class LibraryPanel : IDisposable
     public SettingsPanel SettingsPanel => _settingsPanel;
 
     private FileNode? _rootNode;
-    private readonly List<(FileNode node, float x, float y)> _flatList = new();
-    private float _scrollY = 0f;
-    private const float ItemHeight = 36f;
-
-    private static readonly Vector4 TextColor = new(0.93f, 0.93f, 0.95f, 1f);
-    private static readonly Vector4 ButtonTextColor = Vector4.One;
-    private static readonly Vector4 FileNameColor = new(0.95f, 0.78f, 0.55f, 1f);
-    private static readonly Vector4 DropHighlightColor = new(0.4f, 0.78f, 1.0f, 0.95f);
+    private readonly HashSet<string> _collapsed = new(StringComparer.OrdinalIgnoreCase);
+    private float _scrollY;
+    private Vector2 _screenSize = new(1280, 720);
+    private Vector2 _mousePos = new(-1000);
 
     public enum DialogMode { None, Delete, Rename, Save, CreateFolder, NewFile, Log }
-    private enum IconAction { Edit, Delete, Move }
+    private enum RowAction { Move, Rename, Delete }
 
     private DialogMode _dialogMode = DialogMode.None;
     private FileNode? _dialogTargetNode;
-
-    public bool IsDialogOpen => _dialogMode != DialogMode.None || _settingsPanel.IsOpen;
-    public bool IsTreeDialog => _dialogMode == DialogMode.CreateFolder;
-    public bool HasTextInput => _dialogMode == DialogMode.Rename || _dialogMode == DialogMode.Save || _dialogMode == DialogMode.CreateFolder || _settingsPanel.HasTextInput;
-
-    private bool _dragPending = false;
-    private Vector2 _dragStartPos;
-    private FileNode? _dragNode;
-    private bool _isDragging = false;
-    private Vector2 _dragMousePos;
-    private string? _dropTargetPath;
-    private const float DragThreshold = 6f;
-    private Vector2 _mousePos;
-
-    public bool IsDragging => _isDragging;
-    public bool HasPendingDrag => _dragPending;
-
+    private string? _selectedDestDir;
     private List<string> _logLines = new();
 
-    public class TextBoxState
+    private readonly TextBoxState _textBox = new()
     {
-        public StringBuilder Text = new();
-        public int CursorPos = 0;
-        public int AnchorPos = 0;
-        public DateTime LastEditTime = DateTime.Now;
+        Accepts = c => !char.IsControl(c) && Array.IndexOf(Path.GetInvalidFileNameChars(), c) < 0
+    };
 
-        public int SelStart => Math.Min(CursorPos, AnchorPos);
-        public int SelEnd => Math.Max(CursorPos, AnchorPos);
-        public bool HasSelection => CursorPos != AnchorPos;
+    public bool IsModalOpen => _dialogMode != DialogMode.None || _settingsPanel.IsOpen;
+    private bool IsPopupDialog => _dialogMode is DialogMode.Delete or DialogMode.Rename or DialogMode.Save or DialogMode.NewFile;
 
-        public void SetText(string text)
-        {
-            Text.Clear();
-            Text.Append(text);
-            CursorPos = Text.Length;
-            AnchorPos = CursorPos;
-            LastEditTime = DateTime.Now;
-        }
+    /// <summary>The text field that currently receives keyboard input, if any.</summary>
+    public TextBoxState? ActiveTextBox =>
+        _settingsPanel.IsOpen ? (_settingsPanel.HasTextInput ? _settingsPanel.TextBox : null)
+        : _dialogMode is DialogMode.Rename or DialogMode.Save or DialogMode.CreateFolder ? _textBox
+        : null;
 
-        public void Insert(char c)
-        {
-            if (HasSelection)
-            {
-                Text.Remove(SelStart, SelEnd - SelStart);
-                CursorPos = SelStart;
-                AnchorPos = CursorPos;
-            }
-            Text.Insert(CursorPos, c);
-            CursorPos++;
-            AnchorPos = CursorPos;
-            LastEditTime = DateTime.Now;
-        }
+    // Rows as laid out in the last frame; hit testing uses exactly what was drawn.
+    private readonly record struct Row(FileNode? Node, int Depth, float Y, bool IsPlaceholder);
+    private readonly List<Row> _rows = new();
+    private readonly Dictionary<string, float> _animatedY = new();
+    private float _contentHeight;
+    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    private double _lastRenderTime;
 
-        public void Backspace(bool wholeWord)
-        {
-            if (HasSelection)
-            {
-                Text.Remove(SelStart, SelEnd - SelStart);
-                CursorPos = SelStart;
-                AnchorPos = CursorPos;
-            }
-            else
-            {
-                if (CursorPos <= 0) { LastEditTime = DateTime.Now; return; }
+    // Pointer interaction inside the list.
+    private enum Press { None, Row, Move, Scroll }
+    private Press _press;
+    private FileNode? _pressNode;
+    private Vector2 _pressPos;
+    private float _pressScroll;
 
-                int removeCount = wholeWord ? GetWordLength(-1) : 1;
-                removeCount = Math.Min(removeCount, CursorPos);
-                if (removeCount > 0)
-                {
-                    Text.Remove(CursorPos - removeCount, removeCount);
-                    CursorPos -= removeCount;
-                    AnchorPos = CursorPos;
-                }
-            }
-            LastEditTime = DateTime.Now;
-        }
+    private bool _isDragging;
+    private FileNode? _dragNode;
+    private string? _dropTargetPath;
+    private string? _hoverFolderPath;
+    private DateTime _hoverFolderSince;
 
-        public void Delete(bool wholeWord)
-        {
-            if (HasSelection)
-            {
-                Text.Remove(SelStart, SelEnd - SelStart);
-                CursorPos = SelStart;
-                AnchorPos = CursorPos;
-            }
-            else
-            {
-                if (CursorPos >= Text.Length) { LastEditTime = DateTime.Now; return; }
+    private string? _highlightPath;
+    private DateTime _highlightStart;
 
-                int removeCount = wholeWord ? GetWordLength(1) : 1;
-                removeCount = Math.Min(removeCount, Text.Length - CursorPos);
-                if (removeCount > 0)
-                    Text.Remove(CursorPos, removeCount);
-            }
-            LastEditTime = DateTime.Now;
-        }
-
-        private int GetWordLength(int direction)
-        {
-            int count = 0;
-            int i = CursorPos;
-            if (direction == -1) i--;
-
-            bool skippedSpace = false;
-            while (i >= 0 && i < Text.Length)
-            {
-                if (char.IsWhiteSpace(Text[i]))
-                {
-                    if (skippedSpace) break;
-                    count++;
-                }
-                else
-                {
-                    skippedSpace = true;
-                    count++;
-                }
-                i += direction;
-            }
-            return count;
-        }
-
-        public void MoveCursor(int delta, bool wholeWord, bool shift)
-        {
-            int newPos = CursorPos;
-            if (wholeWord) newPos += GetWordLength(delta);
-            else newPos += delta;
-
-            newPos = Math.Clamp(newPos, 0, Text.Length);
-            CursorPos = newPos;
-            if (!shift) AnchorPos = CursorPos;
-            LastEditTime = DateTime.Now;
-        }
-
-        public void MoveCursorToStart(bool shift)
-        {
-            CursorPos = 0;
-            if (!shift) AnchorPos = 0;
-            LastEditTime = DateTime.Now;
-        }
-
-        public void MoveCursorToEnd(bool shift)
-        {
-            CursorPos = Text.Length;
-            if (!shift) AnchorPos = Text.Length;
-            LastEditTime = DateTime.Now;
-        }
-
-        public void SelectAll()
-        {
-            CursorPos = 0;
-            AnchorPos = Text.Length;
-            LastEditTime = DateTime.Now;
-        }
-
-        public override string ToString() => Text.ToString();
-    }
-
-    private readonly TextBoxState _textBox = new();
-    public TextBoxState TextBox
-    {
-        get
-        {
-            if (_settingsPanel.HasTextInput) return _settingsPanel.TextBox;
-            return _textBox;
-        }
-    }
-
-    private string _dialogTitle = "";
-    private string _dialogConfirmLabel = "OK";
-    private string _dialogCancelLabel = "Cancel";
-    private string _dialogMessage = "";
-
-    private const float DialogWidth = 380f;
-    private const float DialogHeight = 210f;
-    private const float DialogBtnWidth = 100f;
-    private const float DialogBtnHeight = 36f;
-    private const float IconButtonSize = 32f;
-    private const float IconButtonMargin = 4f;
-
-    private readonly List<(FileNode node, IconAction action, float x, float y, float w, float h)> _iconHitRegions = new();
-    private Vector4 _saveButtonBounds;
-    private Vector4 _createFolderButtonBounds;
-    private Vector4 _newButtonBounds;
-    private Vector4 _settingsButtonBounds;
-    private string? _selectedDestDir;
-
-    private Vector2 _screenSize;
-    private TextAtlas.Entry _saveIconEntry, _editIconEntry, _deleteIconEntry, _moveIconEntry, _folderIconEntry, _newIconEntry, _settingsIconEntry;
+    public bool IsDragging => _isDragging;
 
     public LibraryPanel(StrokeRenderer renderer, LibraryManager libraryManager)
     {
         _renderer = renderer;
         _libraryManager = libraryManager;
-        _settingsPanel = new SettingsPanel(renderer, RebuildTextAtlas);
+        _settingsPanel = new SettingsPanel(renderer);
         _settingsPanel.OnOpenLog = OpenLogDialog;
-        _saveButtonBounds = new Vector4(16, 78, IconButtonSize, IconButtonSize);
-        _createFolderButtonBounds = new Vector4(16 + 36, 78, IconButtonSize, IconButtonSize);
-        _newButtonBounds = new Vector4(16 + 72, 78, IconButtonSize, IconButtonSize);
         RefreshTree();
     }
 
@@ -240,89 +97,17 @@ public class LibraryPanel : IDisposable
     public void RefreshTree()
     {
         _rootNode = BuildTree(Settings.LibraryRootPath.Value);
-        RebuildFlatList();
-        RebuildTextAtlas();
         _renderer.SetDirty();
-    }
-
-    public void RefreshDialogText() => RebuildTextAtlas();
-
-    private void RebuildTextAtlas()
-    {
-        var atlas = _renderer.TextAtlas;
-        atlas.BeginBuild();
-
-        atlas.Request(Localization.Get("panel_save_as"));
-        atlas.Request(Localization.Get("panel_create_folder"));
-        atlas.Request(Localization.Get("panel_new_file", "New File"));
-        atlas.Request(Localization.Get("dialog_save_title"));
-        atlas.Request(Localization.Get("dialog_rename_title"));
-        atlas.Request(Localization.Get("dialog_delete_title"));
-        atlas.Request(Localization.Get("dialog_create_folder_title"));
-        atlas.Request(Localization.Get("dialog_new_file_title", "Create New File?"));
-        atlas.Request(Localization.Get("dialog_button_ok"));
-        atlas.Request(Localization.Get("dialog_button_save"));
-        atlas.Request(Localization.Get("dialog_button_cancel"));
-        atlas.Request(Localization.Get("dialog_button_create", "Create"));
-        atlas.Request(Localization.Get("settings_title", "Settings"));
-
-        atlas.Request(Localization.Get("tooltip_save", "Save"));
-        atlas.Request(Localization.Get("tooltip_create_folder", "Create Folder"));
-        atlas.Request(Localization.Get("tooltip_new_file", "New File"));
-        atlas.Request(Localization.Get("tooltip_settings", "Settings"));
-        atlas.Request(Localization.Get("tooltip_open_log", "Open Latest Log"));
-        
-        atlas.Request("S");
-        atlas.Request("X");
-
-        _saveIconEntry = atlas.RequestImage("resources/textures/save.png");
-        _editIconEntry = atlas.RequestImage("resources/textures/edit.png");
-        _deleteIconEntry = atlas.RequestImage("resources/textures/delete.png");
-        _moveIconEntry = atlas.RequestImage("resources/textures/move.png");
-        _folderIconEntry = atlas.RequestImage("resources/textures/folder.png");
-        _newIconEntry = atlas.RequestImage("resources/textures/new.png");
-        _settingsIconEntry = atlas.RequestImage("resources/textures/settings.png");
-
-        _renderer.RequestRadialMenuIcons();
-
-        foreach (var (node, _, _) in _flatList)
-            atlas.Request(LabelFor(node));
-
-        if (_dialogMode != DialogMode.None && !string.IsNullOrEmpty(_textBox.ToString()))
-            atlas.Request(_textBox.ToString());
-        
-        if (_dialogMode == DialogMode.NewFile && !string.IsNullOrEmpty(_dialogMessage))
-            atlas.Request(_dialogMessage);
-
-        if (_dialogMode == DialogMode.Delete && _dialogTargetNode != null)
-            atlas.Request(_dialogTargetNode.Name);
-
-        if (_settingsPanel.IsOpen)
-        {
-            _settingsPanel.RequestAtlasEntries(atlas);
-        }
-        else if (_dialogMode == DialogMode.Log)
-        {
-            foreach (var line in _logLines)
-                atlas.Request(line);
-        }
-
-        atlas.EndBuild();
-        _renderer.SetDirty();
-    }
-
-    private static string LabelFor(FileNode node)
-    {
-        string prefix = node.IsDirectory
-            ? (node.IsExpanded ? "\u25BC " : "\u25B6 ")
-            : "   \u2022 ";
-        return prefix + node.Name;
     }
 
     private FileNode BuildTree(string path)
     {
-        var root = new FileNode(Path.GetFileName(path) ?? "Lessons", path, true);
-        if (!Directory.Exists(path)) { Directory.CreateDirectory(path); return root; }
+        var root = new FileNode(Path.GetFileName(path), path, true) { IsExpanded = !_collapsed.Contains(path) };
+        if (!Directory.Exists(path))
+        {
+            Directory.CreateDirectory(path);
+            return root;
+        }
 
         foreach (var dir in Directory.GetDirectories(path))
             root.Children.Add(BuildTree(dir));
@@ -330,455 +115,614 @@ public class LibraryPanel : IDisposable
         foreach (var file in Directory.GetFiles(path, "*.mathboard"))
             root.Children.Add(new FileNode(Path.GetFileNameWithoutExtension(file), file, false));
 
-        root.Children.Sort((a, b) =>
-        {
-            int dirCmp = b.IsDirectory.CompareTo(a.IsDirectory);
-            return dirCmp != 0 ? dirCmp : string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
-        });
-
+        root.Children.Sort(CompareNodes);
         return root;
     }
 
-    private void RebuildFlatList()
+    private static int CompareNodes(FileNode a, FileNode b)
     {
-        _flatList.Clear();
-        if (_rootNode == null) return;
-        FlattenTree(_rootNode, 24f, 130f);
+        int dirCmp = b.IsDirectory.CompareTo(a.IsDirectory);
+        return dirCmp != 0 ? dirCmp : string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
     }
 
-    private float FlattenTree(FileNode node, float x, float y)
+    private void SetExpanded(FileNode node, bool expanded)
     {
-        _flatList.Add((node, x, y));
-        float nextY = y + ItemHeight;
-        if (node.IsDirectory && node.IsExpanded)
+        node.IsExpanded = expanded;
+        if (expanded) _collapsed.Remove(node.FullPath);
+        else _collapsed.Add(node.FullPath);
+        _renderer.SetDirty();
+    }
+
+    // ------------------------------------------------------------- layout
+
+    private float ListTop => _dialogMode == DialogMode.CreateFolder ? HeaderHeight + 64f : HeaderHeight + ToolbarHeight;
+    private float ListBottom => _screenSize.Y - BottomBarHeight;
+    private float ListHeight => MathF.Max(0f, ListBottom - ListTop);
+
+    private Vector2 ToolbarButtonPos(int index) => new(12f + index * 44f, HeaderHeight + 8f);
+    private static readonly Vector2 ToolbarButtonSize = new(36f);
+    private Vector2 CollapseButtonPos => new(Width - 44f, (HeaderHeight - 32f) * 0.5f);
+    private Vector2 BottomButtonPos => new(12f, _screenSize.Y - BottomBarHeight + 10f);
+    private Vector2 BottomButtonSize => new(Width - 24f, 36f);
+
+    /// <summary>Target row positions; while dragging, a placeholder is inserted where the item would land.</summary>
+    private List<Row> LayoutRows()
+    {
+        var rows = new List<Row>();
+        if (_rootNode == null) return rows;
+
+        bool foldersOnly = _dialogMode == DialogMode.CreateFolder;
+        FileNode? placeholderParent = null;
+        int placeholderIndex = -1;
+        if (_isDragging && _dragNode != null && _dropTargetPath != null)
         {
-            foreach (var child in node.Children)
+            placeholderParent = FindNode(_rootNode, _dropTargetPath);
+            if (placeholderParent is { IsExpanded: true })
             {
-                nextY = FlattenTree(child, x + 24, nextY);
+                placeholderIndex = placeholderParent.Children.Count(c => CompareNodes(c, _dragNode) < 0);
             }
         }
-        return nextY;
+
+        float y = 0;
+        void Visit(FileNode node, int depth)
+        {
+            rows.Add(new Row(node, depth, y, false));
+            y += RowHeight;
+            if (!node.IsDirectory || !node.IsExpanded) return;
+
+            for (int i = 0; i <= node.Children.Count; i++)
+            {
+                if (node == placeholderParent && i == placeholderIndex)
+                {
+                    rows.Add(new Row(null, depth + 1, y, true));
+                    y += RowHeight;
+                }
+
+                if (i == node.Children.Count) break;
+                var child = node.Children[i];
+                if (foldersOnly && !child.IsDirectory) continue;
+                Visit(child, depth + 1);
+            }
+        }
+
+        Visit(_rootNode, 0);
+        _contentHeight = y;
+        return rows;
     }
 
-    public void RenderToVertices(List<UICommand> cmds, Vector2 screenSize)
+    private static FileNode? FindNode(FileNode node, string path)
+    {
+        if (string.Equals(node.FullPath, path, StringComparison.OrdinalIgnoreCase)) return node;
+        foreach (var child in node.Children)
+            if (child.IsDirectory && FindNode(child, path) is { } found)
+                return found;
+        return null;
+    }
+
+    private static string KeyOf(Row row) => row.IsPlaceholder ? PlaceholderKey : row.Node!.FullPath;
+
+    /// <summary>Drives time-based behaviour that is not tied to input events.</summary>
+    public void Update(float dt)
+    {
+        if (_isDragging)
+        {
+            // Auto-scroll near the list edges and auto-expand a hovered collapsed folder.
+            const float edge = 32f;
+            float speed = _mousePos.Y < ListTop + edge ? -1f : _mousePos.Y > ListBottom - edge ? 1f : 0f;
+            if (speed != 0f && _mousePos.X <= Width)
+            {
+                ScrollBy(speed * 500f * dt);
+                UpdateDropTarget(_mousePos);
+            }
+
+            if (_hoverFolderPath != null && _rootNode != null &&
+                FindNode(_rootNode, _hoverFolderPath) is { IsExpanded: false } folder &&
+                (DateTime.Now - _hoverFolderSince).TotalSeconds >= AutoExpandSeconds)
+            {
+                SetExpanded(folder, true);
+            }
+        }
+
+        if (_highlightPath != null)
+        {
+            if ((DateTime.Now - _highlightStart).TotalSeconds > HighlightSeconds) _highlightPath = null;
+            _renderer.SetDirty();
+        }
+    }
+
+    /// <summary>True while <see cref="Update"/> needs to run at frame rate.</summary>
+    public bool NeedsUpdates => _isDragging || _highlightPath != null;
+
+    private void ScrollBy(float delta)
+    {
+        _scrollY = Math.Clamp(_scrollY + delta, 0f, MathF.Max(0f, _contentHeight - ListHeight + 8f));
+        _renderer.SetDirty();
+    }
+
+    // ------------------------------------------------------------- rendering
+
+    public void Render(UiBatch ui, Vector2 screenSize)
     {
         _screenSize = screenSize;
         if (!IsOpen) return;
 
-        DrawRect(cmds, Vector2.Zero, new Vector2(Width, screenSize.Y), new Vector4(0.06f, 0.06f, 0.085f, 0.985f));
-        DrawRect(cmds, Vector2.Zero, new Vector2(Width, 68), new Vector4(0.11f, 0.11f, 0.15f, 1f));
+        ui.Rect(Vector2.Zero, new Vector2(Width, screenSize.Y), Theme.PanelBg);
+        ui.Rect(new Vector2(Width - 1f, 0), new Vector2(1f, screenSize.Y), Theme.Border);
+        RenderHeader(ui);
 
-        var atlas = _renderer.TextAtlas;
-
-        if (_dialogMode != DialogMode.None && !IsTreeDialog && _dialogMode != DialogMode.Log)
+        switch (_dialogMode)
         {
-            RenderDialog(cmds, atlas, screenSize);
-            return;
+            case DialogMode.Log:
+                RenderLog(ui);
+                break;
+            case DialogMode.CreateFolder:
+                RenderCreateFolder(ui);
+                break;
+            default:
+                RenderToolbar(ui);
+                RenderList(ui);
+                RenderBottomBar(ui, Icons.Settings, Localization.Get("tooltip_settings", "Settings"));
+                break;
+        }
+    }
+
+    private void RenderHeader(UiBatch ui)
+    {
+        ui.Rect(Vector2.Zero, new Vector2(Width - 1f, HeaderHeight), Theme.HeaderBg);
+
+        string title, subtitle;
+        bool dirty = false;
+        switch (_dialogMode)
+        {
+            case DialogMode.CreateFolder:
+                title = Localization.Get("dialog_create_folder_title", "Create Folder");
+                subtitle = Localization.Get("dialog_choose_location", "Choose where to create it");
+                break;
+            case DialogMode.Log:
+                title = Localization.Get("tooltip_open_log", "Latest Log");
+                subtitle = LogPath;
+                break;
+            default:
+                title = _libraryManager.CurrentName ?? Localization.Get("canvas_untitled", "Untitled");
+                dirty = _libraryManager.IsDocumentDirty();
+                subtitle = _libraryManager.CurrentPath is { } path
+                    ? RelativeFolder(path)
+                    : Localization.Get("canvas_not_saved", "Not saved yet");
+                if (dirty) subtitle = Localization.Get("canvas_unsaved_changes", "Unsaved changes") + " · " + subtitle;
+                break;
         }
 
-        if (!IsTreeDialog && _dialogMode != DialogMode.Log)
-            RenderTopButtons(cmds, atlas);
+        float left = 16f;
+        float right = _dialogMode == DialogMode.None ? CollapseButtonPos.X - 8f : Width - 16f;
+        if (dirty)
+        {
+            ui.Circle(new Vector2(left + 4f, 22f), 4f, Theme.Accent);
+            left += 14f;
+        }
 
-        if (_dialogMode == DialogMode.Log)
-            RenderLogList(cmds, atlas);
+        ui.TextInRect(title, new Vector2(left, 10f), new Vector2(right - left, 24f), Theme.Text, Theme.Title);
+        ui.TextInRect(subtitle, new Vector2(16f, 34f), new Vector2(right - 16f, 20f), Theme.TextSecondary, Theme.Small);
+
+        if (_dialogMode == DialogMode.None)
+        {
+            var pos = CollapseButtonPos;
+            ui.IconButton(Icons.ChevronLeft, pos, new Vector2(32f), Hit(pos, new Vector2(32f)), iconSize: 14f);
+        }
+    }
+
+    private static string RelativeFolder(string filePath)
+    {
+        string root = Settings.LibraryRootPath.Value;
+        string dir = Path.GetDirectoryName(filePath) ?? root;
+        string rel = Path.GetRelativePath(root, dir);
+        string rootName = Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar));
+        return rel == "." ? rootName : rootName + " / " + rel.Replace(Path.DirectorySeparatorChar.ToString(), " / ");
+    }
+
+    private void RenderToolbar(UiBatch ui)
+    {
+        string[] icons = [Icons.Save, Icons.NewFolder, Icons.Add];
+        for (int i = 0; i < icons.Length; i++)
+        {
+            var pos = ToolbarButtonPos(i);
+            bool hover = !IsModalOpen && Hit(pos, ToolbarButtonSize);
+            ui.IconButton(icons[i], pos, ToolbarButtonSize, hover, UiBatch.ButtonKind.Secondary, 16f);
+        }
+
+        ui.Rect(new Vector2(12f, HeaderHeight + ToolbarHeight - 1f), new Vector2(Width - 24f, 1f), Theme.Border);
+    }
+
+    private void RenderBottomBar(UiBatch ui, string icon, string label)
+    {
+        ui.Rect(new Vector2(12f, ListBottom), new Vector2(Width - 24f, 1f), Theme.Border);
+        var pos = BottomButtonPos;
+        bool hover = (!IsModalOpen || _dialogMode == DialogMode.Log) && Hit(pos, BottomButtonSize);
+        ui.ButtonBackground(pos, BottomButtonSize, hover, UiBatch.ButtonKind.Ghost);
+        ui.Icon(icon, pos + new Vector2(20f, BottomButtonSize.Y * 0.5f), 16f, Theme.TextSecondary);
+        ui.TextInRect(label, pos + new Vector2(40f, 0), new Vector2(BottomButtonSize.X - 48f, BottomButtonSize.Y),
+            Theme.Text, Theme.Body);
+    }
+
+    private void RenderList(UiBatch ui)
+    {
+        var rows = LayoutRows();
+        _scrollY = Math.Clamp(_scrollY, 0f, MathF.Max(0f, _contentHeight - ListHeight + 8f));
+        float top = ListTop + 4f - _scrollY;
+
+        // Rows glide towards their slots, e.g. to make room for the drop placeholder.
+        double now = _clock.Elapsed.TotalSeconds;
+        float k = 1f - MathF.Exp(-(float)Math.Min(now - _lastRenderTime, 0.05) * 16f);
+        _lastRenderTime = now;
+        bool moving = false;
+
+        FileNode? targetNode = _dropTargetPath != null && _rootNode != null ? FindNode(_rootNode, _dropTargetPath) : null;
+        float targetTop = 0f, targetBottom = 0f;
+        int targetDepth = -1;
+        bool insideTarget = false;
+
+        _rows.Clear();
+        foreach (var row in rows)
+        {
+            string key = KeyOf(row);
+            float animY = _animatedY.TryGetValue(key, out float prev) ? prev + (row.Y - prev) * k : row.Y;
+            if (MathF.Abs(animY - row.Y) < 0.5f) animY = row.Y;
+            else moving = true;
+            _animatedY[key] = animY;
+
+            float y = top + animY;
+            _rows.Add(row with { Y = y });
+
+            if (row.Node != null && row.Node == targetNode)
+            {
+                insideTarget = true;
+                targetDepth = row.Depth;
+                targetTop = y;
+                targetBottom = y + RowHeight;
+            }
+            else if (insideTarget)
+            {
+                if (row.Depth > targetDepth) targetBottom = y + RowHeight;
+                else insideTarget = false;
+            }
+        }
+
+        if (moving) _renderer.SetDirty();
+        ui.PushClip(new Vector2(0, ListTop), new Vector2(Width - 1f, ListHeight));
+
+        if (targetDepth >= 0)
+        {
+            // Bracket the whole destination folder so it is obvious where the item goes.
+            var size = new Vector2(Width - 9f, targetBottom - targetTop);
+            ui.Rect(new Vector2(4f, targetTop), size, Theme.WithAlpha(Theme.Accent, 0.08f), 8f);
+            ui.Border(new Vector2(4f, targetTop), size, Theme.WithAlpha(Theme.Accent, 0.6f), 1.5f, 8f);
+        }
+
+        foreach (var row in _rows)
+        {
+            if (row.Y + RowHeight < ListTop || row.Y > ListBottom) continue;
+            if (row.IsPlaceholder) RenderPlaceholder(ui, row);
+            else RenderRow(ui, row, row.Node == targetNode);
+        }
+
+        ui.PopClip();
+        if (_animatedY.Count > rows.Count * 2) StaleAnimationCleanup(rows);
+    }
+
+    private void StaleAnimationCleanup(List<Row> rows)
+    {
+        var live = rows.Select(KeyOf).ToHashSet();
+        foreach (var key in _animatedY.Keys.Where(k => !live.Contains(k)).ToList())
+            _animatedY.Remove(key);
+    }
+
+    private void RenderRow(UiBatch ui, Row row, bool isDropTarget)
+    {
+        var node = row.Node!;
+        var pos = new Vector2(4f, row.Y);
+        var size = new Vector2(Width - 9f, RowHeight);
+        bool hover = !IsModalOpen && !_isDragging && _press != Press.Scroll && Hit(pos, size);
+        bool isCurrent = !node.IsDirectory && string.Equals(node.FullPath, _libraryManager.CurrentPath, StringComparison.OrdinalIgnoreCase);
+        bool isDragged = _isDragging && node == _dragNode;
+        bool isSelectedDest = _dialogMode == DialogMode.CreateFolder && node.FullPath == _selectedDestDir;
+
+        if (isSelectedDest || isCurrent) ui.Rect(pos, size, Theme.AccentSoft, 6f);
+        else if (hover) ui.Rect(pos, size, Theme.RowHover, 6f);
+        if (isCurrent) ui.Rect(new Vector2(4f, row.Y + 8f), new Vector2(3f, RowHeight - 16f), Theme.Accent, 1.5f);
+
+        if (_highlightPath != null && string.Equals(node.FullPath, _highlightPath, StringComparison.OrdinalIgnoreCase))
+        {
+            float t = (float)((DateTime.Now - _highlightStart).TotalSeconds / HighlightSeconds);
+            ui.Rect(pos, size, Theme.WithAlpha(Theme.Accent, 0.35f * (1f - Math.Clamp(t, 0f, 1f))), 6f);
+        }
+
+        float alpha = isDragged ? 0.35f : 1f;
+        float x = 12f + row.Depth * Indent;
+        float cy = row.Y + RowHeight * 0.5f;
+
+        if (node.IsDirectory)
+        {
+            ui.Icon(node.IsExpanded ? Icons.ChevronDown : Icons.ChevronRight, new Vector2(x + 7f, cy), 10f,
+                Theme.WithAlpha(Theme.TextSecondary, alpha));
+            ui.Icon(node.IsExpanded ? Icons.FolderOpen : Icons.Folder, new Vector2(x + 27f, cy), 16f,
+                Theme.WithAlpha(isDropTarget ? Theme.Accent : Theme.Text, alpha));
+        }
         else
-            RenderFileList(cmds, atlas, IsTreeDialog);
-
-        if (IsTreeDialog)
-            RenderTreeDialogUI(cmds, atlas, screenSize);
-
-        RenderBottomButtons(cmds, atlas);
-
-        string tooltip = null;
-        if (_dialogMode == DialogMode.None && !_settingsPanel.IsOpen)
         {
-            if (HitTest(_saveButtonBounds, _mousePos)) tooltip = Localization.Get("tooltip_save", "Save");
-            else if (HitTest(_createFolderButtonBounds, _mousePos)) tooltip = Localization.Get("tooltip_create_folder", "Create Folder");
-            else if (HitTest(_newButtonBounds, _mousePos)) tooltip = Localization.Get("tooltip_new_file", "New File");
-            else if (HitTest(_settingsButtonBounds, _mousePos)) tooltip = Localization.Get("tooltip_settings", "Settings");
+            ui.Icon(Icons.Document, new Vector2(x + 27f, cy), 15f, Theme.WithAlpha(Theme.TextSecondary, alpha));
         }
 
-        if (!string.IsNullOrEmpty(tooltip))
+        bool hasActions = node != _rootNode && _dialogMode == DialogMode.None;
+        float nameRight = hasActions ? Width - 9f - 3 * (ActionSize + 2f) - 6f : Width - 16f;
+        ui.TextInRect(node.Name, new Vector2(x + 42f, row.Y), new Vector2(nameRight - x - 42f, RowHeight),
+            Theme.WithAlpha(Theme.Text, alpha), Theme.Body);
+
+        if (!hasActions || isDragged) return;
+        for (int i = 0; i < 3; i++)
         {
-            var size = atlas.Measure(tooltip);
-            float pad = 6f;
-            float bgX = _mousePos.X + 15f;
-            float bgY = _mousePos.Y - size.Y - 15f;
-            DrawRect(cmds, new Vector2(bgX, bgY), new Vector2(size.X + pad * 2, size.Y + pad * 2), new Vector4(0, 0, 0, 0.8f));
-            atlas.Emit(tooltip, new Vector2(bgX + pad, bgY + pad), TextColor);
-        }
-
-        if (_settingsPanel.IsOpen)
-            _settingsPanel.RenderToVertices(cmds, screenSize);
-
-        if (_isDragging && _dragNode != null)
-            RenderDragPreview(cmds, atlas);
-    }
-
-    private void RenderTopButtons(List<UICommand> cmds, TextAtlas atlas)
-    {
-        DrawIconButton(cmds, atlas, _saveIconEntry, _saveButtonBounds.X, _saveButtonBounds.Y, new Vector4(0.22f, 0.42f, 0.78f, 1f));
-        DrawIconButton(cmds, atlas, _folderIconEntry, _createFolderButtonBounds.X, _createFolderButtonBounds.Y, new Vector4(0.18f, 0.38f, 0.28f, 1f));
-        DrawIconButton(cmds, atlas, _newIconEntry, _newButtonBounds.X, _newButtonBounds.Y, new Vector4(0.42f, 0.22f, 0.22f, 1f));
-    }
-
-    private void RenderBottomButtons(List<UICommand> cmds, TextAtlas atlas)
-    {
-        _settingsButtonBounds = new Vector4(16, _screenSize.Y - 48, IconButtonSize, IconButtonSize);
-        DrawIconButton(cmds, atlas, _settingsIconEntry, _settingsButtonBounds.X, _settingsButtonBounds.Y, new Vector4(0.2f, 0.2f, 0.2f, 1f));
-    }
-
-    private void RenderFileList(List<UICommand> cmds, TextAtlas atlas, bool isTreeDialog)
-    {
-        _iconHitRegions.Clear();
-        float cullY = isTreeDialog ? 68f : 120f;
-
-        foreach (var (node, x, y) in _flatList)
-        {
-            float screenY = y - _scrollY;
-            if (screenY < cullY || screenY > _screenSize.Y + 50) continue;
-
-            if (isTreeDialog)
-            {
-                if (!node.IsDirectory) continue;
-
-                if (_selectedDestDir == node.FullPath)
-                    DrawRect(cmds, new Vector2(0, screenY), new Vector2(Width, ItemHeight), new Vector4(0.3f, 0.5f, 0.8f, 0.35f));
-
-                string label = LabelFor(node);
-                var size = atlas.Measure(label);
-                atlas.Emit(label, new Vector2(x, screenY + (ItemHeight - size.Y) * 0.5f), TextColor);
-            }
-            else
-            {
-                if (_isDragging && _dropTargetPath != null && _dropTargetPath == node.FullPath)
-                    DrawRectOutline(cmds, new Vector2(0, screenY), new Vector2(Width, ItemHeight), DropHighlightColor, 2f);
-
-                if (node != _rootNode)
-                {
-                    float iY = screenY + (ItemHeight - IconButtonSize) * 0.5f;
-
-                    float delX = Width - IconButtonSize - IconButtonMargin;
-                    DrawIconButton(cmds, atlas, _deleteIconEntry, delX, iY, new Vector4(0.22f, 0.10f, 0.10f, 0.85f));
-                    _iconHitRegions.Add((node, IconAction.Delete, delX, iY, IconButtonSize, IconButtonSize));
-
-                    float editX = delX - IconButtonSize - IconButtonMargin;
-                    DrawIconButton(cmds, atlas, _editIconEntry, editX, iY, new Vector4(0.10f, 0.12f, 0.20f, 0.85f));
-                    _iconHitRegions.Add((node, IconAction.Edit, editX, iY, IconButtonSize, IconButtonSize));
-
-                    float moveX = editX - IconButtonSize - IconButtonMargin;
-                    DrawIconButton(cmds, atlas, _moveIconEntry, moveX, iY, new Vector4(0.10f, 0.18f, 0.12f, 0.85f));
-                    _iconHitRegions.Add((node, IconAction.Move, moveX, iY, IconButtonSize, IconButtonSize));
-                }
-
-                string label = LabelFor(node);
-                var size = atlas.Measure(label);
-                atlas.Emit(label, new Vector2(x, screenY + (ItemHeight - size.Y) * 0.5f), TextColor);
-            }
+            var (bPos, bSize) = ActionRect(row, (RowAction)i);
+            bool bHover = !IsModalOpen && !_isDragging && Hit(bPos, bSize);
+            var icon = (RowAction)i switch { RowAction.Move => Icons.Gripper, RowAction.Rename => Icons.Edit, _ => Icons.Delete };
+            var color = bHover ? ((RowAction)i == RowAction.Delete ? Theme.Danger : Theme.Text)
+                : hover ? Theme.TextSecondary : Theme.TextMuted;
+            ui.IconButton(icon, bPos, bSize, bHover, iconSize: 14f, iconColor: color);
         }
     }
 
-    private void RenderDragPreview(List<UICommand> cmds, TextAtlas atlas)
+    private (Vector2 Pos, Vector2 Size) ActionRect(Row row, RowAction action)
     {
-        string label = LabelFor(_dragNode!);
-        var labelSize = atlas.Measure(label);
-
-        float padding = 12f;
-        float previewW = Math.Max(labelSize.X + padding * 2, 120f);
-        float previewH = ItemHeight;
-        float previewX = _dragMousePos.X - previewW * 0.5f;
-        float previewY = _dragMousePos.Y - previewH * 0.5f;
-
-        DrawRect(cmds, new Vector2(previewX, previewY), new Vector2(previewW, previewH), new Vector4(0.15f, 0.15f, 0.20f, 0.90f));
-        DrawRectOutline(cmds, new Vector2(previewX, previewY), new Vector2(previewW, previewH), new Vector4(0.4f, 0.78f, 1.0f, 0.8f), 1.5f);
-
-        if (labelSize.X > 0)
-            atlas.Emit(label, new Vector2(previewX + padding, previewY + (previewH - labelSize.Y) * 0.5f), TextColor);
+        // Order from the right edge: delete, rename, move.
+        int fromRight = action switch { RowAction.Delete => 0, RowAction.Rename => 1, _ => 2 };
+        float x = Width - 9f - (fromRight + 1) * (ActionSize + 2f);
+        return (new Vector2(x, row.Y + (RowHeight - ActionSize) * 0.5f), new Vector2(ActionSize));
     }
 
-    private void RenderTreeDialogUI(List<UICommand> cmds, TextAtlas atlas, Vector2 screenSize)
+    private void RenderPlaceholder(UiBatch ui, Row row)
     {
-        var titleSize = atlas.Measure(_dialogTitle);
-        atlas.Emit(_dialogTitle, new Vector2((Width - titleSize.X) * 0.5f, 24), TextColor);
+        var pos = new Vector2(8f + row.Depth * Indent, row.Y + 3f);
+        var size = new Vector2(Width - 13f - row.Depth * Indent, RowHeight - 6f);
+        ui.Rect(pos, size, Theme.AccentSoft, 6f);
+        ui.Border(pos, size, Theme.Accent, 1.5f, 6f);
+        float x = 12f + row.Depth * Indent;
+        ui.Icon(_dragNode!.IsDirectory ? Icons.Folder : Icons.Document, new Vector2(x + 27f, row.Y + RowHeight * 0.5f), 15f, Theme.Accent);
+        ui.TextInRect(_dragNode.Name, new Vector2(x + 42f, row.Y), new Vector2(Width - x - 58f, RowHeight), Theme.Accent, Theme.Body);
+    }
 
-        if (_dialogMode == DialogMode.CreateFolder)
+    private void RenderCreateFolder(UiBatch ui)
+    {
+        ui.TextField(_textBox, new Vector2(12f, HeaderHeight + 14f), new Vector2(Width - 24f, 38f), true, Theme.Body, Theme.Text);
+        RenderList(ui);
+
+        ui.Rect(new Vector2(12f, ListBottom), new Vector2(Width - 24f, 1f), Theme.Border);
+        var (cancelPos, okPos, btnSize) = PanelDialogButtons();
+        ui.TextButton(Localization.Get("dialog_button_cancel", "Cancel"), cancelPos, btnSize, Hit(cancelPos, btnSize), UiBatch.ButtonKind.Secondary);
+        ui.TextButton(Localization.Get("dialog_button_create", "Create"), okPos, btnSize, Hit(okPos, btnSize), UiBatch.ButtonKind.Primary);
+    }
+
+    private (Vector2 Cancel, Vector2 Ok, Vector2 Size) PanelDialogButtons()
+    {
+        var size = new Vector2((Width - 36f) * 0.5f, 36f);
+        float y = _screenSize.Y - BottomBarHeight + 10f;
+        return (new Vector2(12f, y), new Vector2(24f + size.X, y), size);
+    }
+
+    private void RenderLog(UiBatch ui)
+    {
+        const float lineHeight = 18f;
+        float top = HeaderHeight + 8f;
+        float height = ListBottom - top;
+        _contentHeight = _logLines.Count * lineHeight;
+        _scrollY = Math.Clamp(_scrollY, 0f, MathF.Max(0f, _contentHeight - height));
+
+        ui.PushClip(new Vector2(0, top), new Vector2(Width - 1f, height));
+        int first = (int)(_scrollY / lineHeight);
+        for (int i = first; i < _logLines.Count; i++)
         {
-            float fieldX = 16f;
-            float fieldW = Width - 32f;
-            float fieldH = 38f;
-            float fieldY = 78f;
-
-            DrawRect(cmds, new Vector2(fieldX, fieldY), new Vector2(fieldW, fieldH), new Vector4(0.05f, 0.05f, 0.07f, 1f));
-            DrawRectOutline(cmds, new Vector2(fieldX, fieldY), new Vector2(fieldW, fieldH), new Vector4(0.30f, 0.32f, 0.40f, 1f), 1.5f);
-
-            RenderTextInput(cmds, atlas, new Vector2(fieldX, fieldY), new Vector2(fieldW, fieldH));
+            float y = top + i * lineHeight - _scrollY;
+            if (y > top + height) break;
+            ui.TextInRect(_logLines[i], new Vector2(12f, y), new Vector2(Width - 24f, lineHeight), Theme.TextSecondary, Theme.Small);
         }
 
-        float btnY = screenSize.Y - DialogBtnHeight - 20f;
-        float cancelX = 16;
-        DrawDialogButton(cmds, atlas, _dialogCancelLabel, cancelX, btnY, new Vector4(0.20f, 0.20f, 0.25f, 1f));
-
-        float okX = Width - DialogBtnWidth - 16;
-        DrawDialogButton(cmds, atlas, _dialogConfirmLabel, okX, btnY, new Vector4(0.22f, 0.42f, 0.78f, 1f));
+        ui.PopClip();
+        RenderBottomBar(ui, Icons.Close, Localization.Get("dialog_button_close", "Close"));
     }
 
-    private void RenderDialog(List<UICommand> cmds, TextAtlas atlas, Vector2 screenSize)
+    public void RenderOverlay(UiBatch ui, Vector2 screenSize)
     {
-        DrawRect(cmds, Vector2.Zero, screenSize, new Vector4(0, 0, 0, 0.55f));
+        _screenSize = screenSize;
 
-        float dx = (screenSize.X - DialogWidth) * 0.5f;
-        float dy = (screenSize.Y - DialogHeight) * 0.5f;
+        if (IsPopupDialog) RenderPopupDialog(ui);
+        if (_settingsPanel.IsOpen) _settingsPanel.Render(ui, screenSize);
+        if (_isDragging && _dragNode != null) RenderDragCard(ui);
 
-        DrawRect(cmds, new Vector2(dx, dy), new Vector2(DialogWidth, DialogHeight), new Vector4(0.10f, 0.10f, 0.14f, 0.98f));
-        DrawRectOutline(cmds, new Vector2(dx, dy), new Vector2(DialogWidth, DialogHeight), new Vector4(0.35f, 0.37f, 0.45f, 1f), 2f);
+        if (!IsOpen || IsModalOpen || _isDragging || _press != Press.None) return;
+        string? tooltip = null;
+        if (Hit(ToolbarButtonPos(0), ToolbarButtonSize)) tooltip = Localization.Get("panel_save_as", "Save As...");
+        else if (Hit(ToolbarButtonPos(1), ToolbarButtonSize)) tooltip = Localization.Get("tooltip_create_folder", "Create Folder");
+        else if (Hit(ToolbarButtonPos(2), ToolbarButtonSize)) tooltip = Localization.Get("tooltip_new_file", "New File");
+        else if (Hit(CollapseButtonPos, new Vector2(32f))) tooltip = Localization.Get("tooltip_hide_panel", "Hide panel");
+        if (tooltip != null) ui.Tooltip(tooltip, _mousePos, screenSize);
+    }
 
-        float yPos = dy + 28f;
-        var titleSize = atlas.Measure(_dialogTitle);
-        atlas.Emit(_dialogTitle, new Vector2(dx + (DialogWidth - titleSize.X) * 0.5f, yPos), TextColor);
-        yPos += 38f;
+    private void RenderDragCard(UiBatch ui)
+    {
+        var node = _dragNode!;
+        string hint = _dropTargetPath != null
+            ? Localization.Get("drag_move_to", "Move to") + ": " + Path.GetFileName(_dropTargetPath)
+            : DropRejectReason(node);
 
-        if (_dialogMode == DialogMode.Rename || _dialogMode == DialogMode.Save)
+        float w = MathF.Min(260f, MathF.Max(ui.Measure(node.Name, Theme.Body), ui.Measure(hint, Theme.Small)) + 56f);
+        var pos = _mousePos + new Vector2(14f, -20f);
+        var size = new Vector2(w, 52f);
+        ui.Rect(pos + new Vector2(0, 3f), size, new Vector4(0, 0, 0, 0.35f), 10f);
+        ui.Rect(pos, size, Theme.PopupBg, 10f);
+        ui.Border(pos, size, _dropTargetPath != null ? Theme.Accent : Theme.Border, 1.5f, 10f);
+        ui.Icon(node.IsDirectory ? Icons.Folder : Icons.Document, pos + new Vector2(22f, 18f), 16f, Theme.Text);
+        ui.TextInRect(node.Name, pos + new Vector2(40f, 6f), new Vector2(w - 50f, 24f), Theme.Text, Theme.Body);
+        ui.TextInRect(hint, pos + new Vector2(40f, 27f), new Vector2(w - 50f, 18f),
+            _dropTargetPath != null ? Theme.Accent : Theme.TextMuted, Theme.Small);
+    }
+
+    private string DropRejectReason(FileNode node)
+    {
+        if (_hoverFolderPath == null) return Localization.Get("drag_no_target", "Drop onto a folder");
+        if (string.Equals(Path.GetDirectoryName(node.FullPath), _hoverFolderPath, StringComparison.OrdinalIgnoreCase))
+            return Localization.Get("drag_already_here", "Already in this folder");
+        if (node.IsDirectory && (string.Equals(node.FullPath, _hoverFolderPath, StringComparison.OrdinalIgnoreCase) ||
+                                 _hoverFolderPath.StartsWith(node.FullPath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
+            return Localization.Get("drag_into_itself", "Can't move a folder into itself");
+        return Localization.Get("drag_name_taken", "An item with this name is already there");
+    }
+
+    private (Vector2 Pos, Vector2 Size) PopupRect()
+    {
+        float w = MathF.Min(420f, _screenSize.X - 32f);
+        const float h = 186f;
+        return (new Vector2((_screenSize.X - w) * 0.5f, (_screenSize.Y - h) * 0.5f), new Vector2(w, h));
+    }
+
+    private (Vector2 Cancel, Vector2 Ok, Vector2 Size) PopupButtons()
+    {
+        var (pos, size) = PopupRect();
+        var btn = new Vector2(120f, 38f);
+        float y = pos.Y + size.Y - 20f - btn.Y;
+        return (new Vector2(pos.X + size.X - 20f - btn.X * 2 - 10f, y), new Vector2(pos.X + size.X - 20f - btn.X, y), btn);
+    }
+
+    private void RenderPopupDialog(UiBatch ui)
+    {
+        ui.Rect(Vector2.Zero, _screenSize, Theme.Overlay);
+        var (pos, size) = PopupRect();
+        ui.Rect(pos, size, Theme.PopupBg, Theme.PopupRadius);
+        ui.Border(pos, size, Theme.Border, 1f, Theme.PopupRadius);
+
+        var (title, confirm, kind) = _dialogMode switch
         {
-            float fieldX = dx + 28f;
-            float fieldW = DialogWidth - 56f;
-            float fieldH = 38f;
+            DialogMode.Save => (Localization.Get("dialog_save_title", "Enter file name:"), Localization.Get("dialog_button_save", "Save"), UiBatch.ButtonKind.Primary),
+            DialogMode.Rename => (Localization.Get("dialog_rename_title", "Enter new name:"), Localization.Get("dialog_button_ok", "OK"), UiBatch.ButtonKind.Primary),
+            DialogMode.Delete => (Localization.Get("dialog_delete_title", "Delete?"), Localization.Get("dialog_button_delete", "Delete"), UiBatch.ButtonKind.Danger),
+            _ => (Localization.Get("dialog_new_file_title", "Create New File?"), Localization.Get("dialog_button_create", "Create"), UiBatch.ButtonKind.Primary)
+        };
 
-            DrawRect(cmds, new Vector2(fieldX, yPos), new Vector2(fieldW, fieldH), new Vector4(0.05f, 0.05f, 0.07f, 1f));
-            DrawRectOutline(cmds, new Vector2(fieldX, yPos), new Vector2(fieldW, fieldH), new Vector4(0.30f, 0.32f, 0.40f, 1f), 1.5f);
+        var inner = new Vector2(size.X - 40f, 0);
+        ui.TextInRect(title, pos + new Vector2(20f, 18f), inner with { Y = 26f }, Theme.Text, Theme.Title);
 
-            RenderTextInput(cmds, atlas, new Vector2(fieldX, yPos), new Vector2(fieldW, fieldH));
-        }
-        else if (_dialogMode == DialogMode.Delete && _dialogTargetNode != null)
+        var bodyPos = pos + new Vector2(20f, 62f);
+        switch (_dialogMode)
         {
-            var nameSize = atlas.Measure(_dialogTargetNode.Name);
-            atlas.Emit(_dialogTargetNode.Name, new Vector2(dx + (DialogWidth - nameSize.X) * 0.5f, yPos), FileNameColor);
-        }
-        else if (_dialogMode == DialogMode.NewFile)
-        {
-            var msgSize = atlas.Measure(_dialogMessage);
-            atlas.Emit(_dialogMessage, new Vector2(dx + (DialogWidth - msgSize.X) * 0.5f, yPos), TextColor);
-        }
-
-        float btnY = dy + DialogHeight - DialogBtnHeight - 20f;
-        float cancelX = dx + DialogWidth - DialogBtnWidth * 2 - 28;
-        DrawDialogButton(cmds, atlas, _dialogCancelLabel, cancelX, btnY, new Vector4(0.20f, 0.20f, 0.25f, 1f));
-
-        float okX = dx + DialogWidth - DialogBtnWidth - 16;
-        DrawDialogButton(cmds, atlas, _dialogConfirmLabel, okX, btnY, new Vector4(0.22f, 0.42f, 0.78f, 1f));
-    }
-
-    private void RenderLogList(List<UICommand> cmds, TextAtlas atlas)
-    {
-        var title = Localization.Get("tooltip_open_log", "Latest Log");
-        var titleSize = atlas.Measure(title);
-        atlas.Emit(title, new Vector2((Width - titleSize.X) * 0.5f, 24), TextColor);
-
-        DrawRect(cmds, new Vector2(0, 68), new Vector2(Width, _screenSize.Y - 68), new Vector4(0.06f, 0.06f, 0.085f, 1f));
-
-        float cullY = 68f;
-        float bottomCull = _screenSize.Y - 60f;
-        float y = 78f - _scrollY;
-        float lineH = 20f;
-
-        foreach (var line in _logLines)
-        {
-            if (y + lineH > cullY && y < bottomCull)
-            {
-                atlas.Emit(line, new Vector2(16f, y), TextColor);
-            }
-            y += lineH;
+            case DialogMode.Save or DialogMode.Rename:
+                ui.TextField(_textBox, bodyPos, inner with { Y = 40f }, true, Theme.Body, Theme.Text);
+                break;
+            case DialogMode.Delete when _dialogTargetNode != null:
+                ui.Icon(_dialogTargetNode.IsDirectory ? Icons.Folder : Icons.Document, bodyPos + new Vector2(10f, 20f), 16f, Theme.Danger);
+                ui.TextInRect(_dialogTargetNode.Name, bodyPos + new Vector2(28f, 0), new Vector2(inner.X - 28f, 40f), Theme.Text, Theme.Body);
+                break;
+            case DialogMode.NewFile:
+                ui.TextInRect(Localization.Get("dialog_new_file_message", "Unsaved changes will be lost."), bodyPos,
+                    inner with { Y = 40f }, Theme.TextSecondary, Theme.Body);
+                break;
         }
 
-        float btnY = _screenSize.Y - 48;
-        float cancelX = 16;
-        DrawTextButton(cmds, atlas, "X", new Vector4(cancelX, btnY, IconButtonSize, IconButtonSize), new Vector4(0.42f, 0.22f, 0.22f, 1f));
+        var (cancelPos, okPos, btnSize) = PopupButtons();
+        ui.TextButton(Localization.Get("dialog_button_cancel", "Cancel"), cancelPos, btnSize, Hit(cancelPos, btnSize), UiBatch.ButtonKind.Secondary);
+        ui.TextButton(confirm, okPos, btnSize, Hit(okPos, btnSize), kind);
     }
 
-    private void RenderTextInput(List<UICommand> cmds, TextAtlas atlas, Vector2 fieldPos, Vector2 fieldSize)
+    private bool Hit(Vector2 pos, Vector2 size) => UiBatch.Contains(pos, size, _mousePos);
+
+    // ------------------------------------------------------------- dialogs
+
+    private void OpenDialog(DialogMode mode, FileNode? target, string text)
     {
-        string text = _textBox.ToString();
-        float fieldX = fieldPos.X;
-        float fieldY = fieldPos.Y;
-        float fieldW = fieldSize.X;
-        float fieldH = fieldSize.Y;
-
-        if (_textBox.HasSelection)
-        {
-            string beforeSel = text.Substring(0, _textBox.SelStart);
-            string selText = text.Substring(_textBox.SelStart, _textBox.SelEnd - _textBox.SelStart);
-
-            var beforeSize = atlas.Measure(beforeSel);
-            var selSize = atlas.Measure(selText);
-
-            DrawRect(cmds, new Vector2(fieldX + 12f + beforeSize.X, fieldY + 4f), new Vector2(selSize.X, fieldH - 8f), new Vector4(0.2f, 0.4f, 0.8f, 0.8f));
-        }
-
-        var inputSize = atlas.Measure(text);
-        float textY = fieldY + (fieldH - inputSize.Y) * 0.5f;
-        atlas.Emit(text, new Vector2(fieldX + 12f, textY), TextColor);
-
-        bool showCursor = ((DateTime.Now - _textBox.LastEditTime).TotalMilliseconds % 1000) < 500;
-        if (showCursor)
-        {
-            string beforeCursor = text.Substring(0, _textBox.CursorPos);
-            var beforeSize = atlas.Measure(beforeCursor);
-            float cursorX = fieldX + 12f + beforeSize.X + 2f;
-            float cursorH = Math.Max(inputSize.Y - 6f, 12f);
-            DrawRect(cmds, new Vector2(cursorX, fieldY + (fieldH - cursorH) * 0.5f), new Vector2(2f, cursorH), new Vector4(0.9f, 0.9f, 0.95f, 1f));
-        }
+        CancelDrag();
+        _dialogMode = mode;
+        _dialogTargetNode = target;
+        _textBox.SetText(text, selectAll: true);
+        _renderer.SetDirty();
     }
 
-    private void DrawIconButton(List<UICommand> cmd, TextAtlas atlas, TextAtlas.Entry icon, float x, float y, Vector4 bg)
-    {
-        DrawRect(cmd, new Vector2(x, y), new Vector2(IconButtonSize, IconButtonSize), bg);
-        if (icon.Width > 0)
-        {
-            float pad = 6f;
-            atlas.EmitImage(icon, new Vector2(x + pad, y + pad), new Vector2(IconButtonSize - pad * 2, IconButtonSize - pad * 2), Vector4.One);
-        }
-    }
+    public void OpenSaveDialog() =>
+        OpenDialog(DialogMode.Save, null, _libraryManager.CurrentName ?? $"Lesson_{DateTime.Now:yyyy-MM-dd_HH-mm}");
 
-    private void DrawTextButton(List<UICommand> cmd, TextAtlas atlas, string text, Vector4 bounds, Vector4 bg)
-    {
-        DrawRect(cmd, new Vector2(bounds.X, bounds.Y), new Vector2(bounds.Z, bounds.W), bg);
-        var size = atlas.Measure(text);
-        atlas.Emit(text, new Vector2(bounds.X + (bounds.Z - size.X) * 0.5f, bounds.Y + (bounds.W - size.Y) * 0.5f), ButtonTextColor);
-    }
+    public void OpenRenameDialog(FileNode node) => OpenDialog(DialogMode.Rename, node, node.Name);
 
-    private void DrawDialogButton(List<UICommand> cmd, TextAtlas atlas, string text, float x, float y, Vector4 bg)
-    {
-        DrawRect(cmd, new Vector2(x, y), new Vector2(DialogBtnWidth, DialogBtnHeight), bg);
-        var size = atlas.Measure(text);
-        atlas.Emit(text, new Vector2(x + (DialogBtnWidth - size.X) * 0.5f, y + (DialogBtnHeight - size.Y) * 0.5f), ButtonTextColor);
-    }
+    public void OpenDeleteDialog(FileNode node) => OpenDialog(DialogMode.Delete, node, "");
 
-    private static void DrawRectOutline(List<UICommand> cmds, Vector2 pos, Vector2 size, Vector4 color, float thickness)
-        => cmds.Add(new UICommand { P1P2 = new Vector4(pos.X, pos.Y, size.X, size.Y), Color = color, Params = new Vector4(thickness, 3, 0, 0) });
-
-    private static void DrawRect(List<UICommand> cmds, Vector2 pos, Vector2 size, Vector4 color)
-        => cmds.Add(new UICommand { P1P2 = new Vector4(pos.X, pos.Y, size.X, size.Y), Color = color, Params = new Vector4(0, 0, 0, 0) });
-
-    public void OpenSaveDialog()
-    {
-        _dialogMessage = "";
-        _dialogMode = DialogMode.Save;
-        _dialogTargetNode = null;
-        _textBox.SetText($"Lesson_{DateTime.Now:yyyy-MM-dd_HH-mm}");
-        _dialogTitle = Localization.Get("dialog_save_title");
-        _dialogConfirmLabel = Localization.Get("dialog_button_save");
-        _dialogCancelLabel = Localization.Get("dialog_button_cancel");
-        RebuildTextAtlas();
-    }
-
-    public void OpenRenameDialog(FileNode node)
-    {
-        _dialogMessage = "";
-        _dialogMode = DialogMode.Rename;
-        _dialogTargetNode = node;
-        _textBox.SetText(node.Name);
-        _dialogTitle = Localization.Get("dialog_rename_title");
-        _dialogConfirmLabel = Localization.Get("dialog_button_ok");
-        _dialogCancelLabel = Localization.Get("dialog_button_cancel");
-        RebuildTextAtlas();
-    }
-
-    public void OpenDeleteDialog(FileNode node)
-    {
-        _dialogMessage = "";
-        _dialogMode = DialogMode.Delete;
-        _dialogTargetNode = node;
-        _textBox.SetText("");
-        _dialogTitle = Localization.Get("dialog_delete_title");
-        _dialogConfirmLabel = Localization.Get("dialog_button_ok");
-        _dialogCancelLabel = Localization.Get("dialog_button_cancel");
-        RebuildTextAtlas();
-    }
+    public void OpenNewFileDialog() => OpenDialog(DialogMode.NewFile, null, "");
 
     public void OpenCreateFolderDialog()
     {
-        _dialogMessage = "";
-        _dialogMode = DialogMode.CreateFolder;
-        _dialogTargetNode = null;
+        OpenDialog(DialogMode.CreateFolder, null, $"NewFolder_{DateTime.Now:HHmm}");
         _selectedDestDir = Settings.LibraryRootPath.Value;
-        _textBox.SetText($"NewFolder_{DateTime.Now:HHmm}");
-        _dialogTitle = Localization.Get("dialog_create_folder_title");
-        _dialogConfirmLabel = Localization.Get("dialog_button_ok");
-        _dialogCancelLabel = Localization.Get("dialog_button_cancel");
-        RebuildTextAtlas();
+        IsOpen = true;
+        _scrollY = 0;
     }
 
     public void OpenSettingsDialog()
     {
+        CancelDrag();
         _settingsPanel.Open();
     }
+
+    private static string LogPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MathBoard", "latest.log");
 
     public void OpenLogDialog()
     {
         _dialogMode = DialogMode.Log;
-        _scrollY = 0;
+        IsOpen = true;
         _logLines.Clear();
         try
         {
-            if (File.Exists("latest.log"))
-            {
-                var lines = File.ReadAllLines("latest.log");
-                _logLines = lines.Skip(Math.Max(0, lines.Length - 500)).ToList();
-            }
-            else
-            {
-                _logLines.Add("Log file not found.");
-            }
+            // The log is still open for writing by this process.
+            using var stream = new FileStream(LogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+            var lines = reader.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            _logLines = lines.Skip(Math.Max(0, lines.Length - 500)).Select(l => l.TrimEnd('\r')).ToList();
         }
         catch (Exception ex)
         {
             _logLines.Add($"Error reading log: {ex.Message}");
         }
-        RebuildTextAtlas();
+
+        _scrollY = MathF.Max(0f, _logLines.Count * 18f);
+        _renderer.SetDirty();
     }
 
     public void ConfirmDialog()
     {
         if (_settingsPanel.IsOpen)
         {
-            _settingsPanel.Close();
+            if (_settingsPanel.HasTextInput) _settingsPanel.ConfirmEdit();
+            else _settingsPanel.Close();
             return;
         }
 
-        if (_dialogMode == DialogMode.None) return;
-
+        string text = _textBox.ToString().Trim();
         switch (_dialogMode)
         {
-            case DialogMode.Save:
-                if (!string.IsNullOrWhiteSpace(_textBox.ToString()))
-                    _libraryManager.SaveCanvas(_textBox.ToString());
+            case DialogMode.Save when text.Length > 0:
+                _libraryManager.SaveCanvas(text);
                 break;
             case DialogMode.Delete when _dialogTargetNode != null:
-                if (_dialogTargetNode.IsDirectory)
-                    _libraryManager.DeleteDirectory(_dialogTargetNode.FullPath);
-                else
-                    _libraryManager.DeleteFile(_dialogTargetNode.FullPath);
+                if (_dialogTargetNode.IsDirectory) _libraryManager.DeleteDirectory(_dialogTargetNode.FullPath);
+                else _libraryManager.DeleteFile(_dialogTargetNode.FullPath);
                 break;
-            case DialogMode.Rename when _dialogTargetNode != null:
-                if (!string.IsNullOrWhiteSpace(_textBox.ToString()))
-                {
-                    if (_dialogTargetNode.IsDirectory)
-                        _libraryManager.RenameDirectory(_dialogTargetNode.FullPath, _textBox.ToString());
-                    else
-                        _libraryManager.RenameFile(_dialogTargetNode.FullPath, _textBox.ToString());
-                }
+            case DialogMode.Rename when _dialogTargetNode != null && text.Length > 0:
+                if (_dialogTargetNode.IsDirectory) _libraryManager.RenameDirectory(_dialogTargetNode.FullPath, text);
+                else _libraryManager.RenameFile(_dialogTargetNode.FullPath, text);
                 break;
-            case DialogMode.CreateFolder when _selectedDestDir != null:
-                if (!string.IsNullOrWhiteSpace(_textBox.ToString()))
-                    _libraryManager.CreateFolder(_selectedDestDir, _textBox.ToString());
+            case DialogMode.CreateFolder when _selectedDestDir != null && text.Length > 0:
+                _libraryManager.CreateFolder(_selectedDestDir, text);
+                _collapsed.Remove(_selectedDestDir);
                 break;
             case DialogMode.NewFile:
                 _libraryManager.NewFile();
                 break;
+            case DialogMode.Save or DialogMode.Rename or DialogMode.CreateFolder:
+                return;
         }
 
-        _dialogMode = DialogMode.None;
-        _dialogTargetNode = null;
-        _selectedDestDir = null;
+        CloseDialog();
         RefreshTree();
     }
 
@@ -786,284 +730,258 @@ public class LibraryPanel : IDisposable
     {
         if (_settingsPanel.IsOpen)
         {
-            _settingsPanel.Cancel();
+            if (_settingsPanel.HasTextInput) _settingsPanel.CancelEdit();
+            else _settingsPanel.Cancel();
             return;
         }
 
+        CloseDialog();
+    }
+
+    private void CloseDialog()
+    {
+        if (_dialogMode == DialogMode.Log) _scrollY = 0;
         _dialogMode = DialogMode.None;
         _dialogTargetNode = null;
         _selectedDestDir = null;
-        _dialogMessage = ""; 
         _renderer.SetDirty();
     }
 
     public void HandleCharInput(char c)
     {
-        if (_settingsPanel.IsOpen)
-        {
-            _settingsPanel.HandleCharInput(c);
-            return;
-        }
-
-        if (_dialogMode != DialogMode.Rename && _dialogMode != DialogMode.Save && _dialogMode != DialogMode.CreateFolder) return;
-        if (c < 32) return;
-        if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') return;
-
-        _textBox.Insert(c);
-        RefreshDialogText();
+        if (_settingsPanel.IsOpen) _settingsPanel.HandleCharInput(c);
+        else ActiveTextBox?.Insert(c);
+        _renderer.SetDirty();
     }
 
-    public bool HandleMouseDown(Vector2 pos, bool isRightClick = false)
+    // ------------------------------------------------------------- pointer input
+
+    /// <summary>Returns true if the point is covered by the panel or one of its modal dialogs.</summary>
+    public bool Contains(Vector2 pos) => IsModalOpen || (IsOpen && pos.X < Width);
+
+    public void HandleMouseDown(Vector2 pos)
     {
         _mousePos = pos;
-        
+        _renderer.SetDirty();
+
         if (_settingsPanel.IsOpen)
         {
-            _settingsPanel.UpdateMousePos(pos);
             _settingsPanel.HandleMouseDown(pos);
-            return true;
-        }
-
-        if (IsDialogOpen)
-        {
-            HandleDialogClick(pos, isRightClick);
-            return true;
-        }
-
-        _dragPending = false;
-        _dragNode = null;
-
-        if (!IsOpen || pos.X > Width) return false;
-
-        if (HitTest(_saveButtonBounds, pos)) { OpenSaveDialog(); return true; }
-        if (HitTest(_createFolderButtonBounds, pos)) { OpenCreateFolderDialog(); return true; }
-        if (HitTest(_newButtonBounds, pos))
-        {
-            if (_libraryManager.IsDocumentDirty())
-                OpenNewFileDialog();
-            else
-                _libraryManager.NewFile();
-            return true;
-        }
-        
-        if (HitTest(_settingsButtonBounds, pos)) { OpenSettingsDialog(); return true; }
-
-        foreach (var (node, action, x, y, w, h) in _iconHitRegions)
-        {
-            if (pos.X >= x && pos.X <= x + w && pos.Y >= y && pos.Y <= y + h)
-            {
-                if (action == IconAction.Edit) OpenRenameDialog(node);
-                else if (action == IconAction.Delete) OpenDeleteDialog(node);
-                else if (action == IconAction.Move)
-                {
-                    _dragPending = true;
-                    _dragStartPos = pos;
-                    _dragNode = node;
-                }
-                return true;
-            }
-        }
-
-        float relativeY = pos.Y + _scrollY;
-        foreach (var (node, x, y) in _flatList)
-        {
-            if (MathF.Abs(y - relativeY) < ItemHeight * 0.5f)
-            {
-                if (node.IsDirectory)
-                {
-                    node.IsExpanded = !node.IsExpanded;
-                    RebuildFlatList();
-                    RebuildTextAtlas();
-                }
-                else
-                {
-                    _libraryManager.LoadFile(node.FullPath);
-                }
-                _renderer.SetDirty();
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private bool HitTest(Vector4 bounds, Vector2 pos)
-    {
-        return pos.X >= bounds.X && pos.X <= bounds.X + bounds.Z &&
-               pos.Y >= bounds.Y && pos.Y <= bounds.Y + bounds.W;
-    }
-
-    private void HandleDialogClick(Vector2 pos, bool isRightClick)
-    {
-        if (IsTreeDialog)
-        {
-            HandleTreeDialogClick(pos);
             return;
         }
-        
+
+        if (IsPopupDialog)
+        {
+            var (cancelPos, okPos, btnSize) = PopupButtons();
+            if (UiBatch.Contains(okPos, btnSize, pos)) ConfirmDialog();
+            else if (UiBatch.Contains(cancelPos, btnSize, pos)) CancelDialog();
+            return;
+        }
+
+        if (!IsOpen || pos.X >= Width) return;
+
         if (_dialogMode == DialogMode.Log)
         {
-            float btnY = _screenSize.Y - 48;
-            float cancelX = 16;
-            if (pos.X >= cancelX && pos.X <= cancelX + IconButtonSize && pos.Y >= btnY && pos.Y <= btnY + IconButtonSize)
+            if (Hit(BottomButtonPos, BottomButtonSize)) CancelDialog();
+            else BeginPress(Press.Scroll, null, pos);
+            return;
+        }
+
+        if (_dialogMode == DialogMode.CreateFolder)
+        {
+            var (cancelPos, okPos, btnSize) = PanelDialogButtons();
+            if (UiBatch.Contains(okPos, btnSize, pos)) ConfirmDialog();
+            else if (UiBatch.Contains(cancelPos, btnSize, pos)) CancelDialog();
+            else if (pos.Y >= ListTop && pos.Y < ListBottom) BeginPress(Press.Row, RowAt(pos)?.Node, pos);
+            return;
+        }
+
+        if (Hit(CollapseButtonPos, new Vector2(32f))) { Toggle(); return; }
+        if (Hit(ToolbarButtonPos(0), ToolbarButtonSize)) { OpenSaveDialog(); return; }
+        if (Hit(ToolbarButtonPos(1), ToolbarButtonSize)) { OpenCreateFolderDialog(); return; }
+        if (Hit(ToolbarButtonPos(2), ToolbarButtonSize))
+        {
+            if (_libraryManager.IsDocumentDirty()) OpenNewFileDialog();
+            else _libraryManager.NewFile();
+            return;
+        }
+
+        if (Hit(BottomButtonPos, BottomButtonSize)) { OpenSettingsDialog(); return; }
+        if (pos.Y < ListTop || pos.Y >= ListBottom) return;
+
+        if (RowAt(pos) is not { } row) return;
+        if (row.Node != _rootNode)
+        {
+            for (int i = 0; i < 3; i++)
             {
-                CancelDialog();
+                var (bPos, bSize) = ActionRect(row, (RowAction)i);
+                if (!UiBatch.Contains(bPos, bSize, pos)) continue;
+                switch ((RowAction)i)
+                {
+                    case RowAction.Move: BeginPress(Press.Move, row.Node, pos); break;
+                    case RowAction.Rename: OpenRenameDialog(row.Node!); break;
+                    default: OpenDeleteDialog(row.Node!); break;
+                }
+
                 return;
             }
-            return;
         }
 
-        float dx = (_screenSize.X - DialogWidth) * 0.5f;
-        float dy = (_screenSize.Y - DialogHeight) * 0.5f;
-        float btnY1 = dy + DialogHeight - DialogBtnHeight - 20f;
-
-        float okX = dx + DialogWidth - DialogBtnWidth - 16;
-        if (pos.X >= okX && pos.X <= okX + DialogBtnWidth && pos.Y >= btnY1 && pos.Y <= btnY1 + DialogBtnHeight)
-        {
-            ConfirmDialog();
-            return;
-        }
-
-        float cancelX1 = dx + DialogWidth - DialogBtnWidth * 2 - 28;
-        if (pos.X >= cancelX1 && pos.X <= cancelX1 + DialogBtnWidth && pos.Y >= btnY1 && pos.Y <= btnY1 + DialogBtnHeight)
-        {
-            CancelDialog();
-            return;
-        }
+        BeginPress(Press.Row, row.Node, pos);
     }
 
-    private void HandleTreeDialogClick(Vector2 pos)
+    private void BeginPress(Press press, FileNode? node, Vector2 pos)
     {
-        float btnY = _screenSize.Y - DialogBtnHeight - 20f;
-        float cancelX = 16;
-        float okX = Width - DialogBtnWidth - 16;
+        _press = press;
+        _pressNode = node;
+        _pressPos = pos;
+        _pressScroll = _scrollY;
+    }
 
-        if (pos.X >= okX && pos.X <= okX + DialogBtnWidth && pos.Y >= btnY && pos.Y <= btnY + DialogBtnHeight)
-        {
-            ConfirmDialog();
-            return;
-        }
-        if (pos.X >= cancelX && pos.X <= cancelX + DialogBtnWidth && pos.Y >= btnY && pos.Y <= btnY + DialogBtnHeight)
-        {
-            CancelDialog();
-            return;
-        }
-
-        float relativeY = pos.Y + _scrollY;
-        for (int i = 0; i < _flatList.Count; i++)
-        {
-            var (node, x, y) = _flatList[i];
-            if (!node.IsDirectory) continue;
-
-            if (MathF.Abs(y - relativeY) < ItemHeight * 0.7f)
-            {
-                if (pos.X >= x && pos.X <= x + 24f)
-                {
-                    node.IsExpanded = !node.IsExpanded;
-                    RebuildFlatList();
-                    RebuildTextAtlas();
-                }
-                else
-                {
-                    _selectedDestDir = node.FullPath;
-                    _renderer.SetDirty();
-                }
-                return;
-            }
-        }
+    private Row? RowAt(Vector2 pos)
+    {
+        foreach (var row in _rows)
+            if (!row.IsPlaceholder && pos.Y >= row.Y && pos.Y < row.Y + RowHeight)
+                return row;
+        return null;
     }
 
     public void HandleMouseMove(Vector2 pos)
     {
+        bool changed = Vector2.DistanceSquared(pos, _mousePos) > 0.01f;
         _mousePos = pos;
-        
+
         if (_settingsPanel.IsOpen)
         {
-            _settingsPanel.UpdateMousePos(pos);
-            _renderer.SetDirty();
+            _settingsPanel.HandleMouseMove(pos);
             return;
         }
 
-        if (_dragPending && !_isDragging)
+        float moved = Vector2.Distance(pos, _pressPos);
+        switch (_press)
         {
-            float dist = Vector2.Distance(_dragStartPos, pos);
-            if (dist > DragThreshold)
-            {
+            case Press.Row when moved > DragThreshold:
+                _press = Press.Scroll;
+                break;
+            case Press.Move when moved > DragThreshold && !_isDragging:
                 _isDragging = true;
-                _dragMousePos = pos;
-                UpdateDropTarget(pos);
-                _renderer.SetDirty();
-            }
+                _dragNode = _pressNode;
+                break;
         }
 
-        if (_isDragging)
+        if (_press == Press.Scroll)
         {
-            _dragMousePos = pos;
-            UpdateDropTarget(pos);
-            _renderer.SetDirty();
+            _scrollY = _pressScroll - (pos.Y - _pressPos.Y);
+            ScrollBy(0f);
         }
+
+        if (_isDragging) UpdateDropTarget(pos);
+        if (changed && (IsOpen || IsModalOpen)) _renderer.SetDirty();
     }
 
     public void HandleMouseUp(Vector2 pos)
     {
+        _mousePos = pos;
+        _renderer.SetDirty();
+
         if (_settingsPanel.IsOpen)
         {
             _settingsPanel.HandleMouseUp(pos);
             return;
         }
 
-        if (_isDragging && _dragNode != null)
+        var press = _press;
+        var node = _pressNode;
+        _press = Press.None;
+        _pressNode = null;
+
+        if (_isDragging)
         {
-            if (_dropTargetPath != null)
-            {
-                if (_dragNode.IsDirectory)
-                    _libraryManager.MoveDirectory(_dragNode.FullPath, _dropTargetPath);
-                else
-                    _libraryManager.MoveFile(_dragNode.FullPath, _dropTargetPath);
-                RefreshTree();
-            }
-            _isDragging = false;
-            _dragNode = null;
-            _dropTargetPath = null;
-            _dragPending = false;
-            _renderer.SetDirty();
+            FinishDrag();
             return;
         }
 
-        _dragPending = false;
+        if (press != Press.Row || node == null || RowAt(pos)?.Node != node) return;
+
+        if (_dialogMode == DialogMode.CreateFolder)
+        {
+            if (pos.X < 12f + RowAt(pos)!.Value.Depth * Indent + 20f) SetExpanded(node, !node.IsExpanded);
+            else _selectedDestDir = node.FullPath;
+        }
+        else if (node.IsDirectory)
+        {
+            SetExpanded(node, !node.IsExpanded);
+        }
+        else
+        {
+            _libraryManager.LoadFile(node.FullPath);
+        }
+    }
+
+    private void FinishDrag()
+    {
+        var node = _dragNode;
+        string? target = _dropTargetPath;
+        // The placeholder becomes the moved row, so start the new row exactly where the placeholder is.
+        float? landingY = _animatedY.TryGetValue(PlaceholderKey, out float y) ? y : null;
+        CancelDrag();
+        if (node == null || target == null) return;
+
+        string? newPath = LibraryManager.GetMoveDestination(node.FullPath, node.IsDirectory, target);
+        if (newPath == null) return;
+
+        if (node.IsDirectory) _libraryManager.MoveDirectory(node.FullPath, target);
+        else _libraryManager.MoveFile(node.FullPath, target);
+
+        _collapsed.Remove(target);
+        RefreshTree();
+        if (landingY != null) _animatedY[newPath] = landingY.Value;
+        _highlightPath = newPath;
+        _highlightStart = DateTime.Now;
     }
 
     public void CancelDrag()
     {
-        _dragPending = false;
         _isDragging = false;
         _dragNode = null;
         _dropTargetPath = null;
+        _hoverFolderPath = null;
+        _press = Press.None;
+        _animatedY.Remove(PlaceholderKey);
         _renderer.SetDirty();
     }
 
     private void UpdateDropTarget(Vector2 pos)
     {
-        _dropTargetPath = null;
-
-        if (pos.X < 0 || pos.X > Width) return;
-
-        float relativeY = pos.Y + _scrollY;
-        foreach (var (node, x, y) in _flatList)
+        string? folder = null;
+        if (pos.X >= 0 && pos.X < Width && pos.Y >= ListTop && pos.Y < ListBottom && _rootNode != null)
         {
-            if (!node.IsDirectory) continue;
-            if (node == _dragNode) continue;
+            var row = RowAt(pos);
+            if (row is { } r)
+                folder = r.Node!.IsDirectory ? r.Node.FullPath : Path.GetDirectoryName(r.Node.FullPath);
+            else if (_rows.Any(rr => rr.IsPlaceholder && pos.Y >= rr.Y && pos.Y < rr.Y + RowHeight))
+                folder = _dropTargetPath;
+            else
+                folder = _rootNode.FullPath;
+        }
 
-            if (_dragNode != null && _dragNode.IsDirectory)
-            {
-                if (node.FullPath.StartsWith(_dragNode.FullPath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                    continue;
-            }
+        if (folder != _hoverFolderPath)
+        {
+            _hoverFolderPath = folder;
+            _hoverFolderSince = DateTime.Now;
+        }
 
-            if (MathF.Abs(y - relativeY) < ItemHeight * 0.5f)
-            {
-                _dropTargetPath = node.FullPath;
-                break;
-            }
+        string? target = folder != null && _dragNode != null &&
+                         LibraryManager.GetMoveDestination(_dragNode.FullPath, _dragNode.IsDirectory, folder) != null
+            ? folder
+            : null;
+
+        if (target != _dropTargetPath)
+        {
+            _dropTargetPath = target;
+            // Start the placeholder where the pointer is so it visibly slides into its slot.
+            _animatedY[PlaceholderKey] = pos.Y - ListTop - 4f + _scrollY - RowHeight * 0.5f;
+            if (target == null) _animatedY.Remove(PlaceholderKey);
         }
     }
 
@@ -1072,33 +990,11 @@ public class LibraryPanel : IDisposable
         if (_settingsPanel.IsOpen)
         {
             _settingsPanel.HandleScroll(delta);
-            _renderer.SetDirty();
             return;
         }
 
-        if (_isDragging) return;
-        if (_dialogMode != DialogMode.None && !IsTreeDialog && _dialogMode != DialogMode.Log) return;
-        _scrollY -= delta * 28f;
-        
-        float maxScroll;
-        if (_dialogMode == DialogMode.Log)
-            maxScroll = _logLines.Count * 20f - 500;
-        else
-            maxScroll = _flatList.Count * ItemHeight - 500;
-            
-        _scrollY = Math.Clamp(_scrollY, 0, Math.Max(0, maxScroll));
-    }
-    
-    public void OpenNewFileDialog()
-    {
-        _dialogMode = DialogMode.NewFile;
-        _dialogTargetNode = null;
-        _textBox.SetText("");
-        _dialogTitle = Localization.Get("dialog_new_file_title", "Create New File?");
-        _dialogMessage = Localization.Get("dialog_new_file_message", "Unsaved changes will be lost.");
-        _dialogConfirmLabel = Localization.Get("dialog_button_create", "Create");
-        _dialogCancelLabel = Localization.Get("dialog_button_cancel", "Cancel");
-        RebuildTextAtlas();
+        if (IsPopupDialog) return;
+        ScrollBy(-delta * 40f);
     }
 
     public void Dispose() { }
