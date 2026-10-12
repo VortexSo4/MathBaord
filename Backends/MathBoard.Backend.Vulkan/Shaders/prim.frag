@@ -24,8 +24,8 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 void main() {
-    vec2 f = gl_FragCoord.xy;
-    if (f.x < vClip.x || f.y < vClip.y || f.x > vClip.z || f.y > vClip.w) discard;
+    // The clip rect is in the primitive's own space, which for interface primitives is the screen.
+    if (vLocal.x < vClip.x || vLocal.y < vClip.y || vLocal.x > vClip.z || vLocal.y > vClip.w) discard;
 
     uint type = uint(vB.w + 0.5);
     vec4 color = vColor;
@@ -59,6 +59,11 @@ void main() {
             vec3 hsv = vB.x < 0.5 ? vec3(t, 1.0, 1.0) : (vB.x < 1.5 ? vec3(vB.y, t, 1.0) : vec3(vB.y, 1.0, t));
             color.rgb = hsv2rgb(hsv);
         }
+    } else if (type == 5u) {
+        vec2 hs = (vA.zw - vA.xy) * 0.5;
+        d = sdRoundBox(vLocal - (vA.xy + hs), hs, min(vB.z, min(hs.x, hs.y)));
+        float t = clamp((vA.w - vLocal.y) / max(vA.w - vA.y, 1e-6), 0.0, 1.0);
+        color.rgb = hsv2rgb(vB.x < 0.5 ? vec3(t, 1.0, 1.0) : (vB.x < 1.5 ? vec3(vB.y, t, 1.0) : vec3(vB.y, 1.0, t)));
     } else {
         vec2 hs = (vA.zw - vA.xy) * 0.5;
         float r = min(vB.x, min(hs.x, hs.y));

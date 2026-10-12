@@ -26,6 +26,12 @@ public class Document
             _history.RemoveAt(0);
     }
 
+    /// <summary>Drops the snapshot taken for an edit that was cancelled.</summary>
+    public void DiscardLastState()
+    {
+        if (_history.Count > 0) _history.RemoveAt(_history.Count - 1);
+    }
+
     public bool Undo() => Restore(_history, _redoStack);
 
     public bool Redo() => Restore(_redoStack, _history);

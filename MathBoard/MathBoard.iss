@@ -33,6 +33,7 @@ DisableProgramGroupPage=yes
 ; Remove the following line to run in administrative install mode (install for all users).
 PrivilegesRequired=lowest
 OutputBaseFilename=mysetup
+SetupIconFile=resources\icon.ico
 SolidCompression=yes
 WizardStyle=modern windows11
 

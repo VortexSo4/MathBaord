@@ -25,6 +25,7 @@ public class SettingsPanel : IDisposable
 
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
     private static readonly Dictionary<string, string> LanguageNames = new() { ["EN_US"] = "English", ["RU_RU"] = "Русский" };
+    private static readonly string[] ScaleOptions = ["0", "1", "1.25", "1.5", "1.75", "2"];
 
     private enum SettingType { Numeric, IntNumeric, Enum, Bool, Action }
 
@@ -36,6 +37,7 @@ public class SettingsPanel : IDisposable
         public Action<string>? SetValue;
         public Action? OnClick;
         public List<string>? Options;
+        public Func<string, string> Label = v => v;
     }
 
     private readonly List<SettingItem> _items = new();
@@ -115,7 +117,40 @@ public class SettingsPanel : IDisposable
                 Localization.Load(v);
                 BuildSettingsList();
             },
-            Options = ["EN_US", "RU_RU"]
+            Options = ["EN_US", "RU_RU"],
+            Label = v => LanguageNames.GetValueOrDefault(v, v)
+        });
+
+        _items.Add(new SettingItem
+        {
+            Name = Localization.Get("settings_ui_scale", "Interface scale"),
+            Type = SettingType.Enum,
+            GetValue = () => Settings.UiScale.Value.ToString(Invariant),
+            SetValue = v => Settings.UiScale.Value = float.Parse(v, Invariant),
+            Options = [..ScaleOptions],
+            Label = v => v == "0"
+                ? Localization.Get("settings_auto", "Auto")
+                : (float.Parse(v, Invariant) * 100f).ToString("0", Invariant) + "%"
+        });
+
+        _items.Add(new SettingItem
+        {
+            Name = Localization.Get("settings_render_backend", "Renderer (after restart)"),
+            Type = SettingType.Enum,
+            GetValue = () => Settings.RenderBackend.Value,
+            SetValue = v => Settings.RenderBackend.Value = v,
+            Options = [BackendLoader.Auto, ..Settings.AvailableBackends],
+            Label = v => v == BackendLoader.Auto ? Localization.Get("settings_auto", "Auto") : v
+        });
+
+        _items.Add(new SettingItem
+        {
+            Name = Localization.Get("settings_on_screen_keyboard", "On-screen keyboard"),
+            Type = SettingType.Enum,
+            GetValue = () => Settings.OnScreenKeyboard.Value,
+            SetValue = v => Settings.OnScreenKeyboard.Value = v,
+            Options = ["Auto", "Always", "Never"],
+            Label = v => Localization.Get("settings_osk_" + v.ToLowerInvariant(), v)
         });
 
         _items.Add(new SettingItem
@@ -128,14 +163,6 @@ public class SettingsPanel : IDisposable
                 Close();
                 OnCustomizeQuickButtons?.Invoke();
             }
-        });
-
-        _items.Add(new SettingItem
-        {
-            Name = Localization.Get("settings_library_panel_on_top", "Library Panel On Top"),
-            Type = SettingType.Bool,
-            GetValue = () => Settings.LibraryPanelOnTop.Value.ToString(),
-            OnClick = () => Settings.LibraryPanelOnTop.Value = !Settings.LibraryPanelOnTop.Value
         });
 
         _items.Add(new SettingItem
@@ -499,7 +526,7 @@ public class SettingsPanel : IDisposable
                 bool open = _openDropdownIndex == index;
                 ui.Rect(pos, size, rowHover || open ? Theme.SurfaceHover : Theme.Surface, 6f);
                 if (open) ui.Border(pos, size, Theme.Accent, 1.5f, 6f);
-                ui.TextInRect(OptionLabel(item.GetValue()), pos + new Vector2(10f, 0), size - new Vector2(40f, 0), Theme.Text, Theme.Body);
+                ui.TextInRect(item.Label(item.GetValue()), pos + new Vector2(10f, 0), size - new Vector2(40f, 0), Theme.Text, Theme.Body);
                 ui.Icon(Icons.ChevronDown, pos + new Vector2(size.X - 18f, size.Y * 0.5f), 11f, Theme.TextSecondary);
                 break;
             }
@@ -520,8 +547,6 @@ public class SettingsPanel : IDisposable
         }
     }
 
-    private static string OptionLabel(string value) => LanguageNames.GetValueOrDefault(value, value);
-
     private void RenderDropdownList(UiBatch ui)
     {
         var item = _items[_openDropdownIndex];
@@ -539,7 +564,7 @@ public class SettingsPanel : IDisposable
             bool selected = item.Options[i] == current;
             if (UiBatch.Contains(optPos, optSize, _mousePos)) ui.Rect(optPos, optSize, Theme.SurfaceHover, 6f);
             else if (selected) ui.Rect(optPos, optSize, Theme.AccentSoft, 6f);
-            ui.TextInRect(OptionLabel(item.Options[i]), optPos + new Vector2(10f, 0), optSize - new Vector2(36f, 0), Theme.Text, Theme.Body);
+            ui.TextInRect(item.Label(item.Options[i]), optPos + new Vector2(10f, 0), optSize - new Vector2(36f, 0), Theme.Text, Theme.Body);
             if (selected) ui.Icon(Icons.CheckMark, optPos + new Vector2(optSize.X - 16f, optSize.Y * 0.5f), 12f, Theme.Accent);
         }
     }

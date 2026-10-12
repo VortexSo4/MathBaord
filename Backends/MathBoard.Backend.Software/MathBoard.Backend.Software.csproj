@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <EnableDynamicLoading>true</EnableDynamicLoading>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\MathBoard.Graphics\MathBoard.Graphics.csproj" Private="false" ExcludeAssets="runtime" />
+        <!-- The app ships SkiaSharp for text, so the plugin uses that copy at run time. -->
+        <PackageReference Include="SkiaSharp" Version="3.119.0" ExcludeAssets="runtime;native" />
+    </ItemGroup>
+
+</Project>

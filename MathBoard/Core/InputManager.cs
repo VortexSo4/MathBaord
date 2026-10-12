@@ -20,12 +20,14 @@ public sealed partial class InputManager : IDisposable
     private readonly LibraryManager _libraryManager;
     private readonly LibraryPanel _libraryPanel;
     private readonly QuickBar _quickBar;
+    private readonly ColorEditor _colorEditor;
+    private readonly TouchGestures? _gestures;
 
     private readonly IMouse? _mouse;
     private readonly IKeyboard? _keyboard;
 
     /// <summary>Who receives pointer events until the button that started the gesture is released.</summary>
-    private enum Capture { None, Panel, QuickBar, Radial, Canvas, Erase, Pan }
+    private enum Capture { None, Panel, QuickBar, Radial, ColorEditor, Canvas, Erase, Pan }
 
     private Capture _capture = Capture.None;
     private MouseButton _captureButton;
@@ -44,6 +46,8 @@ public sealed partial class InputManager : IDisposable
     private readonly TimeSpan _repeatDelay;
     private readonly TimeSpan _repeatInterval;
     private int _caretPhase;
+    private bool _textWasActive;
+    private bool _keyboardAutoShown;
 
     public QuickBar QuickBar => _quickBar;
 
@@ -56,10 +60,20 @@ public sealed partial class InputManager : IDisposable
         _radialMenu = radialMenu;
         _libraryManager = libraryManager;
         _libraryPanel = libraryPanel;
-        _quickBar = new QuickBar(strokeRenderer, Execute, IsActive, pos => _libraryPanel.IsOpen && pos.X < _libraryPanel.Width);
+        _colorEditor = new ColorEditor(strokeRenderer);
+        strokeRenderer.AddOverlay(_colorEditor);
+        _quickBar = new QuickBar(strokeRenderer, Execute, IsActive, pos => _libraryPanel.IsOpen && pos.X < _libraryPanel.Width,
+            (index, center) => _colorEditor.Open(index, center));
         _libraryPanel.SettingsPanel.OnCustomizeQuickButtons = _quickBar.BeginEditing;
 
         (_repeatDelay, _repeatInterval) = ReadKeyboardRepeat();
+
+        if (OperatingSystem.IsWindows() && window.Native?.Win32 is { } win32)
+        {
+            _gestures = new TouchGestures(win32.Hwnd);
+            _gestures.Started += OnGestureStarted;
+            _gestures.Changed += OnGestureChanged;
+        }
 
         _input = window.CreateInput();
         _mouse = _input.Mice.FirstOrDefault();
@@ -111,6 +125,7 @@ public sealed partial class InputManager : IDisposable
         _libraryPanel.Update(dt);
 
         var textBox = _libraryPanel.ActiveTextBox;
+        UpdateTouchKeyboard(textBox != null);
         if (textBox != null)
         {
             if (_repeatKey is { } key && now >= _repeatAt && _keyboard != null)
@@ -133,7 +148,61 @@ public sealed partial class InputManager : IDisposable
         }
     }
 
-    private Vector2 MousePosition => _mouse?.Position ?? Vector2.Zero;
+    /// <summary>Shows the touch keyboard while a text field is active if the setting asks for it.</summary>
+    private void UpdateTouchKeyboard(bool textActive)
+    {
+        if (textActive == _textWasActive) return;
+        _textWasActive = textActive;
+
+        if (textActive)
+        {
+            bool show = Settings.OnScreenKeyboard.Value switch
+            {
+                "Always" => true,
+                "Never" => false,
+                _ => !TouchKeyboard.IsHardwareKeyboardPresent()
+            };
+            if (show && !TouchKeyboard.IsVisible)
+            {
+                TouchKeyboard.Show();
+                _keyboardAutoShown = true;
+            }
+        }
+        else if (_keyboardAutoShown)
+        {
+            TouchKeyboard.Hide();
+            _keyboardAutoShown = false;
+        }
+    }
+
+    private void OnGestureStarted()
+    {
+        // The first finger already started something through mouse emulation; a pinch replaces it.
+        if (_capture == Capture.Canvas)
+        {
+            if (_isDrawing && _strokeRenderer.Tool == Tool.Brush) _strokeRenderer.CancelStroke();
+            else if (_isDrawing) _strokeRenderer.EndStroke();
+            if (_strokeRenderer.CurrentSelectionState != StrokeRenderer.SelectionState.None)
+                _strokeRenderer.HandleSelectionUp(_mouseDownPos);
+            _capture = Capture.None;
+        }
+
+        _menuPending = false;
+        _isDrawing = false;
+        _isPanning = false;
+    }
+
+    private void OnGestureChanged(Vector2 center, Vector2 delta, float zoom)
+    {
+        if (_capture != Capture.None || _libraryPanel.IsModalOpen) return;
+        PanBy(ToLogical(delta));
+        _strokeRenderer.ZoomAt(ToLogical(center), zoom);
+    }
+
+    private Vector2 MousePosition => ToLogical(_mouse?.Position ?? Vector2.Zero);
+
+    /// <summary>Converts window pixels to the logical pixels the whole UI works in.</summary>
+    private Vector2 ToLogical(Vector2 windowPos) => windowPos / _strokeRenderer.UiScale;
     private bool IsCtrl => _keyboard?.IsKeyPressed(Key.ControlLeft) == true || _keyboard?.IsKeyPressed(Key.ControlRight) == true;
     private bool IsShift => _keyboard?.IsKeyPressed(Key.ShiftLeft) == true || _keyboard?.IsKeyPressed(Key.ShiftRight) == true;
 
@@ -153,12 +222,11 @@ public sealed partial class InputManager : IDisposable
                 _strokeRenderer.Redo();
                 break;
             case UiAction.Save:
-                if (!_libraryManager.SaveCurrent()) _libraryPanel.OpenSaveDialog();
+                if (!_libraryManager.SaveCurrent()) _libraryPanel.OpenSaveAsDialog();
                 _libraryPanel.RefreshTree();
                 break;
             case UiAction.NewFile:
-                if (_document.IsDirty) _libraryPanel.OpenNewFileDialog();
-                else _libraryManager.NewFile();
+                _libraryPanel.RequestNewFile();
                 break;
             case UiAction.OpenAutoSave:
                 _libraryManager.LoadLastSave();
@@ -191,6 +259,9 @@ public sealed partial class InputManager : IDisposable
             case UiAction.FitView:
                 _strokeRenderer.FitToContent();
                 break;
+            case UiAction.Keyboard:
+                TouchKeyboard.Toggle();
+                break;
         }
 
         _strokeRenderer.SetDirty();
@@ -222,9 +293,15 @@ public sealed partial class InputManager : IDisposable
 
     private void OnMouseDown(IMouse mouse, MouseButton button)
     {
-        var pos = mouse.Position;
+        var pos = ToLogical(mouse.Position);
         _strokeRenderer.SetDirty();
-        if (_capture != Capture.None) return;
+        if (_capture != Capture.None || _gestures?.IsActive == true) return;
+
+        if (_colorEditor.IsOpen)
+        {
+            if (button == MouseButton.Left) Begin(Capture.ColorEditor, button, () => _colorEditor.OnMouseDown(pos));
+            return;
+        }
 
         if (_libraryPanel.IsModalOpen)
         {
@@ -280,10 +357,14 @@ public sealed partial class InputManager : IDisposable
 
     private void OnMouseMove(IMouse mouse, Vector2 position)
     {
-        var pos = mouse.Position;
+        var pos = ToLogical(position);
+        if (_gestures?.IsActive == true) return;
 
         switch (_capture)
         {
+            case Capture.ColorEditor:
+                _colorEditor.OnMouseMove(pos);
+                return;
             case Capture.Panel:
                 _libraryPanel.HandleMouseMove(pos);
                 return;
@@ -315,6 +396,7 @@ public sealed partial class InputManager : IDisposable
             _strokeRenderer.SetDirty();
         }
 
+        if (_colorEditor.IsOpen) _colorEditor.OnMouseMove(pos);
         _quickBar.UpdateHover(pos);
         UpdateHover(pos);
     }
@@ -374,7 +456,7 @@ public sealed partial class InputManager : IDisposable
 
     private void OnMouseUp(IMouse mouse, MouseButton button)
     {
-        var pos = mouse.Position;
+        var pos = ToLogical(mouse.Position);
         _strokeRenderer.SetDirty();
         if (_capture == Capture.None || button != _captureButton) return;
 
@@ -383,6 +465,9 @@ public sealed partial class InputManager : IDisposable
 
         switch (capture)
         {
+            case Capture.ColorEditor:
+                _colorEditor.OnMouseUp(pos);
+                break;
             case Capture.Panel:
                 _libraryPanel.HandleMouseUp(pos);
                 break;
@@ -424,7 +509,7 @@ public sealed partial class InputManager : IDisposable
 
     private void OnMouseWheel(IMouse mouse, ScrollWheel wheel)
     {
-        var pos = mouse.Position;
+        var pos = ToLogical(mouse.Position);
         if (_capture is Capture.Canvas or Capture.Radial) return;
 
         if (_libraryPanel.Contains(pos))
@@ -465,6 +550,12 @@ public sealed partial class InputManager : IDisposable
             return;
         }
 
+        if (_colorEditor.IsOpen)
+        {
+            if (key is Key.Escape or Key.Enter) _colorEditor.Close();
+            return;
+        }
+
         if (key == Key.Escape)
         {
             if (_radialMenu.IsOpen) _radialMenu.Close();
@@ -480,12 +571,16 @@ public sealed partial class InputManager : IDisposable
             {
                 case Key.Z: Execute(shift ? UiAction.Redo : UiAction.Undo); break;
                 case Key.Y: Execute(UiAction.Redo); break;
-                case Key.S when shift: _libraryPanel.OpenSaveDialog(); break;
+                case Key.S when shift: _libraryPanel.OpenSaveAsDialog(); break;
                 case Key.S: Execute(UiAction.Save); break;
                 case Key.O: Execute(UiAction.OpenAutoSave); break;
                 case Key.N: Execute(UiAction.NewFile); break;
                 case Key.L: Execute(UiAction.ToggleLibrary); break;
             }
+        }
+        else if (key is Key.Delete or Key.Backspace && _strokeRenderer.SelectedStrokes.Count > 0)
+        {
+            _strokeRenderer.DeleteSelection();
         }
         else if (key == Key.E)
         {
@@ -527,6 +622,7 @@ public sealed partial class InputManager : IDisposable
 
     public void Dispose()
     {
+        _gestures?.Dispose();
         if (_mouse != null)
         {
             _mouse.MouseDown -= OnMouseDown;

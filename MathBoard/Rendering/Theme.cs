@@ -78,4 +78,5 @@ public static class Icons
     public const string CheckMark = "";
     public const string Customize = "";
     public const string Log = "";
+    public const string Keyboard = "";
 }

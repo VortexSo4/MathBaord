@@ -19,5 +19,6 @@ public enum UiAction
     Color3,
     ZoomIn,
     ZoomOut,
-    FitView
+    FitView,
+    Keyboard
 }

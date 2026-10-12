@@ -1,8 +1,12 @@
 using System.Numerics;
+using MathBoard.Graphics;
 
 namespace MathBoard.Rendering;
 
-/// <summary>Collects screen-space primitives for one UI frame, in draw order.</summary>
+/// <summary>
+/// Collects primitives for one UI frame, in draw order. Coordinates are logical pixels; <see cref="Scale"/>
+/// framebuffer pixels per logical pixel is only used to keep text crisp.
+/// </summary>
 public sealed class UiBatch(TextAtlas atlas)
 {
     public enum Align { Left, Center, Right }
@@ -12,9 +16,11 @@ public sealed class UiBatch(TextAtlas atlas)
     private Vector4 _clip = Prim.NoClip;
 
     public TextAtlas Atlas => atlas;
+    public float Scale { get; private set; } = 1f;
 
-    public void Clear()
+    public void Clear(float scale)
     {
+        Scale = scale;
         Prims.Clear();
         _clipStack.Clear();
         _clip = Prim.NoClip;
@@ -52,6 +58,10 @@ public sealed class UiBatch(TextAtlas atlas)
     public void ColorRing(Vector2 center, float innerRadius, float outerRadius, int mode, float hue) =>
         Add(new Vector4(center, innerRadius, outerRadius), new Vector4(mode, hue, 0, (float)PrimType.ColorRing), Vector4.One);
 
+    /// <param name="mode">0 = hue, 1 = saturation, 2 = value; the value grows from bottom to top.</param>
+    public void ColorBar(Vector2 pos, Vector2 size, int mode, float hue, float radius) =>
+        Add(new Vector4(pos, pos.X + size.X, pos.Y + size.Y), new Vector4(mode, hue, radius, (float)PrimType.ColorBar), Vector4.One);
+
     private void Add(Vector4 a, Vector4 b, Vector4 color) =>
         Prims.Add(new Prim { A = a, B = b, Color = color, Clip = _clip });
 
@@ -61,7 +71,7 @@ public sealed class UiBatch(TextAtlas atlas)
     public float Text(string text, Vector2 topLeft, Vector4 color, TextStyle style)
     {
         var metrics = atlas.GetMetrics(style);
-        DrawEntry(text, new Vector2(MathF.Round(topLeft.X), MathF.Round(topLeft.Y + metrics.Ascent)), color, style);
+        DrawEntry(text, topLeft + new Vector2(0, metrics.Ascent), color, style);
         return Measure(text, style);
     }
 
@@ -77,15 +87,15 @@ public sealed class UiBatch(TextAtlas atlas)
             _ => pos.X
         };
         var metrics = atlas.GetMetrics(style);
-        float baseline = pos.Y + (size.Y + metrics.CapHeight) * 0.5f;
-        DrawEntry(text, new Vector2(MathF.Round(x), MathF.Round(baseline)), color, style);
+        DrawEntry(text, new Vector2(x, pos.Y + (size.Y + metrics.CapHeight) * 0.5f), color, style);
     }
 
     public void Icon(string glyph, Vector2 center, float size, Vector4 color)
     {
         var style = new TextStyle(FontFace.Icons, size);
         if (!atlas.TryGet(glyph, style, out var e)) return;
-        AddGlyph(new Vector2(MathF.Round(center.X - e.Size.X * 0.5f), MathF.Round(center.Y - e.Size.Y * 0.5f)), e, color);
+        var physical = center * Scale - e.Size * 0.5f;
+        AddGlyph(new Vector2(MathF.Round(physical.X), MathF.Round(physical.Y)), e, color);
     }
 
     public string Fit(string text, float maxWidth, TextStyle style)
@@ -107,18 +117,24 @@ public sealed class UiBatch(TextAtlas atlas)
     private void DrawEntry(string text, Vector2 baselineOrigin, Vector4 color, TextStyle style)
     {
         if (string.IsNullOrEmpty(text) || !atlas.TryGet(text, style, out var e)) return;
-        AddGlyph(baselineOrigin + e.Offset, e, color);
+        var physical = baselineOrigin * Scale;
+        AddGlyph(new Vector2(MathF.Round(physical.X), MathF.Round(physical.Y)) + e.Offset, e, color);
     }
 
-    private void AddGlyph(Vector2 pos, TextAtlas.Entry e, Vector4 color) =>
+    /// <summary>Adds a glyph quad whose top-left <paramref name="physical"/> is a whole framebuffer pixel.</summary>
+    private void AddGlyph(Vector2 physical, TextAtlas.Entry e, Vector4 color)
+    {
+        var pos = physical / Scale;
+        var size = e.Size / Scale;
         Prims.Add(new Prim
         {
-            A = new Vector4(pos, pos.X + e.Size.X, pos.Y + e.Size.Y),
+            A = new Vector4(pos, pos.X + size.X, pos.Y + size.Y),
             B = new Vector4(0, 0, 0, (float)PrimType.Glyph),
             Color = color,
             Extra = e.UV,
             Clip = _clip
         });
+    }
 
     public enum ButtonKind { Primary, Secondary, Danger, Ghost }
 

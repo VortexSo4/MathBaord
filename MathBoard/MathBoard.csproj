@@ -11,21 +11,50 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <None Include="Shaders\**\*.spv" CopyToOutputDirectory="PreserveNewest" />
-    </ItemGroup>
-
-    <ItemGroup>
       <PackageReference Include="Silk.NET.Input" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Maths" Version="2.23.0" />
-      <PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
-      <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
       <PackageReference Include="SkiaSharp" Version="3.119.0" />
+      <ProjectReference Include="..\MathBoard.Graphics\MathBoard.Graphics.csproj" />
     </ItemGroup>
 
     <ItemGroup>
         <None Include="resources\**\**\*.*"
               CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
+
+    <!--
+        Render backends are plugins: each is published into backends\<Project>\ next to the app and found at run time.
+        Building them from here only keeps the folder up to date; dropping in another backend needs no change to the app.
+    -->
+    <ItemGroup>
+        <BackendProject Include="..\Backends\*\*.csproj" />
+        <ProjectReference Include="@(BackendProject)" ReferenceOutputAssembly="false" Private="false" />
+    </ItemGroup>
+
+    <Target Name="CopyBackendsAfterBuild" AfterTargets="Build">
+        <CallTarget Targets="PublishBackends" />
+    </Target>
+
+    <Target Name="CopyBackendsAfterPublish" AfterTargets="Publish">
+        <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="PublishBackends"
+                 Properties="Configuration=$(Configuration);BackendsAppDir=$(PublishDir)" />
+    </Target>
+
+    <!-- Files the app already ships are shared with plugins at run time, so the plugins' copies are removed. -->
+    <Target Name="PublishBackends">
+        <PropertyGroup>
+            <BackendsAppDir Condition="'$(BackendsAppDir)' == ''">$(MSBuildProjectDirectory)\$(OutDir)</BackendsAppDir>
+        </PropertyGroup>
+        <MSBuild Projects="%(BackendProject.Identity)" Targets="Publish"
+                 Properties="Configuration=$(Configuration);PublishDir=$(BackendsAppDir)backends\%(BackendProject.Filename)\" />
+        <ItemGroup>
+            <BackendFile Include="$(BackendsAppDir)backends\*\*.dll" />
+            <SharedBackendFile Include="@(BackendFile)" Condition="Exists('$(BackendsAppDir)%(Filename)%(Extension)')" />
+            <BackendRuntimeDir Include="@(BackendProject->'$(BackendsAppDir)backends\%(Filename)\runtimes')" />
+        </ItemGroup>
+        <Delete Files="@(SharedBackendFile)" />
+        <RemoveDir Directories="@(BackendRuntimeDir)" />
+    </Target>
 
 </Project>

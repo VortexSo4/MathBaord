@@ -291,7 +291,7 @@ public class RadialMenu
             case 2: _pickerValue = value; break;
         }
 
-        var newColor = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
+        var newColor = ColorMath.HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
         if (_isPickingBackground)
             Settings.BackgroundColor.Value = newColor;
         else
@@ -303,7 +303,7 @@ public class RadialMenu
     {
         _isPickingColor = true;
         _colorEditIndex = colorIndex;
-        RgbToHsv(Settings.Colors[colorIndex], out _pickerHue, out _pickerSaturation, out _pickerValue);
+        (_pickerHue, _pickerSaturation, _pickerValue) = ColorMath.RgbToHsv(Settings.Colors[colorIndex]);
         _activePickerRing = -1;
         _selectedIndex = -1;
         _renderer.SetDirty();
@@ -311,7 +311,7 @@ public class RadialMenu
 
     private void ApplyPickerColor()
     {
-        var newColor = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
+        var newColor = ColorMath.HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
         Settings.Colors[_colorEditIndex] = newColor;
         Settings.Save();
         _renderer.SetColor(newColor);
@@ -324,7 +324,7 @@ public class RadialMenu
         _isPickingColor = false;
         _isAdjustingThickness = false;
         _isConfirmingClear = false;
-        RgbToHsv(Settings.BackgroundColor.Value, out _pickerHue, out _pickerSaturation, out _pickerValue);
+        (_pickerHue, _pickerSaturation, _pickerValue) = ColorMath.RgbToHsv(Settings.BackgroundColor.Value);
         _activePickerRing = -1;
         _selectedIndex = -1;
         _renderer.SetDirty();
@@ -378,9 +378,9 @@ public class RadialMenu
             var iconCenter = Position + new Vector2(MathF.Cos(centerAngle), MathF.Sin(centerAngle)) * IconRadius;
             if (_isColorMenuOpen)
             {
-                if (i == 3) ui.Icon(Icons.Palette, iconCenter, 20f, ContrastOn(fill));
+                if (i == 3) ui.Icon(Icons.Palette, iconCenter, 20f, ColorMath.ContrastOn(fill));
                 else if (Vector4.DistanceSquared(Settings.Colors[i], _renderer.CurrentColor) < 1e-4f)
-                    ui.Icon(Icons.CheckMark, iconCenter, 18f, ContrastOn(fill));
+                    ui.Icon(Icons.CheckMark, iconCenter, 18f, ColorMath.ContrastOn(fill));
             }
             else
             {
@@ -449,13 +449,10 @@ public class RadialMenu
         _ => Icons.Palette
     };
 
-    private static Vector4 ContrastOn(Vector4 c) =>
-        c.X * 0.299f + c.Y * 0.587f + c.Z * 0.114f > 0.6f ? new Vector4(0.05f, 0.05f, 0.08f, 1f) : Vector4.One;
-
     private void RenderColorPicker(UiBatch ui)
     {
         var (r1, r2, r3, r4) = PickerRings();
-        var preview = HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
+        var preview = ColorMath.HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
 
         ui.Circle(Position, PickerOuterRadius + 9f, Theme.Border);
         ui.Circle(Position, PickerOuterRadius + 8f, Theme.PanelBg);
@@ -482,7 +479,7 @@ public class RadialMenu
 
         ui.Circle(Position, PickerCenterRadius + 3f, Theme.Border);
         ui.Circle(Position, PickerCenterRadius, preview);
-        ui.Icon(Icons.CheckMark, Position, 16f, ContrastOn(preview));
+        ui.Icon(Icons.CheckMark, Position, 16f, ColorMath.ContrastOn(preview));
     }
 
     private void RenderThicknessPreview(UiBatch ui)
@@ -496,49 +493,5 @@ public class RadialMenu
         var pos = Position + new Vector2(-w * 0.5f, screenRadius + 12f);
         ui.Rect(pos, new Vector2(w, 28f), Theme.PopupBg, 8f);
         ui.TextInRect(label, pos, new Vector2(w, 28f), Theme.Text, Theme.Label, UiBatch.Align.Center);
-    }
-
-    private static Vector4 HsvToRgb(float h, float s, float v)
-    {
-        h = Math.Clamp(h, 0f, 1f);
-        s = Math.Clamp(s, 0f, 1f);
-        v = Math.Clamp(v, 0f, 1f);
-        int hi = (int)(h * 6f) % 6;
-        float f = h * 6f - (int)(h * 6f);
-        float p = v * (1f - s);
-        float q = v * (1f - f * s);
-        float t = v * (1f - (1f - f) * s);
-
-        return hi switch
-        {
-            0 => new Vector4(v, t, p, 1f),
-            1 => new Vector4(q, v, p, 1f),
-            2 => new Vector4(p, v, t, 1f),
-            3 => new Vector4(p, q, v, 1f),
-            4 => new Vector4(t, p, v, 1f),
-            _ => new Vector4(v, p, q, 1f),
-        };
-    }
-
-    private static void RgbToHsv(Vector4 rgb, out float h, out float s, out float v)
-    {
-        float max = Math.Max(rgb.X, Math.Max(rgb.Y, rgb.Z));
-        float min = Math.Min(rgb.X, Math.Min(rgb.Y, rgb.Z));
-        float delta = max - min;
-
-        v = max;
-        s = max > 0f ? delta / max : 0f;
-
-        if (delta < 0.00001f)
-        {
-            h = 0f;
-            return;
-        }
-
-        if (Math.Abs(max - rgb.X) < 0.00001f) h = (rgb.Y - rgb.Z) / delta + (rgb.Y < rgb.Z ? 6f : 0f);
-        else if (Math.Abs(max - rgb.Y) < 0.00001f) h = (rgb.Z - rgb.X) / delta + 2f;
-        else h = (rgb.X - rgb.Y) / delta + 4f;
-
-        h /= 6f;
     }
 }

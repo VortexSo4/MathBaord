@@ -1,6 +1,7 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
 using MathBoard.Core;
-using Silk.NET.Vulkan;
+using MathBoard.Graphics;
 
 namespace MathBoard.Rendering;
 
@@ -12,30 +13,31 @@ public enum Tool
     Pan
 }
 
-public sealed unsafe class StrokeRenderer : IDisposable
+public sealed class StrokeRenderer : IDisposable
 {
     // New input points closer than this (in screen pixels) to the previous one are dropped.
     private const float MinPointSpacingPx = 1.5f;
     // Maximum distance (in screen pixels) between the smoothed curve and its polyline approximation.
     private const float SmoothingTolerancePx = 0.2f;
 
-    private readonly VulkanContext _context;
-    private readonly RenderPassManager _renderPass;
-    private readonly CommandManager _commandManager;
     private readonly Document _document;
     private readonly Camera _camera;
 
-    private TextAtlas _textAtlas = null!;
-    private PrimitiveRenderer _primitives = null!;
-    private PrimBuffer _strokeBuffer = null!;
-    private PrimBuffer _uiBuffer = null!;
-    private UiBatch _ui = null!;
+    private readonly TextAtlas _textAtlas = new();
+    private readonly UiBatch _ui;
+
+    // Stroke primitives in document order; the backend uploads the range changed since the last presented frame.
+    private Prim[] _strokePrims = new Prim[4096];
+    private int _strokePrimCount;
+    private int _strokesDirtyFrom;
+    private bool _framePending;
 
     private LibraryPanel? _libraryPanel;
+    private readonly List<IOverlay> _overlays = new();
     private RadialMenu? _radialMenu;
     private QuickBar? _quickBar;
 
-    private Extent2D _extent;
+    private Vector2 _screenSize = new(1280, 720);
 
     private bool _uiDirty = true;
     private bool _strokesDirty = true;
@@ -74,15 +76,11 @@ public sealed unsafe class StrokeRenderer : IDisposable
     private (Vector2 Min, Vector2 Max) _originalBounds;
     private Vector2 _startMouseWorld;
 
-    public StrokeRenderer(VulkanContext context, SwapchainManager swapchain, RenderPassManager renderPass,
-        CommandManager commandManager, Document document, Camera camera)
+    public StrokeRenderer(Document document, Camera camera)
     {
-        _context = context;
-        _renderPass = renderPass;
-        _commandManager = commandManager;
         _document = document;
         _camera = camera;
-        _extent = swapchain.Extent;
+        _ui = new UiBatch(_textAtlas);
 
         CurrentBrushWidth = Settings.DefaultBrushWidth;
         _eraserSize = Settings.DefaultEraserSize;
@@ -92,23 +90,24 @@ public sealed unsafe class StrokeRenderer : IDisposable
     public void SetRadialMenu(RadialMenu menu) => _radialMenu = menu;
     public void SetQuickBar(QuickBar bar) => _quickBar = bar;
 
+    /// <summary>Adds UI drawn above everything else, in the order added.</summary>
+    public void AddOverlay(IOverlay overlay) => _overlays.Add(overlay);
+
     public Camera Camera => _camera;
     public TextAtlas TextAtlas => _textAtlas;
-    public Vector2 ScreenSize => new(_extent.Width, _extent.Height);
 
-    public void Initialize()
-    {
-        _textAtlas = new TextAtlas(_context, _commandManager);
-        _textAtlas.Initialize();
-        _primitives = new PrimitiveRenderer(_context, _renderPass.RenderPass, _textAtlas);
-        _strokeBuffer = new PrimBuffer(_context);
-        _uiBuffer = new PrimBuffer(_context);
-        _ui = new UiBatch(_textAtlas);
-    }
+    /// <summary>Screen size in logical pixels.</summary>
+    public Vector2 ScreenSize => _screenSize;
 
-    public void UpdateExtent(Extent2D extent)
+    /// <summary>Framebuffer pixels per logical pixel.</summary>
+    public float UiScale { get; private set; } = 1f;
+
+    public void UpdateViewport(Vector2 framebufferSize, float scale)
     {
-        _extent = extent;
+        var logical = framebufferSize / scale;
+        if (logical == _screenSize && scale == UiScale) return;
+        _screenSize = logical;
+        UiScale = scale;
         _uiDirty = true;
     }
 
@@ -124,7 +123,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _uiDirty = true;
     }
 
-    public bool NeedsRedraw => _uiDirty || _strokesDirty || _activeDirtyFrom >= 0;
+    public bool NeedsRedraw => _uiDirty || _strokesDirty || _activeDirtyFrom >= 0 || _framePending;
 
     public void SetTool(Tool tool)
     {
@@ -196,7 +195,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _document.Strokes.Add(_activeStroke);
         _rawTail.Clear();
         _rawTail.Add(worldPos);
-        _activeStart = _strokesDirty ? -1 : _strokeBuffer.Count;
+        _activeStart = _strokesDirty ? -1 : _strokePrimCount;
         MarkActiveDirty(0);
     }
 
@@ -252,6 +251,17 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _activeStroke = null;
         _rawTail.Clear();
         IsQuickShapeApplied = false;
+    }
+
+    /// <summary>Removes the stroke being drawn as if it was never started.</summary>
+    public void CancelStroke()
+    {
+        if (_activeStroke == null) return;
+        _document.Strokes.Remove(_activeStroke);
+        _document.DiscardLastState();
+        _activeStroke = null;
+        _rawTail.Clear();
+        MarkStrokesDirty();
     }
 
     private void MarkActiveDirty(int firstChangedPoint)
@@ -377,8 +387,36 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _uiDirty = true;
     }
 
+    public void DeleteSelection()
+    {
+        if (SelectedStrokes.Count == 0) return;
+        _document.SaveState();
+        var selected = SelectedStrokes.ToHashSet();
+        _document.Strokes.RemoveAll(selected.Contains);
+        ClearSelection();
+        MarkStrokesDirty();
+    }
+
+    private const float DeleteButtonSize = 36f;
+
+    /// <summary>Delete button shown next to the selection's top-right corner.</summary>
+    private Vector2 DeleteButtonPos()
+    {
+        var bbox = GetSelectedBounds();
+        var minS = WorldToScreen(bbox.Min) - new Vector2(4f);
+        var maxS = WorldToScreen(bbox.Max) + new Vector2(4f);
+        var pos = new Vector2(maxS.X + 10f, minS.Y - 10f - DeleteButtonSize);
+        return Vector2.Clamp(pos, new Vector2(4f), Vector2.Max(ScreenSize - new Vector2(DeleteButtonSize + 4f), new Vector2(4f)));
+    }
+
     public void HandleSelectionDown(Vector2 screenPos)
     {
+        if (SelectedStrokes.Count > 0 && UiBatch.Contains(DeleteButtonPos(), new Vector2(DeleteButtonSize), screenPos))
+        {
+            DeleteSelection();
+            return;
+        }
+
         if (SelectedStrokes.Count > 0)
         {
             int handle = HitTestHandles(screenPos);
@@ -710,7 +748,7 @@ public sealed unsafe class StrokeRenderer : IDisposable
 
     private static int SegmentCount(Stroke s) => s.Points.Count == 0 ? 0 : Math.Max(1, s.Points.Count - 1);
 
-    private static int WriteStroke(Stroke s, int fromSegment, Prim* dst, int index)
+    private static int WriteStroke(Stroke s, int fromSegment, Prim[] dst, int index)
     {
         var pts = s.Points;
         float r = s.Width * 0.5f;
@@ -725,18 +763,25 @@ public sealed unsafe class StrokeRenderer : IDisposable
         return index;
     }
 
-    /// <summary>Updates GPU buffers. Call after the previous frame has finished and before recording.</summary>
+    private void ReserveStrokePrims(int count)
+    {
+        if (count > _strokePrims.Length)
+            Array.Resize(ref _strokePrims, Math.Max(count, _strokePrims.Length * 2));
+    }
+
+    /// <summary>Rebuilds changed geometry and the UI before a frame is handed to the backend.</summary>
     public void PrepareFrame()
     {
         if (_strokesDirty)
         {
             int total = 0;
             foreach (var s in _document.Strokes) total += SegmentCount(s);
-            _strokeBuffer.Reserve(total, keepContents: false);
+            ReserveStrokePrims(total);
 
             int count = 0;
-            foreach (var s in _document.Strokes) count = WriteStroke(s, 0, _strokeBuffer.Data, count);
-            _strokeBuffer.Count = count;
+            foreach (var s in _document.Strokes) count = WriteStroke(s, 0, _strokePrims, count);
+            _strokePrimCount = count;
+            _strokesDirtyFrom = 0;
 
             _activeStart = _activeStroke != null && _document.Strokes.Count > 0 && _document.Strokes[^1] == _activeStroke
                 ? count - SegmentCount(_activeStroke)
@@ -750,9 +795,10 @@ public sealed unsafe class StrokeRenderer : IDisposable
             {
                 int segments = SegmentCount(_activeStroke);
                 int from = _activeStroke.Points.Count == 1 ? 0 : Math.Min(_activeDirtyFrom, segments - 1);
-                _strokeBuffer.Reserve(_activeStart + segments, keepContents: true);
-                WriteStroke(_activeStroke, from, _strokeBuffer.Data, _activeStart + from);
-                _strokeBuffer.Count = _activeStart + segments;
+                ReserveStrokePrims(_activeStart + segments);
+                WriteStroke(_activeStroke, from, _strokePrims, _activeStart + from);
+                _strokePrimCount = _activeStart + segments;
+                _strokesDirtyFrom = Math.Min(_strokesDirtyFrom, _activeStart + from);
             }
 
             _activeDirtyFrom = -1;
@@ -763,12 +809,14 @@ public sealed unsafe class StrokeRenderer : IDisposable
             _uiDirty = false;
             BuildUI();
         }
+
+        _framePending = true;
     }
 
     private void BuildUI()
     {
-        _textAtlas.BeginFrame();
-        _ui.Clear();
+        _textAtlas.BeginFrame(UiScale);
+        _ui.Clear(UiScale);
         var screen = ScreenSize;
 
         if (Tool == Tool.Select) RenderSelectionUI(_ui);
@@ -780,21 +828,33 @@ public sealed unsafe class StrokeRenderer : IDisposable
         _radialMenu?.Render(_ui);
         if (_libraryPanel?.IsModalOpen != true) _quickBar?.RenderOverlay(_ui, screen);
         _libraryPanel?.RenderOverlay(_ui, screen);
+        foreach (var overlay in _overlays) overlay.Render(_ui, screen);
 
-        _textAtlas.Flush();
-        _uiBuffer.Upload(_ui.Prims);
         if (_textAtlas.NeedsRedraw) _uiDirty = true;
     }
 
-    public void Record(CommandBuffer cmd)
+    public FrameData GetFrame() => new()
     {
-        _primitives.Bind(cmd, _extent);
+        ClearColor = Settings.BackgroundColor.Value,
+        CameraPosition = _camera.Position,
+        CameraZoom = _camera.Zoom,
+        UiScale = UiScale,
+        Strokes = _strokePrims.AsSpan(0, _strokePrimCount),
+        StrokesDirtyFrom = Math.Min(_strokesDirtyFrom, _strokePrimCount),
+        StrokesStable = _activeStroke != null && _activeStart >= 0 ? _activeStart : _strokePrimCount,
+        Ui = CollectionsMarshal.AsSpan(_ui.Prims),
+        AtlasPixels = _textAtlas.Pixels,
+        AtlasSize = TextAtlas.Size,
+        AtlasDirtyTop = _textAtlas.DirtyTop,
+        AtlasDirtyBottom = _textAtlas.DirtyBottom
+    };
 
-        var proj = Matrix4x4.CreateOrthographicOffCenter(0, _extent.Width, 0, _extent.Height, -1f, 1f);
-        var view = Matrix4x4.CreateScale(_camera.Zoom, _camera.Zoom, 1f) *
-                   Matrix4x4.CreateTranslation(_camera.Position.X, _camera.Position.Y, 0f);
-        _primitives.Draw(cmd, _strokeBuffer, view * proj, 1f / _camera.Zoom);
-        _primitives.Draw(cmd, _uiBuffer, proj, 1f);
+    /// <summary>Call after the backend presented the frame from <see cref="GetFrame"/>.</summary>
+    public void OnPresented()
+    {
+        _strokesDirtyFrom = int.MaxValue;
+        _textAtlas.ClearDirty();
+        _framePending = false;
     }
 
     private void RenderSelectionUI(UiBatch ui)
@@ -822,14 +882,17 @@ public sealed unsafe class StrokeRenderer : IDisposable
             ui.Circle(h, 7f, Theme.Text);
             ui.Ring(h, 7f, 2f, accent);
         }
+
+        if (CurrentSelectionState == SelectionState.None)
+        {
+            var pos = DeleteButtonPos();
+            var size = new Vector2(DeleteButtonSize);
+            bool hover = HoverPosition is { } p && UiBatch.Contains(pos, size, p);
+            ui.Rect(pos, size, hover ? Theme.Danger : Theme.WithAlpha(Theme.Surface, 0.95f), 10f);
+            ui.Border(pos, size, Theme.Border, 1f, 10f);
+            ui.Icon(Icons.Delete, pos + size * 0.5f, 16f, hover ? Theme.Text : Theme.Danger);
+        }
     }
 
-    public void Dispose()
-    {
-        _context.Vk.DeviceWaitIdle(_context.Device);
-        _strokeBuffer.Dispose();
-        _uiBuffer.Dispose();
-        _primitives.Dispose();
-        _textAtlas.Dispose();
-    }
+    public void Dispose() => _textAtlas.Dispose();
 }

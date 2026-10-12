@@ -30,12 +30,18 @@ public class LibraryPanel : IDisposable
     private Vector2 _screenSize = new(1280, 720);
     private Vector2 _mousePos = new(-1000);
 
-    public enum DialogMode { None, Delete, Rename, Save, CreateFolder, NewFile, Log }
+    public enum DialogMode { None, Delete, Rename, Unsaved, PickLocation, Log }
+
+    /// <summary>What the folder picker (name field + folder tree) is creating.</summary>
+    private enum PickPurpose { NewFile, SaveAs, CreateFolder }
     private enum RowAction { Move, Rename, Delete }
 
     private DialogMode _dialogMode = DialogMode.None;
     private FileNode? _dialogTargetNode;
     private string? _selectedDestDir;
+    private PickPurpose _pickPurpose;
+    // Runs after the board was saved or discarded in the "unsaved board" prompt.
+    private Action? _pendingAction;
     private List<string> _logLines = new();
 
     private readonly TextBoxState _textBox = new()
@@ -44,12 +50,12 @@ public class LibraryPanel : IDisposable
     };
 
     public bool IsModalOpen => _dialogMode != DialogMode.None || _settingsPanel.IsOpen;
-    private bool IsPopupDialog => _dialogMode is DialogMode.Delete or DialogMode.Rename or DialogMode.Save or DialogMode.NewFile;
+    private bool IsPopupDialog => _dialogMode is DialogMode.Delete or DialogMode.Rename or DialogMode.Unsaved;
 
     /// <summary>The text field that currently receives keyboard input, if any.</summary>
     public TextBoxState? ActiveTextBox =>
         _settingsPanel.IsOpen ? (_settingsPanel.HasTextInput ? _settingsPanel.TextBox : null)
-        : _dialogMode is DialogMode.Rename or DialogMode.Save or DialogMode.CreateFolder ? _textBox
+        : _dialogMode is DialogMode.Rename or DialogMode.PickLocation ? _textBox
         : null;
 
     // Rows as laid out in the last frame; hit testing uses exactly what was drawn.
@@ -135,7 +141,7 @@ public class LibraryPanel : IDisposable
 
     // ------------------------------------------------------------- layout
 
-    private float ListTop => _dialogMode == DialogMode.CreateFolder ? HeaderHeight + 64f : HeaderHeight + ToolbarHeight;
+    private float ListTop => _dialogMode == DialogMode.PickLocation ? HeaderHeight + 64f : HeaderHeight + ToolbarHeight;
     private float ListBottom => _screenSize.Y - BottomBarHeight;
     private float ListHeight => MathF.Max(0f, ListBottom - ListTop);
 
@@ -151,7 +157,7 @@ public class LibraryPanel : IDisposable
         var rows = new List<Row>();
         if (_rootNode == null) return rows;
 
-        bool foldersOnly = _dialogMode == DialogMode.CreateFolder;
+        bool foldersOnly = _dialogMode == DialogMode.PickLocation;
         FileNode? placeholderParent = null;
         int placeholderIndex = -1;
         if (_isDragging && _dragNode != null && _dropTargetPath != null)
@@ -255,8 +261,8 @@ public class LibraryPanel : IDisposable
             case DialogMode.Log:
                 RenderLog(ui);
                 break;
-            case DialogMode.CreateFolder:
-                RenderCreateFolder(ui);
+            case DialogMode.PickLocation:
+                RenderLocationPicker(ui);
                 break;
             default:
                 RenderToolbar(ui);
@@ -274,9 +280,14 @@ public class LibraryPanel : IDisposable
         bool dirty = false;
         switch (_dialogMode)
         {
-            case DialogMode.CreateFolder:
-                title = Localization.Get("dialog_create_folder_title", "Create Folder");
-                subtitle = Localization.Get("dialog_choose_location", "Choose where to create it");
+            case DialogMode.PickLocation:
+                title = _pickPurpose switch
+                {
+                    PickPurpose.NewFile => Localization.Get("dialog_new_file_title", "New file"),
+                    PickPurpose.SaveAs => Localization.Get("panel_save_as", "Save As..."),
+                    _ => Localization.Get("dialog_create_folder_title", "Create Folder")
+                };
+                subtitle = Localization.Get("dialog_choose_location", "Choose a name and a folder");
                 break;
             case DialogMode.Log:
                 title = Localization.Get("tooltip_open_log", "Latest Log");
@@ -300,6 +311,15 @@ public class LibraryPanel : IDisposable
             left += 14f;
         }
 
+        if (_dialogMode == DialogMode.None && Hit(TitleRect.Pos, TitleRect.Size))
+        {
+            // The title is the canvas name and can be clicked to rename it.
+            ui.Rect(TitleRect.Pos, TitleRect.Size, Theme.RowHover, 6f);
+            float titleWidth = MathF.Min(ui.Measure(title, Theme.Title), right - left - 22f);
+            ui.Icon(Icons.Edit, new Vector2(left + titleWidth + 12f, 22f), 12f, Theme.TextSecondary);
+            right -= 22f;
+        }
+
         ui.TextInRect(title, new Vector2(left, 10f), new Vector2(right - left, 24f), Theme.Text, Theme.Title);
         ui.TextInRect(subtitle, new Vector2(16f, 34f), new Vector2(right - 16f, 20f), Theme.TextSecondary, Theme.Small);
 
@@ -309,6 +329,8 @@ public class LibraryPanel : IDisposable
             ui.IconButton(Icons.ChevronLeft, pos, new Vector2(32f), Hit(pos, new Vector2(32f)), iconSize: 14f);
         }
     }
+
+    private (Vector2 Pos, Vector2 Size) TitleRect => (new Vector2(8f, 6f), new Vector2(CollapseButtonPos.X - 16f, 52f));
 
     private static string RelativeFolder(string filePath)
     {
@@ -423,7 +445,7 @@ public class LibraryPanel : IDisposable
         bool hover = !IsModalOpen && !_isDragging && _press != Press.Scroll && Hit(pos, size);
         bool isCurrent = !node.IsDirectory && string.Equals(node.FullPath, _libraryManager.CurrentPath, StringComparison.OrdinalIgnoreCase);
         bool isDragged = _isDragging && node == _dragNode;
-        bool isSelectedDest = _dialogMode == DialogMode.CreateFolder && node.FullPath == _selectedDestDir;
+        bool isSelectedDest = _dialogMode == DialogMode.PickLocation && node.FullPath == _selectedDestDir;
 
         if (isSelectedDest || isCurrent) ui.Rect(pos, size, Theme.AccentSoft, 6f);
         else if (hover) ui.Rect(pos, size, Theme.RowHover, 6f);
@@ -487,15 +509,18 @@ public class LibraryPanel : IDisposable
         ui.TextInRect(_dragNode.Name, new Vector2(x + 42f, row.Y), new Vector2(Width - x - 58f, RowHeight), Theme.Accent, Theme.Body);
     }
 
-    private void RenderCreateFolder(UiBatch ui)
+    private void RenderLocationPicker(UiBatch ui)
     {
         ui.TextField(_textBox, new Vector2(12f, HeaderHeight + 14f), new Vector2(Width - 24f, 38f), true, Theme.Body, Theme.Text);
         RenderList(ui);
 
         ui.Rect(new Vector2(12f, ListBottom), new Vector2(Width - 24f, 1f), Theme.Border);
         var (cancelPos, okPos, btnSize) = PanelDialogButtons();
+        string confirm = _pickPurpose == PickPurpose.SaveAs
+            ? Localization.Get("dialog_button_save", "Save")
+            : Localization.Get("dialog_button_create", "Create");
         ui.TextButton(Localization.Get("dialog_button_cancel", "Cancel"), cancelPos, btnSize, Hit(cancelPos, btnSize), UiBatch.ButtonKind.Secondary);
-        ui.TextButton(Localization.Get("dialog_button_create", "Create"), okPos, btnSize, Hit(okPos, btnSize), UiBatch.ButtonKind.Primary);
+        ui.TextButton(confirm, okPos, btnSize, Hit(okPos, btnSize), UiBatch.ButtonKind.Primary);
     }
 
     private (Vector2 Cancel, Vector2 Ok, Vector2 Size) PanelDialogButtons()
@@ -540,6 +565,7 @@ public class LibraryPanel : IDisposable
         else if (Hit(ToolbarButtonPos(1), ToolbarButtonSize)) tooltip = Localization.Get("tooltip_create_folder", "Create Folder");
         else if (Hit(ToolbarButtonPos(2), ToolbarButtonSize)) tooltip = Localization.Get("tooltip_new_file", "New File");
         else if (Hit(CollapseButtonPos, new Vector2(32f))) tooltip = Localization.Get("tooltip_hide_panel", "Hide panel");
+        else if (Hit(TitleRect.Pos, TitleRect.Size)) tooltip = Localization.Get("tooltip_rename_canvas", "Rename");
         if (tooltip != null) ui.Tooltip(tooltip, _mousePos, screenSize);
     }
 
@@ -580,12 +606,28 @@ public class LibraryPanel : IDisposable
         return (new Vector2((_screenSize.X - w) * 0.5f, (_screenSize.Y - h) * 0.5f), new Vector2(w, h));
     }
 
-    private (Vector2 Cancel, Vector2 Ok, Vector2 Size) PopupButtons()
+    private List<(string Label, UiBatch.ButtonKind Kind, Action Click)> PopupActions()
+    {
+        var cancel = (Localization.Get("dialog_button_cancel", "Cancel"), UiBatch.ButtonKind.Secondary, (Action)CancelDialog);
+        return _dialogMode switch
+        {
+            DialogMode.Delete => [cancel, (Localization.Get("dialog_button_delete", "Delete"), UiBatch.ButtonKind.Danger, ConfirmDialog)],
+            DialogMode.Unsaved =>
+            [
+                cancel,
+                (Localization.Get("dialog_button_dont_save", "Don't save"), UiBatch.ButtonKind.Secondary, DiscardAndContinue),
+                (Localization.Get("dialog_button_save", "Save"), UiBatch.ButtonKind.Primary, SaveAndContinue)
+            ],
+            _ => [cancel, (Localization.Get("dialog_button_ok", "OK"), UiBatch.ButtonKind.Primary, ConfirmDialog)]
+        };
+    }
+
+    private (Vector2 Pos, Vector2 Size) PopupButton(int index, int count)
     {
         var (pos, size) = PopupRect();
-        var btn = new Vector2(120f, 38f);
-        float y = pos.Y + size.Y - 20f - btn.Y;
-        return (new Vector2(pos.X + size.X - 20f - btn.X * 2 - 10f, y), new Vector2(pos.X + size.X - 20f - btn.X, y), btn);
+        var btn = new Vector2(MathF.Min(120f, (size.X - 40f - (count - 1) * 10f) / count), 38f);
+        float x = pos.X + size.X - 20f - (count - index) * btn.X - (count - 1 - index) * 10f;
+        return (new Vector2(x, pos.Y + size.Y - 20f - btn.Y), btn);
     }
 
     private void RenderPopupDialog(UiBatch ui)
@@ -595,12 +637,11 @@ public class LibraryPanel : IDisposable
         ui.Rect(pos, size, Theme.PopupBg, Theme.PopupRadius);
         ui.Border(pos, size, Theme.Border, 1f, Theme.PopupRadius);
 
-        var (title, confirm, kind) = _dialogMode switch
+        string title = _dialogMode switch
         {
-            DialogMode.Save => (Localization.Get("dialog_save_title", "Enter file name:"), Localization.Get("dialog_button_save", "Save"), UiBatch.ButtonKind.Primary),
-            DialogMode.Rename => (Localization.Get("dialog_rename_title", "Enter new name:"), Localization.Get("dialog_button_ok", "OK"), UiBatch.ButtonKind.Primary),
-            DialogMode.Delete => (Localization.Get("dialog_delete_title", "Delete?"), Localization.Get("dialog_button_delete", "Delete"), UiBatch.ButtonKind.Danger),
-            _ => (Localization.Get("dialog_new_file_title", "Create New File?"), Localization.Get("dialog_button_create", "Create"), UiBatch.ButtonKind.Primary)
+            DialogMode.Rename => Localization.Get("dialog_rename_title", "Enter new name:"),
+            DialogMode.Delete => Localization.Get("dialog_delete_title", "Delete?"),
+            _ => Localization.Get("dialog_unsaved_title", "This board is not saved")
         };
 
         var inner = new Vector2(size.X - 40f, 0);
@@ -609,22 +650,25 @@ public class LibraryPanel : IDisposable
         var bodyPos = pos + new Vector2(20f, 62f);
         switch (_dialogMode)
         {
-            case DialogMode.Save or DialogMode.Rename:
+            case DialogMode.Rename:
                 ui.TextField(_textBox, bodyPos, inner with { Y = 40f }, true, Theme.Body, Theme.Text);
                 break;
             case DialogMode.Delete when _dialogTargetNode != null:
                 ui.Icon(_dialogTargetNode.IsDirectory ? Icons.Folder : Icons.Document, bodyPos + new Vector2(10f, 20f), 16f, Theme.Danger);
                 ui.TextInRect(_dialogTargetNode.Name, bodyPos + new Vector2(28f, 0), new Vector2(inner.X - 28f, 40f), Theme.Text, Theme.Body);
                 break;
-            case DialogMode.NewFile:
-                ui.TextInRect(Localization.Get("dialog_new_file_message", "Unsaved changes will be lost."), bodyPos,
+            case DialogMode.Unsaved:
+                ui.TextInRect(Localization.Get("dialog_unsaved_message", "Save it before continuing?"), bodyPos,
                     inner with { Y = 40f }, Theme.TextSecondary, Theme.Body);
                 break;
         }
 
-        var (cancelPos, okPos, btnSize) = PopupButtons();
-        ui.TextButton(Localization.Get("dialog_button_cancel", "Cancel"), cancelPos, btnSize, Hit(cancelPos, btnSize), UiBatch.ButtonKind.Secondary);
-        ui.TextButton(confirm, okPos, btnSize, Hit(okPos, btnSize), kind);
+        var actions = PopupActions();
+        for (int i = 0; i < actions.Count; i++)
+        {
+            var (bPos, bSize) = PopupButton(i, actions.Count);
+            ui.TextButton(actions[i].Label, bPos, bSize, Hit(bPos, bSize), actions[i].Kind);
+        }
     }
 
     private bool Hit(Vector2 pos, Vector2 size) => UiBatch.Contains(pos, size, _mousePos);
@@ -640,21 +684,73 @@ public class LibraryPanel : IDisposable
         _renderer.SetDirty();
     }
 
-    public void OpenSaveDialog() =>
-        OpenDialog(DialogMode.Save, null, _libraryManager.CurrentName ?? $"Lesson_{DateTime.Now:yyyy-MM-dd_HH-mm}");
-
     public void OpenRenameDialog(FileNode node) => OpenDialog(DialogMode.Rename, node, node.Name);
 
     public void OpenDeleteDialog(FileNode node) => OpenDialog(DialogMode.Delete, node, "");
 
-    public void OpenNewFileDialog() => OpenDialog(DialogMode.NewFile, null, "");
-
-    public void OpenCreateFolderDialog()
+    private void OpenPicker(PickPurpose purpose, string name)
     {
-        OpenDialog(DialogMode.CreateFolder, null, $"NewFolder_{DateTime.Now:HHmm}");
-        _selectedDestDir = Settings.LibraryRootPath.Value;
+        OpenDialog(DialogMode.PickLocation, null, name);
+        _pickPurpose = purpose;
+        _selectedDestDir = _libraryManager.CurrentPath is { } current
+            ? Path.GetDirectoryName(current)
+            : Settings.LibraryRootPath.Value;
         IsOpen = true;
         _scrollY = 0;
+    }
+
+    private static string NewLessonName() => $"Lesson_{DateTime.Now:yyyy-MM-dd_HH-mm}";
+
+    public void OpenSaveAsDialog() => OpenPicker(PickPurpose.SaveAs, _libraryManager.CurrentName ?? NewLessonName());
+
+    public void OpenCreateFolderDialog() => OpenPicker(PickPurpose.CreateFolder, $"NewFolder_{DateTime.Now:HHmm}");
+
+    /// <summary>Asks for a name and a folder and creates the file right away, even while it is empty.</summary>
+    public void RequestNewFile() => LeaveCurrentBoard(() => OpenPicker(PickPurpose.NewFile, NewLessonName()));
+
+    public void RequestOpen(string path) => LeaveCurrentBoard(() => _libraryManager.LoadFile(path));
+
+    /// <summary>Renames the open file, or asks where to save the board if it has no file yet.</summary>
+    public void RenameCurrent()
+    {
+        if (_libraryManager.CurrentPath is { } path)
+            OpenRenameDialog(new FileNode(Path.GetFileNameWithoutExtension(path), path, false));
+        else
+            OpenSaveAsDialog();
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action"/> once the current board is safe: a board with a file is saved silently,
+    /// an unsaved board with drawings asks first.
+    /// </summary>
+    private void LeaveCurrentBoard(Action action)
+    {
+        if (_libraryManager.NeedsSavePrompt)
+        {
+            OpenDialog(DialogMode.Unsaved, null, "");
+            _pendingAction = action;
+            return;
+        }
+
+        _libraryManager.SaveIfHasFile();
+        action();
+        RefreshTree();
+    }
+
+    private void SaveAndContinue()
+    {
+        var pending = _pendingAction;
+        CloseDialog();
+        OpenSaveAsDialog();
+        _pendingAction = pending;
+    }
+
+    private void DiscardAndContinue()
+    {
+        var pending = _pendingAction;
+        CloseDialog();
+        pending?.Invoke();
+        RefreshTree();
     }
 
     public void OpenSettingsDialog()
@@ -698,11 +794,9 @@ public class LibraryPanel : IDisposable
         }
 
         string text = _textBox.ToString().Trim();
+        Action? continuation = null;
         switch (_dialogMode)
         {
-            case DialogMode.Save when text.Length > 0:
-                _libraryManager.SaveCanvas(text);
-                break;
             case DialogMode.Delete when _dialogTargetNode != null:
                 if (_dialogTargetNode.IsDirectory) _libraryManager.DeleteDirectory(_dialogTargetNode.FullPath);
                 else _libraryManager.DeleteFile(_dialogTargetNode.FullPath);
@@ -711,18 +805,29 @@ public class LibraryPanel : IDisposable
                 if (_dialogTargetNode.IsDirectory) _libraryManager.RenameDirectory(_dialogTargetNode.FullPath, text);
                 else _libraryManager.RenameFile(_dialogTargetNode.FullPath, text);
                 break;
-            case DialogMode.CreateFolder when _selectedDestDir != null && text.Length > 0:
-                _libraryManager.CreateFolder(_selectedDestDir, text);
+            case DialogMode.PickLocation when _selectedDestDir != null && text.Length > 0:
+                switch (_pickPurpose)
+                {
+                    case PickPurpose.NewFile:
+                        _libraryManager.CreateFile(_selectedDestDir, text);
+                        break;
+                    case PickPurpose.SaveAs:
+                        _libraryManager.SaveAs(_selectedDestDir, text);
+                        continuation = _pendingAction;
+                        break;
+                    default:
+                        _libraryManager.CreateFolder(_selectedDestDir, text);
+                        break;
+                }
+
                 _collapsed.Remove(_selectedDestDir);
                 break;
-            case DialogMode.NewFile:
-                _libraryManager.NewFile();
-                break;
-            case DialogMode.Save or DialogMode.Rename or DialogMode.CreateFolder:
+            case DialogMode.Rename or DialogMode.PickLocation:
                 return;
         }
 
         CloseDialog();
+        continuation?.Invoke();
         RefreshTree();
     }
 
@@ -744,6 +849,7 @@ public class LibraryPanel : IDisposable
         _dialogMode = DialogMode.None;
         _dialogTargetNode = null;
         _selectedDestDir = null;
+        _pendingAction = null;
         _renderer.SetDirty();
     }
 
@@ -772,9 +878,15 @@ public class LibraryPanel : IDisposable
 
         if (IsPopupDialog)
         {
-            var (cancelPos, okPos, btnSize) = PopupButtons();
-            if (UiBatch.Contains(okPos, btnSize, pos)) ConfirmDialog();
-            else if (UiBatch.Contains(cancelPos, btnSize, pos)) CancelDialog();
+            var actions = PopupActions();
+            for (int i = 0; i < actions.Count; i++)
+            {
+                var (bPos, bSize) = PopupButton(i, actions.Count);
+                if (!UiBatch.Contains(bPos, bSize, pos)) continue;
+                actions[i].Click();
+                break;
+            }
+
             return;
         }
 
@@ -787,7 +899,7 @@ public class LibraryPanel : IDisposable
             return;
         }
 
-        if (_dialogMode == DialogMode.CreateFolder)
+        if (_dialogMode == DialogMode.PickLocation)
         {
             var (cancelPos, okPos, btnSize) = PanelDialogButtons();
             if (UiBatch.Contains(okPos, btnSize, pos)) ConfirmDialog();
@@ -797,14 +909,10 @@ public class LibraryPanel : IDisposable
         }
 
         if (Hit(CollapseButtonPos, new Vector2(32f))) { Toggle(); return; }
-        if (Hit(ToolbarButtonPos(0), ToolbarButtonSize)) { OpenSaveDialog(); return; }
+        if (Hit(TitleRect.Pos, TitleRect.Size)) { RenameCurrent(); return; }
+        if (Hit(ToolbarButtonPos(0), ToolbarButtonSize)) { OpenSaveAsDialog(); return; }
         if (Hit(ToolbarButtonPos(1), ToolbarButtonSize)) { OpenCreateFolderDialog(); return; }
-        if (Hit(ToolbarButtonPos(2), ToolbarButtonSize))
-        {
-            if (_libraryManager.IsDocumentDirty()) OpenNewFileDialog();
-            else _libraryManager.NewFile();
-            return;
-        }
+        if (Hit(ToolbarButtonPos(2), ToolbarButtonSize)) { RequestNewFile(); return; }
 
         if (Hit(BottomButtonPos, BottomButtonSize)) { OpenSettingsDialog(); return; }
         if (pos.Y < ListTop || pos.Y >= ListBottom) return;
@@ -903,7 +1011,7 @@ public class LibraryPanel : IDisposable
 
         if (press != Press.Row || node == null || RowAt(pos)?.Node != node) return;
 
-        if (_dialogMode == DialogMode.CreateFolder)
+        if (_dialogMode == DialogMode.PickLocation)
         {
             if (pos.X < 12f + RowAt(pos)!.Value.Depth * Indent + 20f) SetExpanded(node, !node.IsExpanded);
             else _selectedDestDir = node.FullPath;
@@ -914,7 +1022,8 @@ public class LibraryPanel : IDisposable
         }
         else
         {
-            _libraryManager.LoadFile(node.FullPath);
+            if (!string.Equals(node.FullPath, _libraryManager.CurrentPath, StringComparison.OrdinalIgnoreCase))
+                RequestOpen(node.FullPath);
         }
     }
 

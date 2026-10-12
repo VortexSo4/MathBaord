@@ -1,7 +1,7 @@
 ﻿using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
 
-namespace MathBoard.Rendering;
+namespace MathBoard.Backend.Vulkan;
 
 public sealed unsafe class SwapchainManager : IDisposable
 {

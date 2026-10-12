@@ -10,11 +10,25 @@ public class LibraryManager
     private readonly StrokeRenderer _renderer;
     private DateTime _lastAutoSave = DateTime.Now;
 
-    /// <summary>File the canvas was loaded from or last saved to; null for a new canvas.</summary>
-    public string? CurrentPath { get; private set; }
+    private string? _currentPath;
+
+    /// <summary>File the canvas was loaded from or last saved to; null for a board that was never saved.</summary>
+    public string? CurrentPath
+    {
+        get => _currentPath;
+        private set
+        {
+            _currentPath = value;
+            Settings.LastOpenedFile.Value = value ?? "";
+            Settings.Save();
+        }
+    }
     public string? CurrentName => CurrentPath == null ? null : Path.GetFileNameWithoutExtension(CurrentPath);
 
     public bool IsDocumentDirty() => _document.IsDirty;
+
+    /// <summary>True when leaving the board would lose drawings that were never saved to a file.</summary>
+    public bool NeedsSavePrompt => CurrentPath == null && _document.IsDirty && _document.Strokes.Count > 0;
 
     private static string AutoSavePath => Path.Combine(Settings.LibraryRootPath, "AutoSave" + Extension);
 
@@ -31,25 +45,55 @@ public class LibraryManager
             Directory.CreateDirectory(Settings.LibraryRootPath);
     }
 
-    public void NewFile()
+    /// <summary>Creates an empty file and opens it.</summary>
+    public void CreateFile(string directory, string name)
     {
+        string path = UniquePath(directory, name);
         _document.Clear();
-        CurrentPath = null;
+        try
+        {
+            _document.SaveToFile(path);
+            CurrentPath = path;
+            Console.WriteLine($"Created: {path}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Create failed: {ex.Message}");
+            CurrentPath = null;
+        }
+
         _renderer.OnDocumentReplaced();
     }
 
-    public string SaveCanvas(string? customName = null)
+    public void SaveAs(string directory, string name)
     {
-        EnsureLibraryRoot();
-        string name = customName ?? $"Untitled_{DateTime.Now:yyyy-MM-dd_HH-mm}";
-        string path = Path.Combine(Settings.LibraryRootPath, name + Extension);
+        string path = Path.Combine(directory, name + Extension);
+        if (!IsCurrent(path)) path = UniquePath(directory, name);
+        try
+        {
+            _document.SaveToFile(path);
+            _document.IsDirty = false;
+            CurrentPath = path;
+            _renderer.SetDirty();
+            Console.WriteLine($"Saved: {path}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Save failed: {ex.Message}");
+        }
+    }
 
-        _document.SaveToFile(path);
-        _document.IsDirty = false;
-        CurrentPath = path;
-        _renderer.SetDirty();
-        Console.WriteLine($"Saved: {path}");
+    private static string UniquePath(string directory, string name)
+    {
+        string path = Path.Combine(directory, name + Extension);
+        for (int i = 2; File.Exists(path); i++)
+            path = Path.Combine(directory, $"{name} ({i}){Extension}");
         return path;
+    }
+
+    public void SaveIfHasFile()
+    {
+        if (CurrentPath != null && _document.IsDirty) SaveCurrent();
     }
 
     /// <summary>Saves over the current file. Returns false when the canvas has no file yet.</summary>
@@ -189,14 +233,28 @@ public class LibraryManager
         }
     }
 
-    /// <summary>Periodically writes unsaved changes to AutoSave without touching the current file or dirty state.</summary>
+    /// <summary>
+    /// Periodically saves changes: straight into the open file, or into AutoSave for a board without a file.
+    /// </summary>
     public void AutoSaveIfNeeded()
     {
         if ((DateTime.Now - _lastAutoSave).TotalMinutes < Settings.AutoSaveIntervalMinutes)
             return;
 
         _lastAutoSave = DateTime.Now;
+        SaveChanges();
+    }
+
+    public void SaveOnExit() => SaveChanges();
+
+    private void SaveChanges()
+    {
         if (!_document.IsDirty) return;
+        if (CurrentPath != null)
+        {
+            SaveCurrent();
+            return;
+        }
 
         try
         {
@@ -207,6 +265,12 @@ public class LibraryManager
         {
             Console.WriteLine($"AutoSave failed: {ex.Message}");
         }
+    }
+
+    public void OpenLastFile()
+    {
+        string path = Settings.LastOpenedFile.Value;
+        if (!string.IsNullOrEmpty(path) && File.Exists(path)) LoadFile(path);
     }
 
     public void LoadLastSave()

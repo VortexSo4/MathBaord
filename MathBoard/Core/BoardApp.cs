@@ -1,0 +1,104 @@
+using System.Numerics;
+using System.Runtime.InteropServices;
+using MathBoard.Graphics;
+using MathBoard.Rendering;
+using Silk.NET.Windowing;
+
+namespace MathBoard.Core;
+
+/// <summary>Owns the document and the UI and hands finished frames to the chosen render backend.</summary>
+public sealed partial class BoardApp : IDisposable
+{
+    private readonly IWindow _window;
+    private readonly IRenderBackend _backend;
+    private readonly Document _document = new();
+    private readonly Camera _camera = new();
+    private readonly StrokeRenderer _strokeRenderer;
+    private readonly LibraryManager _libraryManager;
+    private readonly InputManager _inputManager;
+    private bool _renderFailed;
+
+    public BoardApp(IWindow window, IRenderBackend backend)
+    {
+        _window = window;
+        _backend = backend;
+
+        _strokeRenderer = new StrokeRenderer(_document, _camera);
+        UpdateViewport();
+        _camera.Position = _strokeRenderer.ScreenSize / 2f;
+
+        var radialMenu = new RadialMenu(_strokeRenderer);
+        _strokeRenderer.SetRadialMenu(radialMenu);
+        _libraryManager = new LibraryManager(_document, _strokeRenderer);
+        var libraryPanel = new LibraryPanel(_strokeRenderer, _libraryManager);
+        _strokeRenderer.SetLibraryPanel(libraryPanel);
+        _inputManager = new InputManager(window, _strokeRenderer, _camera, _document, radialMenu, _libraryManager, libraryPanel);
+        _strokeRenderer.SetQuickBar(_inputManager.QuickBar);
+
+        window.FramebufferResize += _ => _strokeRenderer.SetDirty();
+        _libraryManager.OpenLastFile();
+        libraryPanel.RefreshTree();
+    }
+
+    /// <summary>How long the main loop may block waiting for input before calling <see cref="Render"/> again.</summary>
+    public double IdleTimeout
+    {
+        get
+        {
+            var size = _window.FramebufferSize;
+            if (size.X == 0 || size.Y == 0) return 0.5;
+            if (_renderFailed) return 1.0 / 60.0;
+            if (_strokeRenderer.NeedsRedraw) return 0;
+            return _inputManager.NeedsFrequentUpdates ? 1.0 / 60.0 : 0.5;
+        }
+    }
+
+    /// <summary>Processes timers and draws a frame if anything changed. Returns false when nothing was drawn.</summary>
+    public bool Render(float dt)
+    {
+        var size = _window.FramebufferSize;
+        if (size.X == 0 || size.Y == 0) return false;
+
+        UpdateViewport();
+        _inputManager.Update(dt);
+        _libraryManager.AutoSaveIfNeeded();
+        if (!_strokeRenderer.NeedsRedraw) return false;
+
+        _strokeRenderer.PrepareFrame();
+        _renderFailed = !_backend.Render(_strokeRenderer.GetFrame());
+        if (_renderFailed) return false;
+        _strokeRenderer.OnPresented();
+        return true;
+    }
+
+    private void UpdateViewport()
+    {
+        var size = _window.FramebufferSize;
+        if (size.X > 0 && size.Y > 0)
+            _strokeRenderer.UpdateViewport(new Vector2(size.X, size.Y), DisplayScale());
+    }
+
+    /// <summary>The user's interface scale, or the monitor's DPI scale when set to automatic.</summary>
+    private float DisplayScale()
+    {
+        if (Settings.UiScale > 0) return Settings.UiScale;
+        if (OperatingSystem.IsWindows() && _window.Native?.Win32 is { } win32)
+        {
+            uint dpi = GetDpiForWindow(win32.Hwnd);
+            if (dpi > 0) return dpi / 96f;
+        }
+
+        return 1f;
+    }
+
+    [LibraryImport("user32.dll")]
+    private static partial uint GetDpiForWindow(nint hwnd);
+
+    public void Dispose()
+    {
+        _libraryManager.SaveOnExit();
+        _inputManager.Dispose();
+        _backend.Dispose();
+        _strokeRenderer.Dispose();
+    }
+}

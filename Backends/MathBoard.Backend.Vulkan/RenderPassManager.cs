@@ -1,6 +1,6 @@
 using Silk.NET.Vulkan;
 
-namespace MathBoard.Rendering;
+namespace MathBoard.Backend.Vulkan;
 
 public sealed unsafe class RenderPassManager : IDisposable
 {

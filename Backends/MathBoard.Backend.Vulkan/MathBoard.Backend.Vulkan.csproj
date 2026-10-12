@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <EnableDynamicLoading>true</EnableDynamicLoading>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- Compile with Shaders\compile_shaders.cmd (glslc from the Vulkan SDK). -->
+        <EmbeddedResource Include="Shaders\*.spv" LogicalName="%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\MathBoard.Graphics\MathBoard.Graphics.csproj" Private="false" ExcludeAssets="runtime" />
+        <PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
+        <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.23.0" />
+    </ItemGroup>
+
+</Project>

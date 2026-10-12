@@ -4,7 +4,7 @@ using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
 using Silk.NET.Windowing;
 
-namespace MathBoard.Rendering;
+namespace MathBoard.Backend.Vulkan;
 
 public sealed unsafe class VulkanContext : IDisposable
 {
@@ -49,6 +49,9 @@ public sealed unsafe class VulkanContext : IDisposable
 
     public void Initialize()
     {
+        if (_window.VkSurface == null)
+            throw new NotSupportedException("The window has no Vulkan surface support.");
+
         _vk = Vk.GetApi();
 
         CreateInstance();

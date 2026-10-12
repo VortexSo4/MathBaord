@@ -1,6 +1,17 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
+# 
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MathBoard", "MathBoard\MathBoard.csproj", "{938680CE-DD49-4BCF-BF5D-2983F80C2077}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MathBoard.Graphics", "MathBoard.Graphics\MathBoard.Graphics.csproj", "{2CA6145B-AC6E-446B-A29B-DB36BAEFD996}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Backends", "Backends", "{89E4FE5D-3B7B-41C8-8705-2EF543A40EC6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MathBoard.Backend.Vulkan", "Backends\MathBoard.Backend.Vulkan\MathBoard.Backend.Vulkan.csproj", "{28CF6C30-F112-4AF6-81D1-17998D644A12}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MathBoard.Backend.OpenGL", "Backends\MathBoard.Backend.OpenGL\MathBoard.Backend.OpenGL.csproj", "{BB695895-BF14-4F52-AF9E-BBBA65C39865}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MathBoard.Backend.Software", "Backends\MathBoard.Backend.Software\MathBoard.Backend.Software.csproj", "{B2CA1036-A89C-4D0E-A6B9-DBC74C08E811}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -12,5 +23,26 @@ Global
 		{938680CE-DD49-4BCF-BF5D-2983F80C2077}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{938680CE-DD49-4BCF-BF5D-2983F80C2077}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{938680CE-DD49-4BCF-BF5D-2983F80C2077}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2CA6145B-AC6E-446B-A29B-DB36BAEFD996}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2CA6145B-AC6E-446B-A29B-DB36BAEFD996}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2CA6145B-AC6E-446B-A29B-DB36BAEFD996}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2CA6145B-AC6E-446B-A29B-DB36BAEFD996}.Release|Any CPU.Build.0 = Release|Any CPU
+		{28CF6C30-F112-4AF6-81D1-17998D644A12}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{28CF6C30-F112-4AF6-81D1-17998D644A12}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{28CF6C30-F112-4AF6-81D1-17998D644A12}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{28CF6C30-F112-4AF6-81D1-17998D644A12}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BB695895-BF14-4F52-AF9E-BBBA65C39865}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BB695895-BF14-4F52-AF9E-BBBA65C39865}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BB695895-BF14-4F52-AF9E-BBBA65C39865}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BB695895-BF14-4F52-AF9E-BBBA65C39865}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B2CA1036-A89C-4D0E-A6B9-DBC74C08E811}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B2CA1036-A89C-4D0E-A6B9-DBC74C08E811}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B2CA1036-A89C-4D0E-A6B9-DBC74C08E811}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B2CA1036-A89C-4D0E-A6B9-DBC74C08E811}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{28CF6C30-F112-4AF6-81D1-17998D644A12} = {89E4FE5D-3B7B-41C8-8705-2EF543A40EC6}
+		{BB695895-BF14-4F52-AF9E-BBBA65C39865} = {89E4FE5D-3B7B-41C8-8705-2EF543A40EC6}
+		{B2CA1036-A89C-4D0E-A6B9-DBC74C08E811} = {89E4FE5D-3B7B-41C8-8705-2EF543A40EC6}
 	EndGlobalSection
 EndGlobal

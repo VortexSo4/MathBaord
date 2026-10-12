@@ -13,11 +13,18 @@ public class QuickBar
     private const float TrayButtonGap = 8f;
     private const float DragThreshold = 8f;
     private const double LongPressSeconds = 0.6;
+    private const double DoubleTapSeconds = 0.4;
+    private const float SnapDistance = 14f;
+    // Distance between neighbouring button centers in an evenly spaced row or column.
+    private const float Stride = Size + TrayButtonGap;
 
     private readonly StrokeRenderer _renderer;
     private readonly Action<UiAction> _execute;
     private readonly Func<UiAction, bool> _isActive;
     private readonly Func<Vector2, bool> _isCovered;
+    private readonly Action<int, Vector2> _editColor;
+    private UiAction? _lastTap;
+    private DateTime _lastTapTime;
 
     private List<QuickButtonConfig> _working = [];
     private Vector2 _screen = new(1280, 720);
@@ -34,8 +41,11 @@ public class QuickBar
     public bool IsPressed => _pressed != null;
 
     /// <param name="isCovered">True where other UI (the library panel) lies on top of the buttons.</param>
-    public QuickBar(StrokeRenderer renderer, Action<UiAction> execute, Func<UiAction, bool> isActive, Func<Vector2, bool> isCovered)
+    /// <param name="editColor">Opens the color editor for a palette slot; a color button invokes it on double tap.</param>
+    public QuickBar(StrokeRenderer renderer, Action<UiAction> execute, Func<UiAction, bool> isActive,
+        Func<Vector2, bool> isCovered, Action<int, Vector2> editColor)
     {
+        _editColor = editColor;
         _renderer = renderer;
         _execute = execute;
         _isActive = isActive;
@@ -189,6 +199,11 @@ public class QuickBar
         else if (ButtonAt(pos) == action)
         {
             _execute(action);
+            bool doubleTap = _lastTap == action && (DateTime.Now - _lastTapTime).TotalSeconds < DoubleTapSeconds;
+            _lastTap = doubleTap ? null : action;
+            _lastTapTime = DateTime.Now;
+            if (doubleTap && action is UiAction.Color1 or UiAction.Color2 or UiAction.Color3)
+                _editColor(action - UiAction.Color1, CenterOf(Buttons.First(b => b.Action == action)));
         }
 
         CancelPress();
@@ -222,6 +237,49 @@ public class QuickBar
         _dragging = false;
     }
 
+    /// <summary>
+    /// Where a dragged button lands: snapped to the row or column of nearby buttons, and to even spacing
+    /// inside that row or column. The ghost preview and the drop both use this, so they always agree.
+    /// </summary>
+    private (Vector2 Center, bool InRow, bool InColumn) SnapTarget(UiAction action, Vector2 raw)
+    {
+        var half = new Vector2(Size * 0.5f);
+        var c = Vector2.Clamp(raw, half, Vector2.Max(_screen - half, half));
+        var others = _working.Where(b => b.Action != action && !IsOverTray(CenterOf(b))).Select(CenterOf).ToList();
+
+        static float? Nearest(IEnumerable<float> values, float target)
+        {
+            float? best = null;
+            foreach (float v in values)
+                if (MathF.Abs(v - target) < SnapDistance && (best == null || MathF.Abs(v - target) < MathF.Abs(best.Value - target)))
+                    best = v;
+            return best;
+        }
+
+        bool inRow = false, inColumn = false;
+        if (Nearest(others.Select(o => o.Y), c.Y) is { } rowY)
+        {
+            c.Y = rowY;
+            inRow = true;
+            var row = others.Where(o => MathF.Abs(o.Y - rowY) < 0.5f).ToList();
+            if (Nearest(row.SelectMany(o => new[] { o.X - Stride, o.X + Stride }), c.X) is { } spaced) c.X = spaced;
+            else if (Nearest(others.Select(o => o.X), c.X) is { } columnX)
+            {
+                c.X = columnX;
+                inColumn = true;
+            }
+        }
+        else if (Nearest(others.Select(o => o.X), c.X) is { } columnX)
+        {
+            c.X = columnX;
+            inColumn = true;
+            var column = others.Where(o => MathF.Abs(o.X - columnX) < 0.5f).ToList();
+            if (Nearest(column.SelectMany(o => new[] { o.Y - Stride, o.Y + Stride }), c.Y) is { } spaced) c.Y = spaced;
+        }
+
+        return (new Vector2(MathF.Round(c.X), MathF.Round(c.Y)), inRow, inColumn);
+    }
+
     private void Drop(UiAction action, Vector2 pos)
     {
         int index = _working.FindIndex(b => b.Action == action);
@@ -231,11 +289,10 @@ public class QuickBar
             return;
         }
 
-        var center = Vector2.Clamp(pos + _grabOffset, new Vector2(Size * 0.5f), _screen - new Vector2(Size * 0.5f));
+        var center = SnapTarget(action, pos + _grabOffset).Center;
         // Anchor to the nearest screen third so the button keeps its place relative to that edge on resize.
         float ax = center.X < _screen.X / 3f ? 0f : center.X > _screen.X * 2f / 3f ? 1f : 0.5f;
         float ay = center.Y < _screen.Y / 3f ? 0f : center.Y > _screen.Y * 2f / 3f ? 1f : 0.5f;
-        center = new Vector2(MathF.Round(center.X / 4f) * 4f, MathF.Round(center.Y / 4f) * 4f);
         var config = new QuickButtonConfig(action, ax, ay, center.X - ax * _screen.X, center.Y - ay * _screen.Y);
 
         if (index >= 0) _working[index] = config;
@@ -262,12 +319,38 @@ public class QuickBar
                 if (!(_dragging && _pressed == b.Action)) DrawButton(ui, b.Action, CenterOf(b));
             RenderTray(ui);
             if (_dragging && _pressed is { } dragged)
+            {
+                if (!IsOverTray(_mouse)) RenderLandingGhost(ui, dragged);
                 DrawButton(ui, dragged, _mouse + _grabOffset, lifted: true);
+            }
+
             return;
         }
 
         if (_pressed == null && ButtonAt(_mouse) is { } hovered)
             ui.Tooltip(Localization.Get("action_" + hovered, hovered.ToString()), _mouse, screen);
+    }
+
+    private void RenderLandingGhost(UiBatch ui, UiAction action)
+    {
+        var (center, inRow, inColumn) = SnapTarget(action, _mouse + _grabOffset);
+        var guide = Theme.WithAlpha(Theme.Accent, 0.7f);
+        var others = _working.Where(b => b.Action != action).Select(CenterOf).ToList();
+        if (inRow)
+        {
+            var row = others.Where(o => MathF.Abs(o.Y - center.Y) < 0.5f).Select(o => o.X).Append(center.X).ToList();
+            ui.Line(new Vector2(row.Min(), center.Y), new Vector2(row.Max(), center.Y), guide, 1.5f);
+        }
+
+        if (inColumn)
+        {
+            var column = others.Where(o => MathF.Abs(o.X - center.X) < 0.5f).Select(o => o.Y).Append(center.Y).ToList();
+            ui.Line(new Vector2(center.X, column.Min()), new Vector2(center.X, column.Max()), guide, 1.5f);
+        }
+
+        var pos = center - new Vector2(Size * 0.5f);
+        ui.Rect(pos, new Vector2(Size), Theme.AccentSoft, 10f);
+        ui.Border(pos, new Vector2(Size), Theme.Accent, 1.5f, 10f);
     }
 
     private void RenderTray(UiBatch ui)
@@ -335,6 +418,7 @@ public class QuickBar
         UiAction.ZoomIn => Icons.ZoomIn,
         UiAction.ZoomOut => Icons.ZoomOut,
         UiAction.FitView => Icons.FitView,
+        UiAction.Keyboard => Icons.Keyboard,
         _ => Icons.Palette
     };
 }

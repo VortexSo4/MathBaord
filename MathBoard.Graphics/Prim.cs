@@ -1,7 +1,7 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
 
-namespace MathBoard.Rendering;
+namespace MathBoard.Graphics;
 
 public enum PrimType
 {
@@ -9,17 +9,19 @@ public enum PrimType
     Capsule = 1,
     Glyph = 2,
     Arc = 3,
-    ColorRing = 4
+    ColorRing = 4,
+    ColorBar = 5
 }
 
 /// <summary>
-/// One instanced quad for prim.vert/prim.frag. Field meaning depends on the type:
+/// One drawing primitive: a quad whose shape is resolved per pixel. Field meaning depends on the type:
 /// RoundRect: A = min.xy max.xy, B = radius, border;
 /// Capsule: A = p0.xy p1.xy, B = radius;
 /// Glyph: A = min.xy max.xy, Extra = uv rect;
 /// Arc: A = center.xy, r0, r1, B = start angle, end angle;
-/// ColorRing: A = center.xy, r0, r1, B = mode (0 hue, 1 saturation, 2 value), hue.
-/// B.w always holds the type. Clip is a screen-space rect (min.xy max.xy).
+/// ColorRing: A = center.xy, r0, r1, B = mode (0 hue, 1 saturation, 2 value), hue — value grows clockwise from the top;
+/// ColorBar: A = min.xy max.xy, B = mode, hue, corner radius — value grows from bottom to top.
+/// B.w always holds the type. Clip is a rect in the same space as the primitive (min.xy max.xy).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct Prim

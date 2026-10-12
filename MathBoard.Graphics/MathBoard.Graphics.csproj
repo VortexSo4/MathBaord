@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Contract between the app and render backend plugins (backends/<Name>/MathBoard.Backend.<Name>.dll). -->
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
+    </ItemGroup>
+
+</Project>

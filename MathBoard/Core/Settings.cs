@@ -27,7 +27,9 @@ public static class Settings
 
         public static readonly string LibraryRootPath = Path.Combine( Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MathBoard", "Lessons");
         public const int AutoSaveIntervalMinutes = 1;
-        public const bool LibraryPanelOnTop = true;
+        public const string RenderBackend = "Auto";
+        public const float UiScale = 0f;
+        public const string OnScreenKeyboard = "Auto";
 
         public const float RadialMenuLongPressThreshold = 1.0f;
         public const float RadialMenuOpenThreshold = 0.3f;
@@ -78,7 +80,20 @@ public static class Settings
 
     public static Setting<string> LibraryRootPath { get; } = new(Defaults.LibraryRootPath);
     public static Setting<int> AutoSaveIntervalMinutes { get; } = new(Defaults.AutoSaveIntervalMinutes);
-    public static Setting<bool> LibraryPanelOnTop { get; } = new(Defaults.LibraryPanelOnTop);
+
+    /// <summary>Preferred render backend name, or "Auto". Takes effect on the next start.</summary>
+    public static Setting<string> RenderBackend { get; } = new(Defaults.RenderBackend);
+
+    /// <summary>Interface scale; 0 follows the monitor's DPI.</summary>
+    public static Setting<float> UiScale { get; } = new(Defaults.UiScale);
+
+    /// <summary>"Auto" shows the touch keyboard for text fields when no hardware keyboard is attached; "Always" or "Never".</summary>
+    public static Setting<string> OnScreenKeyboard { get; } = new(Defaults.OnScreenKeyboard);
+
+    public static Setting<string> LastOpenedFile { get; } = new("");
+
+    /// <summary>Names of the backend plugins found at startup (not persisted).</summary>
+    public static List<string> AvailableBackends { get; set; } = [];
 
     public static Setting<float> RadialMenuLongPressThreshold { get; } = new(Defaults.RadialMenuLongPressThreshold);
     public static Setting<float> RadialMenuOpenThreshold { get; } = new(Defaults.RadialMenuOpenThreshold);

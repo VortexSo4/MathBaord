@@ -1,9 +1,10 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Silk.NET.Core.Native;
+using MathBoard.Graphics;
 using Silk.NET.Vulkan;
 
-namespace MathBoard.Rendering;
+namespace MathBoard.Backend.Vulkan;
 
 /// <summary>Host-visible, persistently mapped instance buffer of <see cref="Prim"/>.</summary>
 public sealed unsafe class PrimBuffer(VulkanContext context) : IDisposable
@@ -59,12 +60,13 @@ public sealed unsafe class PrimBuffer(VulkanContext context) : IDisposable
         Data = (Prim*)mapped;
     }
 
-    public void Upload(List<Prim> prims)
+    /// <summary>Makes the buffer hold <paramref name="prims"/>, copying only the part from <paramref name="from"/> on.</summary>
+    public void Update(ReadOnlySpan<Prim> prims, int from)
     {
-        Reserve(prims.Count, keepContents: false);
-        var src = CollectionsMarshal.AsSpan(prims);
-        src.CopyTo(new Span<Prim>(Data, prims.Count));
-        Count = prims.Count;
+        Reserve(prims.Length, keepContents: from > 0);
+        from = Math.Clamp(from, 0, prims.Length);
+        prims[from..].CopyTo(new Span<Prim>(Data + from, prims.Length - from));
+        Count = prims.Length;
     }
 
     private void Destroy()
@@ -90,26 +92,25 @@ public sealed unsafe class PrimitiveRenderer : IDisposable
     }
 
     private readonly VulkanContext _context;
-    private readonly TextAtlas _atlas;
+    private readonly DescriptorSetLayout _atlasLayout;
     private Pipeline _pipeline;
     private PipelineLayout _layout;
 
-    public PrimitiveRenderer(VulkanContext context, RenderPass renderPass, TextAtlas atlas)
+    public PrimitiveRenderer(VulkanContext context, RenderPass renderPass, DescriptorSetLayout atlasLayout)
     {
         _context = context;
-        _atlas = atlas;
+        _atlasLayout = atlasLayout;
         CreatePipeline(renderPass);
     }
 
-    public void Bind(CommandBuffer cmd, Silk.NET.Vulkan.Extent2D extent)
+    public void Bind(CommandBuffer cmd, Extent2D extent, DescriptorSet atlas)
     {
         var viewport = new Viewport(0, 0, extent.Width, extent.Height, 0, 1);
         var scissor = new Rect2D(new Offset2D(0, 0), extent);
         _context.Vk.CmdSetViewport(cmd, 0, 1, &viewport);
         _context.Vk.CmdSetScissor(cmd, 0, 1, &scissor);
         _context.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Graphics, _pipeline);
-        var set = _atlas.DescriptorSet;
-        _context.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Graphics, _layout, 0, 1, &set, 0, null);
+        _context.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Graphics, _layout, 0, 1, &atlas, 0, null);
     }
 
     public void Draw(CommandBuffer cmd, PrimBuffer buffer, Matrix4x4 transform, float pixel)
@@ -203,7 +204,7 @@ public sealed unsafe class PrimitiveRenderer : IDisposable
         {
             StageFlags = ShaderStageFlags.VertexBit, Size = (uint)sizeof(PushConstants)
         };
-        var setLayout = _atlas.DescriptorSetLayout;
+        var setLayout = _atlasLayout;
         var layoutInfo = new PipelineLayoutCreateInfo
         {
             SType = StructureType.PipelineLayoutCreateInfo,
@@ -232,7 +233,10 @@ public sealed unsafe class PrimitiveRenderer : IDisposable
 
     private ShaderModule LoadShader(string name)
     {
-        var code = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Shaders", name));
+        using var stream = typeof(PrimitiveRenderer).Assembly.GetManifestResourceStream(name)
+                           ?? throw new FileNotFoundException($"Embedded shader {name} not found");
+        var code = new byte[stream.Length];
+        stream.ReadExactly(code);
         fixed (byte* pCode = code)
         {
             var createInfo = new ShaderModuleCreateInfo
