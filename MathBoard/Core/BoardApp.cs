@@ -34,7 +34,7 @@ public sealed partial class BoardApp : IDisposable
         _libraryManager = new LibraryManager(_document, _strokeRenderer);
         var libraryPanel = new LibraryPanel(_strokeRenderer, _libraryManager, _updater);
         _strokeRenderer.SetLibraryPanel(libraryPanel);
-        _inputManager = new InputManager(window, _strokeRenderer, _camera, _document, radialMenu, _libraryManager, libraryPanel);
+        _inputManager = new InputManager(window, _strokeRenderer, _camera, _document, radialMenu, _libraryManager, libraryPanel, _updater);
         _strokeRenderer.SetQuickBar(_inputManager.QuickBar);
 
         window.FramebufferResize += _ => _strokeRenderer.SetDirty();

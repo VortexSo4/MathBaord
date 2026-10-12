@@ -4,8 +4,9 @@ using System.Net;
 namespace MathBoard.Core;
 
 /// <summary>
-/// Checks GitHub Releases for a newer installer and installs it silently. The release page redirect is used instead of
-/// the API, which allows only 60 requests per hour per IP — too few for a school network behind one address.
+/// Checks GitHub Releases for a newer installer; on request downloads it, installs it silently and lets the installer
+/// start the new version. The release page redirect is used instead of the API, which allows only 60 requests per hour
+/// per IP — too few for a school network behind one address.
 /// </summary>
 public sealed class Updater
 {
@@ -34,9 +35,8 @@ public sealed class Updater
 
     public void Check()
     {
-        if (_state is State.Checking or State.Downloading) return;
-        _state = State.Checking;
-        Changed?.Invoke();
+        if (_state is State.Checking or State.Downloading or State.Installing) return;
+        SetState(State.Checking);
         _ = Task.Run(async () =>
         {
             try
@@ -49,55 +49,61 @@ public sealed class Updater
                     latest > CurrentVersion)
                 {
                     AvailableVersion = latest;
-                    _state = State.Available;
                     Console.WriteLine($"Update available: {latest}");
+                    SetState(State.Available);
                 }
                 else
                 {
-                    _state = State.UpToDate;
+                    SetState(State.UpToDate);
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Update check failed: {ex.Message}");
-                _state = State.Failed;
+                SetState(State.Failed);
             }
-
-            Changed?.Invoke();
         });
     }
 
-    /// <summary>Downloads the installer and starts it silently; the app should exit on <see cref="State.Installing"/>.</summary>
-    public void DownloadAndInstall()
+    /// <summary>
+    /// Downloads the installer and starts it silently; it restarts the app when done. The app should exit on
+    /// <see cref="State.Installing"/> so its files can be replaced.
+    /// </summary>
+    public void Install()
     {
-        if (_state != State.Available || AvailableVersion is not { } version) return;
-        _state = State.Downloading;
+        if (_state is not (State.Available or State.Failed) || AvailableVersion is not { } latest) return;
         Progress = 0;
-        Changed?.Invoke();
+        SetState(State.Downloading);
 
         _ = Task.Run(async () =>
         {
             try
             {
-                string name = $"MathBoard-{version.ToString(3)}-setup.exe";
-                string url = $"https://github.com/{Repository}/releases/download/v{version.ToString(3)}/{name}";
+                string version = latest.ToString(3);
+                string name = $"MathBoard-{version}-setup.exe";
                 string path = Path.Combine(Path.GetTempPath(), name);
-                await Download(url, path);
+                await Download($"https://github.com/{Repository}/releases/download/v{version}/{name}", path + ".part");
+                File.Move(path + ".part", path, overwrite: true);
 
-                Process.Start(new ProcessStartInfo(path, "/SILENT /SUPPRESSMSGBOXES /NORESTART /restart=1")
+                Process.Start(new ProcessStartInfo(path, "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /restart=1")
                 {
                     UseShellExecute = true
                 });
-                _state = State.Installing;
+                Console.WriteLine($"Installing update {version}");
+                SetState(State.Installing);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Update failed: {ex.Message}");
-                _state = State.Failed;
+                SetState(State.Failed);
             }
-
-            Changed?.Invoke();
         });
+    }
+
+    private void SetState(State state)
+    {
+        _state = state;
+        Changed?.Invoke();
     }
 
     private async Task Download(string url, string path)
@@ -130,6 +136,7 @@ public sealed class Updater
                 }
             }
 
+            if (total > 0 && done != total) throw new IOException("The download was cut off");
             return;
         }
 

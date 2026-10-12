@@ -55,22 +55,22 @@ public static class Settings
         public static readonly QuickButtonConfig[] QuickButtons =
         [
             new(UiAction.ToggleLibrary, 0f, 0f, 34f, 34f),
-            new(UiAction.Screenshot, 1f, 0f, -190f, 34f),
-            new(UiAction.Undo, 1f, 0f, -138f, 34f),
             new(UiAction.Redo, 1f, 0f, -86f, 34f),
             new(UiAction.Save, 1f, 0f, -34f, 34f),
-            new(UiAction.Brush, 1f, 0.5f, -34f, -104f),
-            new(UiAction.Eraser, 1f, 0.5f, -34f, -52f),
-            new(UiAction.Shapes, 1f, 0.5f, -34f, 0f),
-            new(UiAction.Select, 1f, 0.5f, -34f, 52f),
-            new(UiAction.Pan, 1f, 0.5f, -34f, 104f),
+            new(UiAction.Brush, 1f, 1f, -34f, -195f),
+            new(UiAction.Eraser, 1f, 0.5f, -34f, 113f),
+            new(UiAction.Select, 1f, 0.5f, -34f, 61f),
+            new(UiAction.Pan, 1f, 1f, -34f, -143f),
             new(UiAction.Color1, 0.5f, 1f, -52f, -34f),
             new(UiAction.Color2, 0.5f, 1f, 0f, -34f),
             new(UiAction.Color3, 0.5f, 1f, 52f, -34f),
-            new(UiAction.Grid, 1f, 1f, -190f, -34f),
             new(UiAction.ZoomOut, 1f, 1f, -138f, -34f),
             new(UiAction.FitView, 1f, 1f, -86f, -34f),
-            new(UiAction.ZoomIn, 1f, 1f, -34f, -34f)
+            new(UiAction.ZoomIn, 1f, 1f, -34f, -34f),
+            new(UiAction.Undo, 1f, 0f, -138f, 34f),
+            new(UiAction.Shapes, 1f, 1f, -86f, -143f),
+            new(UiAction.InsertImage, 1f, 1f, -86f, -195f),
+            new(UiAction.Screenshot, 1f, 0.5f, -86f, 113f)
         ];
     }
 

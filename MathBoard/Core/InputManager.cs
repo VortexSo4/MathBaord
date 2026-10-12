@@ -58,7 +58,7 @@ public sealed partial class InputManager : IDisposable
     public QuickBar QuickBar => _quickBar;
 
     public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document,
-        RadialMenu radialMenu, LibraryManager libraryManager, LibraryPanel libraryPanel)
+        RadialMenu radialMenu, LibraryManager libraryManager, LibraryPanel libraryPanel, Updater updater)
     {
         _strokeRenderer = strokeRenderer;
         _camera = camera;
@@ -69,7 +69,7 @@ public sealed partial class InputManager : IDisposable
         _colorEditor = new ColorEditor(strokeRenderer);
         _shapePicker = new ShapePicker(strokeRenderer);
         _plotEditor = new PlotEditor(strokeRenderer);
-        _popups = [_colorEditor, _shapePicker, _plotEditor];
+        _popups = [_colorEditor, _shapePicker, _plotEditor, new UpdatePopup(strokeRenderer, updater)];
         foreach (var popup in _popups) strokeRenderer.AddOverlay(popup);
         // The screenshot overlay is drawn by the renderer itself because it hides the rest of the interface.
         _popups = [.._popups, strokeRenderer.Screenshot];

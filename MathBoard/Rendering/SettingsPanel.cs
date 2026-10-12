@@ -252,7 +252,7 @@ public class SettingsPanel : IDisposable
             },
             OnClick = () =>
             {
-                if (_updater.Status == Updater.State.Available) _updater.DownloadAndInstall();
+                if (_updater.Status == Updater.State.Available) _updater.Install();
                 else _updater.Check();
             }
         });
