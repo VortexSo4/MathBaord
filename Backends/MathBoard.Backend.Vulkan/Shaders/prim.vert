@@ -39,6 +39,9 @@ void main() {
     } else if (type == 2u) {
         p = mix(inA.xy, inA.zw, c);
         vUV = mix(inExtra.xy, inExtra.zw, c);
+    } else if (type == 6u) {
+        p = inA.xy + inA.zw * c.x + inExtra.xy * c.y;
+        vUV = c;
     } else if (type == 3u || type == 4u) {
         p = inA.xy + (c * 2.0 - 1.0) * (inA.w + m);
     } else {

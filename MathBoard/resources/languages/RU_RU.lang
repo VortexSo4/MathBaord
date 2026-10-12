@@ -130,3 +130,6 @@ update_checking=Проверка...
 update_latest=Актуальная
 update_install=Установить
 update_failed=Ошибка, ещё раз
+action_Screenshot=Скриншот на доску
+action_InsertImage=Вставить картинку
+screenshot_hint=Выделите часть экрана для вставки · Esc — отмена

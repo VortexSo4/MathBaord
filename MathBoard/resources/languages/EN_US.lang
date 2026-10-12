@@ -130,3 +130,6 @@ update_checking=Checking...
 update_latest=Up to date
 update_install=Install
 update_failed=Failed, retry
+action_Screenshot=Screenshot to the board
+action_InsertImage=Insert picture
+screenshot_hint=Drag over the part of the screen to paste · Esc to cancel

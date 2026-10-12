@@ -1,5 +1,6 @@
 #version 450
 
+// The glyph atlas, or the picture of an image primitive.
 layout(binding = 0) uniform sampler2D atlas;
 
 layout(location = 0) in vec2 vLocal;
@@ -32,6 +33,12 @@ void main() {
 
     if (type == 2u) {
         outColor = vec4(color.rgb, color.a * texture(atlas, vUV).r);
+        return;
+    }
+
+    if (type == 6u) {
+        vec4 texel = texture(atlas, vUV);
+        outColor = vec4(texel.rgb * color.rgb, texel.a * color.a);
         return;
     }
 

@@ -55,6 +55,7 @@ public static class Settings
         public static readonly QuickButtonConfig[] QuickButtons =
         [
             new(UiAction.ToggleLibrary, 0f, 0f, 34f, 34f),
+            new(UiAction.Screenshot, 1f, 0f, -190f, 34f),
             new(UiAction.Undo, 1f, 0f, -138f, 34f),
             new(UiAction.Redo, 1f, 0f, -86f, 34f),
             new(UiAction.Save, 1f, 0f, -34f, 34f),

@@ -68,6 +68,7 @@ public sealed partial class StrokeRenderer : IDisposable
         _camera = camera;
         _ui = new UiBatch(_textAtlas);
         _background = new UiBatch(_textAtlas);
+        Screenshot = new ScreenshotOverlay(this);
 
         CurrentBrushWidth = Settings.DefaultBrushWidth;
         _eraserSize = Settings.DefaultEraserSize;
@@ -332,6 +333,8 @@ public sealed partial class StrokeRenderer : IDisposable
         for (int i = _document.Objects.Count - 1; i >= 0; i--)
         {
             var o = _document.Objects[i];
+            // Pictures are only removed through the selection, so ink on them can be erased.
+            if (o.Kind == ShapeKind.Image) continue;
             // A plot counts as hit only near its drawing, not anywhere inside its frame.
             float distance = o.Kind == ShapeKind.Plot ? PlotEdgeDistance(o, worldPos) : ObjectGeometry.Distance(o, worldPos);
             if (distance > _eraserSize) continue;
@@ -479,12 +482,15 @@ public sealed partial class StrokeRenderer : IDisposable
         {
             int count = 0;
             _objectLabels.Clear();
+            _images.Clear();
             foreach (var o in _document.Objects)
             {
                 _scratch.Clear();
-                ObjectGeometry.Build(o, _scratch, _objectLabels);
+                if (o.Kind != ShapeKind.Image || !AddImage(o)) ObjectGeometry.Build(o, _scratch, _objectLabels);
                 count = AppendPrims(_scratch, count);
             }
+
+            UpdateImagesVersion();
 
             int strokeTotal = 0;
             foreach (var s in _document.Strokes) strokeTotal += SegmentCount(s);
@@ -549,6 +555,14 @@ public sealed partial class StrokeRenderer : IDisposable
         _ui.Clear(UiScale);
         var screen = ScreenSize;
 
+        if (Screenshot.IsOpen)
+        {
+            // Covers the whole window, so nothing else is drawn.
+            Screenshot.Render(_ui, screen);
+            if (_textAtlas.NeedsRedraw) _uiDirty = true;
+            return;
+        }
+
         DrawLabels(_ui, _liveLabels);
         RenderShapeGuides(_ui);
         if (Tool == Tool.Select) RenderSelectionUI(_ui);
@@ -578,6 +592,9 @@ public sealed partial class StrokeRenderer : IDisposable
             : _strokePrimCount,
         Background = CollectionsMarshal.AsSpan(_background.Prims),
         BackgroundVersion = _backgroundVersion,
+        Images = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_images),
+        ImagesVersion = _imagesVersion,
+        OverlayImages = OverlayImages(),
         Ui = CollectionsMarshal.AsSpan(_ui.Prims),
         AtlasPixels = _textAtlas.Pixels,
         AtlasSize = TextAtlas.Size,

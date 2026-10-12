@@ -40,6 +40,9 @@ internal static class Shaders
             } else if (type == 2.0) {
                 p = mix(aA.xy, aA.zw, c);
                 vUV = mix(aExtra.xy, aExtra.zw, c);
+            } else if (type == 6.0) {
+                p = aA.xy + aA.zw * c.x + aExtra.xy * c.y;
+                vUV = c;
             } else if (type == 3.0 || type == 4.0) {
                 p = aA.xy + (c * 2.0 - 1.0) * (aA.w + m);
             } else {
@@ -92,6 +95,12 @@ internal static class Shaders
 
             if (type == 2.0) {
                 gl_FragColor = vec4(color.rgb, color.a * texture2D(uAtlas, vUV).a);
+                return;
+            }
+
+            if (type == 6.0) {
+                vec4 texel = texture2D(uAtlas, vUV);
+                gl_FragColor = vec4(texel.rgb * color.rgb, texel.a * color.a);
                 return;
             }
 

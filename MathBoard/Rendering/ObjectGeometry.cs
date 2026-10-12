@@ -71,6 +71,16 @@ public static class ObjectGeometry
             case ShapeKind.Plot:
                 BuildPlot(o, prims, labels);
                 break;
+            case ShapeKind.Image:
+            {
+                // Only drawn when the picture file is missing; the picture itself is not a primitive.
+                var corner = p[1] + p[2] - p[0];
+                var gray = Theme.WithAlpha(Theme.TextMuted, 0.8f);
+                Polyline(prims, [p[0], p[1], corner, p[2]], true, 1.5f, gray);
+                prims.Add(Prim.Capsule(p[0], corner, 1.5f, gray));
+                prims.Add(Prim.Capsule(p[1], p[2], 1.5f, gray));
+                break;
+            }
         }
     }
 
@@ -222,7 +232,7 @@ public static class ObjectGeometry
             labels.Add(new ObjectLabel(f.Map(axisX, f.YMax) + uDir * tick * 3f, "y", axisColor));
         }
 
-        var (functions, _) = Expression.ParseList(o.Functions);
+        var (functions, _) = Expression.ParseList(o.Text);
         for (int i = 0; i < functions.Count; i++)
             BuildCurve(functions[i], f, r, CurveColors[i % CurveColors.Length], prims);
     }
@@ -276,7 +286,7 @@ public static class ObjectGeometry
     {
         var pts = o.Kind switch
         {
-            ShapeKind.Plot => [..o.Points, o.Points[1] + o.Points[2] - o.Points[0]],
+            ShapeKind.Plot or ShapeKind.Image => [..o.Points, o.Points[1] + o.Points[2] - o.Points[0]],
             ShapeKind.Circle => CircleBox(o.Points[0], Vector2.Distance(o.Points[0], o.Points[1])),
             ShapeKind.Ellipse => EllipsePoints(o.Points[0], o.Points[1] - o.Points[0], o.Points[2] - o.Points[0], 32),
             _ => o.Points
@@ -293,15 +303,16 @@ public static class ObjectGeometry
 
     private static Vector2[] CircleBox(Vector2 c, float radius) => [c - new Vector2(radius), c + new Vector2(radius)];
 
-    /// <summary>Distance from a world point to the drawn object, 0 inside a plot.</summary>
+    /// <summary>Distance from a world point to the drawn object, 0 inside a plot or an image.</summary>
     public static float Distance(BoardObject o, Vector2 point)
     {
-        if (o.Kind == ShapeKind.Plot)
+        if (o.Kind is ShapeKind.Plot or ShapeKind.Image)
         {
-            var f = FrameOf(o);
-            var local = point - f.Origin;
-            float s = Vector2.Dot(local, f.U) / f.U.LengthSquared();
-            float t = Vector2.Dot(local, f.V) / f.V.LengthSquared();
+            var u = o.Points[1] - o.Points[0];
+            var v = o.Points[2] - o.Points[0];
+            var local = point - o.Points[0];
+            float s = Vector2.Dot(local, u) / u.LengthSquared();
+            float t = Vector2.Dot(local, v) / v.LengthSquared();
             if (s is >= 0 and <= 1 && t is >= 0 and <= 1) return 0f;
         }
 

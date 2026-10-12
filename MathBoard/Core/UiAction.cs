@@ -22,5 +22,7 @@ public enum UiAction
     FitView,
     Keyboard,
     Shapes,
-    Grid
+    Grid,
+    Screenshot,
+    InsertImage
 }

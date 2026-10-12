@@ -34,6 +34,15 @@ public readonly ref struct FrameData
     public ReadOnlySpan<Prim> Background { get; init; }
     public int BackgroundVersion { get; init; }
 
+    /// <summary>Pictures in world space, drawn above the background and below the strokes.</summary>
+    public ReadOnlySpan<ImageDraw> Images { get; init; }
+
+    /// <summary>Changes whenever <see cref="Images"/> does, so a cache of the drawn pictures can be kept until then.</summary>
+    public int ImagesVersion { get; init; }
+
+    /// <summary>Pictures in logical screen space, drawn above the strokes and below the interface.</summary>
+    public ReadOnlySpan<ImageDraw> OverlayImages { get; init; }
+
     /// <summary>Interface primitives in logical screen space, in draw order.</summary>
     public ReadOnlySpan<Prim> Ui { get; init; }
 

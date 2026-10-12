@@ -82,4 +82,7 @@ public static class Icons
     public const string Copy = "\uE8C8";
     public const string Shapes = "\uE71A";
     public const string Grid = "\uE80A";
+    public const string Screenshot = "\uF406";
+    public const string Picture = "\uEB9F";
+    public const string Monitor = "\uE7F4";
 }

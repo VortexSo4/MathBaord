@@ -12,7 +12,7 @@ public sealed class ShapePicker(StrokeRenderer renderer) : IPopup
     private const float Padding = 12f;
     private const float TitleHeight = 34f;
 
-    private static readonly ShapeKind[] Kinds = Enum.GetValues<ShapeKind>();
+    private static readonly ShapeKind[] Kinds = Enum.GetValues<ShapeKind>().Where(k => k != ShapeKind.Image).ToArray();
     private Vector2 _pos;
     private Vector2 _mouse;
 

@@ -118,7 +118,7 @@ public sealed partial class StrokeRenderer
 
     private int HitTestControlPoint(Vector2 screenPos)
     {
-        if (SingleObject is not { } o) return -1;
+        if (SingleObject is not { } o || o.Kind == ShapeKind.Image) return -1;
         for (int i = 0; i < o.Points.Length; i++)
             if (Vector2.Distance(WorldToScreen(o.Points[i]), screenPos) < PointHandleRadius)
                 return i;
@@ -245,6 +245,12 @@ public sealed partial class StrokeRenderer
             Vector2 scale = (newMax - newMin) / origSize;
             if (!float.IsFinite(scale.X)) scale.X = 1;
             if (!float.IsFinite(scale.Y)) scale.Y = 1;
+            if (SingleObject?.Kind == ShapeKind.Image && _activeHandle is 0 or 2 or 5 or 7)
+            {
+                // Corners keep a picture's proportions.
+                float uniform = MathF.Max(MathF.Abs(scale.X), MathF.Abs(scale.Y));
+                scale = new Vector2(MathF.CopySign(uniform, scale.X), MathF.CopySign(uniform, scale.Y));
+            }
 
             m = Matrix3x2.CreateScale(scale, fixedCorner);
         }
@@ -311,6 +317,7 @@ public sealed partial class StrokeRenderer
         // Ink lies on top of objects, so an object only wins if it is clearly closer.
         foreach (var o in _document.Objects)
         {
+            if (o.Kind == ShapeKind.Image) continue;
             float d = ObjectGeometry.Distance(o, world);
             if (d < best - 1e-3f)
             {
@@ -319,6 +326,11 @@ public sealed partial class StrokeRenderer
                 closestStroke = null;
             }
         }
+
+        // Pictures lie below everything, so the topmost one under the point is picked only when nothing else is near.
+        closestObject ??= closestStroke == null
+            ? _document.Objects.LastOrDefault(o => o.Kind == ShapeKind.Image && ObjectGeometry.Distance(o, world) == 0f)
+            : null;
 
         if (closestStroke != null) SelectedStrokes.Add(closestStroke);
         else if (closestObject != null) SelectedObjects.Add(closestObject);
@@ -331,8 +343,15 @@ public sealed partial class StrokeRenderer
 
         foreach (var s in _document.Strokes)
             if (Overlaps(GetBoundingBox(s.Points), minW, maxW)) SelectedStrokes.Add(s);
+        // A picture is selected only when the box encloses it, so ink drawn over it can be selected alone.
         foreach (var o in _document.Objects)
-            if (Overlaps(ObjectGeometry.Bounds(o), minW, maxW)) SelectedObjects.Add(o);
+        {
+            var b = ObjectGeometry.Bounds(o);
+            bool hit = o.Kind == ShapeKind.Image
+                ? b.Min.X >= minW.X && b.Min.Y >= minW.Y && b.Max.X <= maxW.X && b.Max.Y <= maxW.Y
+                : Overlaps(b, minW, maxW);
+            if (hit) SelectedObjects.Add(o);
+        }
     }
 
     private int HitTestHandles(Vector2 screenPos)
@@ -407,7 +426,7 @@ public sealed partial class StrokeRenderer
             ui.Ring(h, 7f, 2f, accent);
         }
 
-        if (SingleObject is { } single)
+        if (SingleObject is { Kind: not ShapeKind.Image } single)
         {
             // A single shape is edited through its own points; the box handles still scale and rotate it.
             foreach (var p in single.Points)

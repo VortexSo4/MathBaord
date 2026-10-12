@@ -26,6 +26,7 @@ public sealed partial class InputManager : IDisposable
     private readonly IPopup[] _popups;
     private readonly TouchGestures? _gestures;
 
+    private readonly nint _hwnd;
     private readonly IMouse? _mouse;
     private readonly IKeyboard? _keyboard;
 
@@ -70,6 +71,8 @@ public sealed partial class InputManager : IDisposable
         _plotEditor = new PlotEditor(strokeRenderer);
         _popups = [_colorEditor, _shapePicker, _plotEditor];
         foreach (var popup in _popups) strokeRenderer.AddOverlay(popup);
+        // The screenshot overlay is drawn by the renderer itself because it hides the rest of the interface.
+        _popups = [.._popups, strokeRenderer.Screenshot];
         strokeRenderer.EditPlotRequested += plot => _plotEditor.Open(plot, edited => _strokeRenderer.ReplaceObject(plot, edited));
         _quickBar = new QuickBar(strokeRenderer, Execute, IsActive, pos => _libraryPanel.IsOpen && pos.X < _libraryPanel.Width,
             (index, center) => _colorEditor.Open(index, center));
@@ -79,11 +82,13 @@ public sealed partial class InputManager : IDisposable
 
         if (OperatingSystem.IsWindows() && window.Native?.Win32 is { } win32)
         {
+            _hwnd = win32.Hwnd;
             _gestures = new TouchGestures(win32.Hwnd);
             _gestures.Started += OnGestureStarted;
             _gestures.Changed += OnGestureChanged;
         }
 
+        window.FileDrop += OnFileDrop;
         _input = window.CreateInput();
         _mouse = _input.Mice.FirstOrDefault();
         _keyboard = _input.Keyboards.FirstOrDefault();
@@ -283,9 +288,42 @@ public sealed partial class InputManager : IDisposable
                 Settings.GridMode.Value = Settings.GridMode.Value switch { "None" => "Squares", "Squares" => "Axes", _ => "None" };
                 Settings.Save();
                 break;
+            case UiAction.Screenshot when _hwnd != 0:
+                _strokeRenderer.CancelStroke();
+                if (ImageSources.CaptureScreen(_hwnd) is { } capture) _strokeRenderer.Screenshot.Open(capture);
+                break;
+            case UiAction.InsertImage when _hwnd != 0:
+                if (ImageSources.PickFile(_hwnd, Localization.Get("action_InsertImage", "Insert picture")) is { } path)
+                    InsertImageFile(path, CanvasCenter);
+                break;
         }
 
         _strokeRenderer.SetDirty();
+    }
+
+    private void InsertImageFile(string path, Vector2 screenPos)
+    {
+        using var bitmap = ImageStore.Load(path);
+        if (bitmap != null) _strokeRenderer.InsertImage(bitmap, screenPos);
+    }
+
+    private void OnFileDrop(string[] paths)
+    {
+        var pos = MousePosition;
+        foreach (string path in paths)
+        {
+            InsertImageFile(path, pos);
+            pos += new Vector2(24f);
+        }
+
+        _strokeRenderer.SetDirty();
+    }
+
+    private void PasteImage()
+    {
+        if (_hwnd == 0) return;
+        using var bitmap = ImageSources.ReadClipboard();
+        if (bitmap != null) _strokeRenderer.InsertImage(bitmap, CanvasCenter);
     }
 
     private bool IsActive(UiAction action) => action switch
@@ -629,6 +667,7 @@ public sealed partial class InputManager : IDisposable
                 case Key.O: Execute(UiAction.OpenAutoSave); break;
                 case Key.N: Execute(UiAction.NewFile); break;
                 case Key.L: Execute(UiAction.ToggleLibrary); break;
+                case Key.V: PasteImage(); break;
             }
         }
         else if (key is Key.Delete or Key.Backspace && (_strokeRenderer.SelectedStrokes.Count > 0 || _strokeRenderer.SelectedObjects.Count > 0))

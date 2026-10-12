@@ -122,7 +122,8 @@ public class LibraryPanel : IDisposable
             return root;
         }
 
-        foreach (var dir in Directory.GetDirectories(path))
+        // Folders starting with a dot hold app data, such as the pictures of the lessons.
+        foreach (var dir in Directory.GetDirectories(path).Where(d => !Path.GetFileName(d).StartsWith('.')))
             root.Children.Add(BuildTree(dir));
 
         foreach (var file in Directory.GetFiles(path, "*.mathboard"))

@@ -23,10 +23,12 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
     private GL? _gl;
     private uint _program;
     private int _transformLocation, _pixelLocation;
-    private uint _strokeVbo, _uiVbo, _backgroundVbo, _indexBuffer, _atlasTexture;
+    private uint _strokeVbo, _uiVbo, _backgroundVbo, _imageVbo, _overlayVbo, _indexBuffer, _atlasTexture;
     private int _strokeCapacity, _indexCapacity, _atlasSize;
     private int _strokeCount, _uiCount, _backgroundCount;
     private float[] _scratch = [];
+    private Prim[] _imageScratch = [];
+    private readonly Dictionary<ImageData, uint> _textures = new();
 
     public string Name => "OpenGL";
     public int Priority => 200;
@@ -55,6 +57,8 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         _strokeVbo = gl.GenBuffer();
         _uiVbo = gl.GenBuffer();
         _backgroundVbo = gl.GenBuffer();
+        _imageVbo = gl.GenBuffer();
+        _overlayVbo = gl.GenBuffer();
         _indexBuffer = gl.GenBuffer();
         _atlasTexture = gl.GenTexture();
         gl.BindTexture(TextureTarget.Texture2D, _atlasTexture);
@@ -77,7 +81,10 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         Upload(_uiVbo, frame.Ui, 0, frame.Ui.Length, reallocate: true);
         _backgroundCount = frame.Background.Length;
         Upload(_backgroundVbo, frame.Background, 0, frame.Background.Length, reallocate: true);
-        EnsureIndices(Math.Max(Math.Max(_strokeCount, _uiCount), _backgroundCount));
+        UpdateTextures(frame);
+        UploadImages(_imageVbo, frame.Images);
+        UploadImages(_overlayVbo, frame.OverlayImages);
+        EnsureIndices(Math.Max(Math.Max(_strokeCount, _uiCount), Math.Max(_backgroundCount, frame.Images.Length)));
 
         gl.Viewport(0, 0, (uint)size.X, (uint)size.Y);
         gl.ClearColor(frame.ClearColor.X, frame.ClearColor.Y, frame.ClearColor.Z, frame.ClearColor.W);
@@ -94,16 +101,68 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         var cam = frame.CameraPosition * scale;
         // OpenGL clip space has y pointing up, so the top of the framebuffer is mapped to +1.
         var proj = Matrix4x4.CreateOrthographicOffCenter(0, size.X, size.Y, 0, -1f, 1f);
-        Draw(_backgroundVbo, _backgroundCount, Matrix4x4.CreateScale(scale, scale, 1f) * proj, 1f / scale);
-        Draw(_strokeVbo, _strokeCount,
-            Matrix4x4.CreateScale(zoom, zoom, 1f) * Matrix4x4.CreateTranslation(cam.X, cam.Y, 0f) * proj, 1f / zoom);
-        Draw(_uiVbo, _uiCount, Matrix4x4.CreateScale(scale, scale, 1f) * proj, 1f / scale);
+        var uiTransform = Matrix4x4.CreateScale(scale, scale, 1f) * proj;
+        var strokeTransform = Matrix4x4.CreateScale(zoom, zoom, 1f) * Matrix4x4.CreateTranslation(cam.X, cam.Y, 0f) * proj;
+        Draw(_backgroundVbo, _backgroundCount, uiTransform, 1f / scale);
+        DrawImages(_imageVbo, frame.Images, strokeTransform, 1f / zoom);
+        Draw(_strokeVbo, _strokeCount, strokeTransform, 1f / zoom);
+        DrawImages(_overlayVbo, frame.OverlayImages, uiTransform, 1f / scale);
+        Draw(_uiVbo, _uiCount, uiTransform, 1f / scale);
 
         _window.GLContext!.SwapBuffers();
         return true;
     }
 
-    private void Draw(uint vbo, int primCount, Matrix4x4 transform, float pixel)
+    /// <summary>Uploads new pictures and deletes the textures of those no longer drawn.</summary>
+    private void UpdateTextures(in FrameData frame)
+    {
+        var gl = _gl!;
+        var used = new HashSet<ImageData>();
+        foreach (var draw in frame.Images) used.Add(draw.Image);
+        foreach (var draw in frame.OverlayImages) used.Add(draw.Image);
+
+        foreach (var image in _textures.Keys.Where(i => !used.Contains(i)).ToList())
+        {
+            gl.DeleteTexture(_textures[image]);
+            _textures.Remove(image);
+        }
+
+        foreach (var image in used.Where(i => !_textures.ContainsKey(i)))
+        {
+            uint texture = gl.GenTexture();
+            gl.BindTexture(TextureTarget.Texture2D, texture);
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.Linear);
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Linear);
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.ClampToEdge);
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.ClampToEdge);
+            fixed (byte* pixels = image.Pixels)
+                gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba8, (uint)image.Width, (uint)image.Height, 0,
+                    PixelFormat.Rgba, PixelType.UnsignedByte, pixels);
+            _textures[image] = texture;
+        }
+    }
+
+    private void UploadImages(uint vbo, ReadOnlySpan<ImageDraw> images)
+    {
+        if (_imageScratch.Length < images.Length) _imageScratch = new Prim[images.Length];
+        for (int i = 0; i < images.Length; i++) _imageScratch[i] = images[i].ToPrim();
+        Upload(vbo, _imageScratch.AsSpan(0, images.Length), 0, images.Length, reallocate: true);
+    }
+
+    private void DrawImages(uint vbo, ReadOnlySpan<ImageDraw> images, Matrix4x4 transform, float pixel)
+    {
+        if (images.Length == 0) return;
+        var gl = _gl!;
+        for (int i = 0; i < images.Length; i++)
+        {
+            gl.BindTexture(TextureTarget.Texture2D, _textures[images[i].Image]);
+            Draw(vbo, 1, transform, pixel, i);
+        }
+
+        gl.BindTexture(TextureTarget.Texture2D, _atlasTexture);
+    }
+
+    private void Draw(uint vbo, int primCount, Matrix4x4 transform, float pixel, int first = 0)
     {
         if (primCount == 0) return;
         var gl = _gl!;
@@ -120,7 +179,7 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
             offset += (uint)AttributeSizes[i];
         }
 
-        gl.DrawElements(PrimitiveType.Triangles, (uint)(primCount * 6), DrawElementsType.UnsignedInt, null);
+        gl.DrawElements(PrimitiveType.Triangles, (uint)(primCount * 6), DrawElementsType.UnsignedInt, (void*)(first * 6 * sizeof(uint)));
     }
 
     private void UploadStrokes(ReadOnlySpan<Prim> strokes, int dirtyFrom)
@@ -256,6 +315,9 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         if (_strokeVbo != 0) _gl.DeleteBuffer(_strokeVbo);
         if (_uiVbo != 0) _gl.DeleteBuffer(_uiVbo);
         if (_backgroundVbo != 0) _gl.DeleteBuffer(_backgroundVbo);
+        if (_imageVbo != 0) _gl.DeleteBuffer(_imageVbo);
+        if (_overlayVbo != 0) _gl.DeleteBuffer(_overlayVbo);
+        foreach (uint texture in _textures.Values) _gl.DeleteTexture(texture);
         if (_indexBuffer != 0) _gl.DeleteBuffer(_indexBuffer);
         if (_atlasTexture != 0) _gl.DeleteTexture(_atlasTexture);
         _gl.Dispose();

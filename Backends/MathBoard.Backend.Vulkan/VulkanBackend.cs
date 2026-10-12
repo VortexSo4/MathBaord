@@ -12,11 +12,16 @@ public sealed unsafe class VulkanBackend : IRenderBackend
     private SwapchainManager? _swapchain;
     private RenderPassManager? _renderPass;
     private FramebufferManager? _framebuffers;
-    private AtlasTexture? _atlas;
+    private DescriptorSetLayout _textureLayout;
+    private Texture? _atlas;
+    private readonly Dictionary<ImageData, Texture> _textures = new();
     private PrimitiveRenderer? _primitives;
     private PrimBuffer? _strokes;
     private PrimBuffer? _ui;
     private PrimBuffer? _background;
+    private PrimBuffer? _images;
+    private PrimBuffer? _overlayImages;
+    private Prim[] _imageScratch = [];
 
     private CommandPool _commandPool;
     private CommandBuffer _cmd;
@@ -67,11 +72,14 @@ public sealed unsafe class VulkanBackend : IRenderBackend
         vk.CreateFence(device, &fenceInfo, null, out _inFlight);
         CreateRenderFinishedSemaphores();
 
-        _atlas = new AtlasTexture(_context);
-        _primitives = new PrimitiveRenderer(_context, _renderPass.RenderPass, _atlas.DescriptorSetLayout);
+        _textureLayout = Texture.CreateLayout(_context);
+        _atlas = new Texture(_context, _textureLayout, Format.R8Unorm, 1, Filter.Nearest);
+        _primitives = new PrimitiveRenderer(_context, _renderPass.RenderPass, _textureLayout);
         _strokes = new PrimBuffer(_context);
         _ui = new PrimBuffer(_context);
         _background = new PrimBuffer(_context);
+        _images = new PrimBuffer(_context);
+        _overlayImages = new PrimBuffer(_context);
 
         window.FramebufferResize += _ => _resized = true;
     }
@@ -115,10 +123,13 @@ public sealed unsafe class VulkanBackend : IRenderBackend
         var fence = _inFlight;
         if (vk.WaitForFences(device, 1, &fence, true, 1_000_000_000) != Result.Success) return false;
 
-        _atlas!.Stage(frame.AtlasPixels, frame.AtlasSize, frame.AtlasDirtyTop, frame.AtlasDirtyBottom);
+        _atlas!.Stage(frame.AtlasPixels, frame.AtlasSize, frame.AtlasSize, frame.AtlasDirtyTop, frame.AtlasDirtyBottom);
         _strokes!.Update(frame.Strokes, frame.StrokesDirtyFrom);
         _ui!.Update(frame.Ui, 0);
         _background!.Update(frame.Background, 0);
+        UpdateTextures(frame);
+        UpdateImages(_images!, frame.Images);
+        UpdateImages(_overlayImages!, frame.OverlayImages);
 
         uint imageIndex = 0;
         var acquire = _swapchain!.KhrSwapchain.AcquireNextImage(device, _swapchain.Swapchain, 1_000_000_000,
@@ -168,6 +179,52 @@ public sealed unsafe class VulkanBackend : IRenderBackend
         return true;
     }
 
+    /// <summary>Uploads new pictures and frees those no longer drawn; the previous frame has finished, so nothing uses them.</summary>
+    private void UpdateTextures(in FrameData frame)
+    {
+        var used = new HashSet<ImageData>();
+        foreach (var draw in frame.Images) used.Add(draw.Image);
+        foreach (var draw in frame.OverlayImages) used.Add(draw.Image);
+
+        foreach (var image in _textures.Keys.Where(i => !used.Contains(i)).ToList())
+        {
+            _textures[image].Dispose();
+            _textures.Remove(image);
+        }
+
+        foreach (var image in used)
+        {
+            if (_textures.TryGetValue(image, out var texture))
+            {
+                texture.ReleaseStaging();
+                continue;
+            }
+
+            texture = new Texture(_context!, _textureLayout, Format.R8G8B8A8Unorm, 4, Filter.Linear);
+            texture.Stage(image.Pixels, image.Width, image.Height, 0, image.Height);
+            _textures[image] = texture;
+        }
+    }
+
+    private void UpdateImages(PrimBuffer buffer, ReadOnlySpan<ImageDraw> images)
+    {
+        if (_imageScratch.Length < images.Length) _imageScratch = new Prim[images.Length];
+        for (int i = 0; i < images.Length; i++) _imageScratch[i] = images[i].ToPrim();
+        buffer.Update(_imageScratch.AsSpan(0, images.Length), 0);
+    }
+
+    private void DrawImages(ReadOnlySpan<ImageDraw> images, PrimBuffer buffer, Matrix4x4 transform, float pixel)
+    {
+        if (images.Length == 0) return;
+        for (int i = 0; i < images.Length; i++)
+        {
+            _primitives!.BindTexture(_cmd, _textures[images[i].Image].DescriptorSet);
+            _primitives.Draw(_cmd, buffer, transform, pixel, i, 1);
+        }
+
+        _primitives!.BindTexture(_cmd, _atlas!.DescriptorSet);
+    }
+
     private void Record(in FrameData frame, uint imageIndex)
     {
         var vk = _context!.Vk;
@@ -176,6 +233,7 @@ public sealed unsafe class VulkanBackend : IRenderBackend
         vk.BeginCommandBuffer(_cmd, &beginInfo);
 
         _atlas!.RecordUpload(_cmd);
+        foreach (var texture in _textures.Values) texture.RecordUpload(_cmd);
 
         var extent = _swapchain!.Extent;
         var clear = new ClearValue
@@ -203,7 +261,9 @@ public sealed unsafe class VulkanBackend : IRenderBackend
 
         _primitives!.Bind(_cmd, extent, _atlas.DescriptorSet);
         _primitives.Draw(_cmd, _background!, uiTransform, 1f / scale);
+        DrawImages(frame.Images, _images!, strokeTransform, 1f / zoom);
         _primitives.Draw(_cmd, _strokes!, strokeTransform, 1f / zoom);
+        DrawImages(frame.OverlayImages, _overlayImages!, uiTransform, 1f / scale);
         _primitives.Draw(_cmd, _ui!, uiTransform, 1f / scale);
 
         vk.CmdEndRenderPass(_cmd);
@@ -221,8 +281,12 @@ public sealed unsafe class VulkanBackend : IRenderBackend
             _strokes?.Dispose();
             _ui?.Dispose();
             _background?.Dispose();
+            _images?.Dispose();
+            _overlayImages?.Dispose();
             _primitives?.Dispose();
             _atlas?.Dispose();
+            foreach (var texture in _textures.Values) texture.Dispose();
+            if (_textureLayout.Handle != 0) vk.DestroyDescriptorSetLayout(device, _textureLayout, null);
             if (_renderFinished.Length > 0) DestroyRenderFinishedSemaphores();
             if (_imageAvailable.Handle != 0) vk.DestroySemaphore(device, _imageAvailable, null);
             if (_inFlight.Handle != 0) vk.DestroyFence(device, _inFlight, null);

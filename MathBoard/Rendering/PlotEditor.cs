@@ -35,7 +35,7 @@ public sealed class PlotEditor(StrokeRenderer renderer) : IPopup
     {
         _plot = plot;
         _apply = apply;
-        _fields[0].SetText(plot.Functions, selectAll: true);
+        _fields[0].SetText(plot.Text, selectAll: true);
         _fields[1].SetText(plot.XMin.ToString("0.##", Invariant));
         _fields[2].SetText(plot.XMax.ToString("0.##", Invariant));
         _active = 0;
@@ -69,7 +69,7 @@ public sealed class PlotEditor(StrokeRenderer renderer) : IPopup
         }
         else
         {
-            _apply?.Invoke(_plot with { Functions = functions, XMin = xMin, XMax = xMax });
+            _apply?.Invoke(_plot with { Text = functions, XMin = xMin, XMax = xMax });
             Close();
             return;
         }

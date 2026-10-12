@@ -105,7 +105,7 @@ public class Document
                     writer.Write(p.Y);
                 }
 
-                writer.Write(o.Functions);
+                writer.Write(o.Text);
                 writer.Write(o.XMin);
                 writer.Write(o.XMax);
             }
@@ -161,7 +161,7 @@ public class Document
                     points[j] = new Vector2(reader.ReadSingle(), reader.ReadSingle());
                 objects.Add(new BoardObject(kind, points, color, width)
                 {
-                    Functions = reader.ReadString(),
+                    Text = reader.ReadString(),
                     XMin = reader.ReadSingle(),
                     XMax = reader.ReadSingle()
                 });

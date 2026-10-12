@@ -22,6 +22,8 @@ public sealed partial class SoftwareBackend : IRenderBackend
     // Drawing an SKBitmap copies it into a temporary image on every call, which for the 1 MB atlas made each
     // glyph cost a full copy. Images that wrap the pixels are drawn without copying.
     private SKImage? _atlasImage;
+    private readonly Dictionary<ImageData, SKImage> _pictures = new();
+    private readonly SKSamplingOptions _pictureSampling = new(SKFilterMode.Linear, SKMipmapMode.Linear);
 
     // State the stroke layer was rendered with.
     private bool _layerValid;
@@ -29,6 +31,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
     private float _layerZoom;
     private Vector4 _layerClear;
     private int _layerBackground;
+    private int _layerImages;
     private int _baked;
 
     private readonly SKPaint _fill = new() { IsAntialias = true, Style = SKPaintStyle.Fill };
@@ -66,6 +69,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
         }
 
         UpdateAtlas(frame);
+        UpdatePictures(frame);
         UpdateLayer(frame);
 
         var canvas = _frameCanvas!;
@@ -77,6 +81,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
         DrawStrokes(canvas, frame.Strokes, frame.StrokesStable, frame.Strokes.Length);
 
         canvas.SetMatrix(SKMatrix.CreateScale(scale, scale));
+        DrawPictures(canvas, frame.OverlayImages);
         _canvasClip = Prim.NoClip;
         foreach (var prim in frame.Ui) DrawPrim(canvas, prim);
         SetClip(canvas, Prim.NoClip);
@@ -91,6 +96,40 @@ public sealed partial class SoftwareBackend : IRenderBackend
         canvas.DrawImage(image, x, y);
     }
 
+    private void UpdatePictures(in FrameData frame)
+    {
+        var used = new HashSet<ImageData>();
+        foreach (var draw in frame.Images) used.Add(draw.Image);
+        foreach (var draw in frame.OverlayImages) used.Add(draw.Image);
+
+        foreach (var image in _pictures.Keys.Where(i => !used.Contains(i)).ToList())
+        {
+            _pictures[image].Dispose();
+            _pictures.Remove(image);
+        }
+
+        foreach (var image in used.Where(i => !_pictures.ContainsKey(i)))
+        {
+            var info = new SKImageInfo(image.Width, image.Height, SKColorType.Rgba8888, SKAlphaType.Unpremul);
+            _pictures[image] = SKImage.FromPixelCopy(info, image.Pixels);
+        }
+    }
+
+    /// <summary>Draws pictures in the canvas's current space.</summary>
+    private void DrawPictures(SKCanvas canvas, ReadOnlySpan<ImageDraw> images)
+    {
+        foreach (var draw in images)
+        {
+            var picture = _pictures[draw.Image];
+            float w = picture.Width, h = picture.Height;
+            var local = new SKMatrix(draw.U.X / w, draw.V.X / h, draw.Origin.X, draw.U.Y / w, draw.V.Y / h, draw.Origin.Y, 0, 0, 1);
+            canvas.Save();
+            canvas.Concat(in local);
+            canvas.DrawImage(picture, 0, 0, _pictureSampling);
+            canvas.Restore();
+        }
+    }
+
     private static SKMatrix CameraMatrix(Vector2 camera, float zoom, float scale) =>
         new(zoom * scale, 0, camera.X * scale, 0, zoom * scale, camera.Y * scale, 0, 0, 1);
 
@@ -101,7 +140,8 @@ public sealed partial class SoftwareBackend : IRenderBackend
         BuildPaths(frame.Strokes, stable);
 
         bool sameView = _layerValid && _layerZoom == frame.CameraZoom * frame.UiScale && _layerClear == frame.ClearColor &&
-                        _layerBackground == frame.BackgroundVersion && frame.StrokesDirtyFrom >= _baked;
+                        _layerBackground == frame.BackgroundVersion && _layerImages == frame.ImagesVersion &&
+                        frame.StrokesDirtyFrom >= _baked;
         var shift = (frame.CameraPosition - _layerCamera) * frame.UiScale;
         var whole = new Vector2(MathF.Round(shift.X), MathF.Round(shift.Y));
         var matrix = CameraMatrix(frame.CameraPosition, frame.CameraZoom, frame.UiScale);
@@ -147,6 +187,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
                 foreach (var prim in frame.Background) DrawPrim(canvas, prim);
                 SetClip(canvas, Prim.NoClip);
                 canvas.SetMatrix(matrix);
+                DrawPictures(canvas, frame.Images);
                 DrawPaths(canvas, matrix, [region], 0);
                 canvas.Restore();
             }
@@ -158,6 +199,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
         _layerZoom = frame.CameraZoom * frame.UiScale;
         _layerClear = frame.ClearColor;
         _layerBackground = frame.BackgroundVersion;
+        _layerImages = frame.ImagesVersion;
         _baked = stable;
         _bakedPaths = _paths.Count;
     }
@@ -426,6 +468,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
         DisposeSurfaces();
         _atlasImage?.Dispose();
         _atlas?.Dispose();
+        foreach (var picture in _pictures.Values) picture.Dispose();
         _fill.Dispose();
         _stroke.Dispose();
         _glyph.Dispose();

@@ -110,12 +110,17 @@ public sealed unsafe class PrimitiveRenderer : IDisposable
         _context.Vk.CmdSetViewport(cmd, 0, 1, &viewport);
         _context.Vk.CmdSetScissor(cmd, 0, 1, &scissor);
         _context.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Graphics, _pipeline);
-        _context.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Graphics, _layout, 0, 1, &atlas, 0, null);
+        BindTexture(cmd, atlas);
     }
 
-    public void Draw(CommandBuffer cmd, PrimBuffer buffer, Matrix4x4 transform, float pixel)
+    /// <summary>Switches the texture sampled by glyph and image primitives.</summary>
+    public void BindTexture(CommandBuffer cmd, DescriptorSet texture) =>
+        _context.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Graphics, _layout, 0, 1, &texture, 0, null);
+
+    public void Draw(CommandBuffer cmd, PrimBuffer buffer, Matrix4x4 transform, float pixel, int first = 0, int count = -1)
     {
-        if (buffer.Count == 0) return;
+        if (count < 0) count = buffer.Count - first;
+        if (count <= 0) return;
 
         var vb = buffer.Handle;
         ulong offset = 0;
@@ -123,7 +128,7 @@ public sealed unsafe class PrimitiveRenderer : IDisposable
 
         var pc = new PushConstants { Transform = transform, Pixel = pixel };
         _context.Vk.CmdPushConstants(cmd, _layout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(PushConstants), &pc);
-        _context.Vk.CmdDraw(cmd, 6, (uint)buffer.Count, 0, 0);
+        _context.Vk.CmdDraw(cmd, 6, (uint)count, 0, (uint)first);
     }
 
     private void CreatePipeline(RenderPass renderPass)

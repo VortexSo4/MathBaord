@@ -431,6 +431,8 @@ public class QuickBar
         UiAction.Keyboard => Icons.Keyboard,
         UiAction.Shapes => Icons.Shapes,
         UiAction.Grid => Icons.Grid,
+        UiAction.Screenshot => Icons.Screenshot,
+        UiAction.InsertImage => Icons.Picture,
         _ => Icons.Palette
     };
 }
