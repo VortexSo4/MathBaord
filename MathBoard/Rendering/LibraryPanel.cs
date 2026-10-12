@@ -22,6 +22,7 @@ public class LibraryPanel : IDisposable
     private readonly StrokeRenderer _renderer;
     private readonly LibraryManager _libraryManager;
     private readonly SettingsPanel _settingsPanel;
+    private readonly Updater _updater;
     public SettingsPanel SettingsPanel => _settingsPanel;
 
     private FileNode? _rootNode;
@@ -43,6 +44,11 @@ public class LibraryPanel : IDisposable
     // Runs after the board was saved or discarded in the "unsaved board" prompt.
     private Action? _pendingAction;
     private List<string> _logLines = new();
+    private float _logScroll;
+    private bool _logDragging;
+    private Vector2 _logDragStart;
+    private float _logDragScroll;
+    private const float LogLineHeight = 18f;
 
     private readonly TextBoxState _textBox = new()
     {
@@ -84,11 +90,12 @@ public class LibraryPanel : IDisposable
 
     public bool IsDragging => _isDragging;
 
-    public LibraryPanel(StrokeRenderer renderer, LibraryManager libraryManager)
+    public LibraryPanel(StrokeRenderer renderer, LibraryManager libraryManager, Updater updater)
     {
         _renderer = renderer;
         _libraryManager = libraryManager;
-        _settingsPanel = new SettingsPanel(renderer);
+        _updater = updater;
+        _settingsPanel = new SettingsPanel(renderer, updater);
         _settingsPanel.OnOpenLog = OpenLogDialog;
         RefreshTree();
     }
@@ -258,9 +265,6 @@ public class LibraryPanel : IDisposable
 
         switch (_dialogMode)
         {
-            case DialogMode.Log:
-                RenderLog(ui);
-                break;
             case DialogMode.PickLocation:
                 RenderLocationPicker(ui);
                 break;
@@ -288,10 +292,6 @@ public class LibraryPanel : IDisposable
                     _ => Localization.Get("dialog_create_folder_title", "Create Folder")
                 };
                 subtitle = Localization.Get("dialog_choose_location", "Choose a name and a folder");
-                break;
-            case DialogMode.Log:
-                title = Localization.Get("tooltip_open_log", "Latest Log");
-                subtitle = LogPath;
                 break;
             default:
                 title = _libraryManager.CurrentName ?? Localization.Get("canvas_untitled", "Untitled");
@@ -358,9 +358,11 @@ public class LibraryPanel : IDisposable
     {
         ui.Rect(new Vector2(12f, ListBottom), new Vector2(Width - 24f, 1f), Theme.Border);
         var pos = BottomButtonPos;
-        bool hover = (!IsModalOpen || _dialogMode == DialogMode.Log) && Hit(pos, BottomButtonSize);
+        bool hover = !IsModalOpen && Hit(pos, BottomButtonSize);
         ui.ButtonBackground(pos, BottomButtonSize, hover, UiBatch.ButtonKind.Ghost);
         ui.Icon(icon, pos + new Vector2(20f, BottomButtonSize.Y * 0.5f), 16f, Theme.TextSecondary);
+        if (_updater.Status == Updater.State.Available)
+            ui.Circle(pos + new Vector2(28f, BottomButtonSize.Y * 0.5f - 8f), 4f, Theme.Accent);
         ui.TextInRect(label, pos + new Vector2(40f, 0), new Vector2(BottomButtonSize.X - 48f, BottomButtonSize.Y),
             Theme.Text, Theme.Body);
     }
@@ -530,25 +532,62 @@ public class LibraryPanel : IDisposable
         return (new Vector2(12f, y), new Vector2(24f + size.X, y), size);
     }
 
-    private void RenderLog(UiBatch ui)
+    private (Vector2 Pos, Vector2 Size) LogRect()
     {
-        const float lineHeight = 18f;
-        float top = HeaderHeight + 8f;
-        float height = ListBottom - top;
-        _contentHeight = _logLines.Count * lineHeight;
-        _scrollY = Math.Clamp(_scrollY, 0f, MathF.Max(0f, _contentHeight - height));
+        var size = new Vector2(MathF.Min(960f, _screenSize.X - 48f), MathF.Max(200f, _screenSize.Y - 64f));
+        return ((_screenSize - size) * 0.5f, size);
+    }
 
-        ui.PushClip(new Vector2(0, top), new Vector2(Width - 1f, height));
-        int first = (int)(_scrollY / lineHeight);
+    private (Vector2 Close, Vector2 Folder, Vector2 Size) LogButtons()
+    {
+        var (pos, size) = LogRect();
+        var btn = new Vector2(150f, 38f);
+        float y = pos.Y + size.Y - 16f - btn.Y;
+        return (new Vector2(pos.X + size.X - 20f - btn.X, y), new Vector2(pos.X + 20f, y), btn);
+    }
+
+    private (Vector2 Pos, Vector2 Size) LogTextRect()
+    {
+        var (pos, size) = LogRect();
+        return (pos + new Vector2(20f, 64f), new Vector2(size.X - 40f, size.Y - 64f - 70f));
+    }
+
+    private float MaxLogScroll => MathF.Max(0f, _logLines.Count * LogLineHeight - LogTextRect().Size.Y);
+
+    private void RenderLogPopup(UiBatch ui)
+    {
+        ui.Rect(Vector2.Zero, _screenSize, Theme.Overlay);
+        var (pos, size) = LogRect();
+        ui.Rect(pos, size, Theme.PopupBg, Theme.PopupRadius);
+        ui.Border(pos, size, Theme.Border, 1f, Theme.PopupRadius);
+        ui.TextInRect(Localization.Get("tooltip_open_log", "Latest Log"), pos + new Vector2(20f, 12f),
+            new Vector2(size.X - 40f, 26f), Theme.Text, Theme.Title);
+        ui.TextInRect(LogPath, pos + new Vector2(20f, 36f), new Vector2(size.X - 40f, 20f), Theme.TextMuted, Theme.Small);
+
+        var (textPos, textSize) = LogTextRect();
+        _logScroll = Math.Clamp(_logScroll, 0f, MaxLogScroll);
+        ui.Rect(textPos, textSize, Theme.Field, 8f);
+        ui.PushClip(textPos + new Vector2(0, 4f), textSize - new Vector2(0, 8f));
+        int first = (int)(_logScroll / LogLineHeight);
         for (int i = first; i < _logLines.Count; i++)
         {
-            float y = top + i * lineHeight - _scrollY;
-            if (y > top + height) break;
-            ui.TextInRect(_logLines[i], new Vector2(12f, y), new Vector2(Width - 24f, lineHeight), Theme.TextSecondary, Theme.Small);
+            float y = textPos.Y + 6f + i * LogLineHeight - _logScroll;
+            if (y > textPos.Y + textSize.Y) break;
+            ui.TextInRect(_logLines[i], new Vector2(textPos.X + 12f, y), new Vector2(textSize.X - 30f, LogLineHeight),
+                Theme.TextSecondary, Theme.Small);
         }
 
         ui.PopClip();
-        RenderBottomBar(ui, Icons.Close, Localization.Get("dialog_button_close", "Close"));
+        if (MaxLogScroll > 0)
+        {
+            float h = MathF.Max(36f, textSize.Y * textSize.Y / (textSize.Y + MaxLogScroll));
+            float y = textPos.Y + _logScroll / MaxLogScroll * (textSize.Y - h);
+            ui.Rect(new Vector2(textPos.X + textSize.X - 10f, y), new Vector2(6f, h), Theme.Border, 3f);
+        }
+
+        var (closePos, folderPos, btnSize) = LogButtons();
+        ui.TextButton(Localization.Get("log_open_folder", "Show file"), folderPos, btnSize, Hit(folderPos, btnSize), UiBatch.ButtonKind.Secondary);
+        ui.TextButton(Localization.Get("dialog_button_close", "Close"), closePos, btnSize, Hit(closePos, btnSize), UiBatch.ButtonKind.Primary);
     }
 
     public void RenderOverlay(UiBatch ui, Vector2 screenSize)
@@ -556,6 +595,7 @@ public class LibraryPanel : IDisposable
         _screenSize = screenSize;
 
         if (IsPopupDialog) RenderPopupDialog(ui);
+        if (_dialogMode == DialogMode.Log) RenderLogPopup(ui);
         if (_settingsPanel.IsOpen) _settingsPanel.Render(ui, screenSize);
         if (_isDragging && _dragNode != null) RenderDragCard(ui);
 
@@ -765,7 +805,6 @@ public class LibraryPanel : IDisposable
     public void OpenLogDialog()
     {
         _dialogMode = DialogMode.Log;
-        IsOpen = true;
         _logLines.Clear();
         try
         {
@@ -780,7 +819,7 @@ public class LibraryPanel : IDisposable
             _logLines.Add($"Error reading log: {ex.Message}");
         }
 
-        _scrollY = MathF.Max(0f, _logLines.Count * 18f);
+        _logScroll = float.MaxValue;
         _renderer.SetDirty();
     }
 
@@ -845,7 +884,6 @@ public class LibraryPanel : IDisposable
 
     private void CloseDialog()
     {
-        if (_dialogMode == DialogMode.Log) _scrollY = 0;
         _dialogMode = DialogMode.None;
         _dialogTargetNode = null;
         _selectedDestDir = null;
@@ -890,14 +928,22 @@ public class LibraryPanel : IDisposable
             return;
         }
 
-        if (!IsOpen || pos.X >= Width) return;
-
         if (_dialogMode == DialogMode.Log)
         {
-            if (Hit(BottomButtonPos, BottomButtonSize)) CancelDialog();
-            else BeginPress(Press.Scroll, null, pos);
+            var (closePos, folderPos, btnSize) = LogButtons();
+            if (UiBatch.Contains(closePos, btnSize, pos)) CancelDialog();
+            else if (UiBatch.Contains(folderPos, btnSize, pos)) ShowLogFile();
+            else
+            {
+                _logDragging = true;
+                _logDragStart = pos;
+                _logDragScroll = _logScroll;
+            }
+
             return;
         }
+
+        if (!IsOpen || pos.X >= Width) return;
 
         if (_dialogMode == DialogMode.PickLocation)
         {
@@ -954,6 +1000,18 @@ public class LibraryPanel : IDisposable
         return null;
     }
 
+    private static void ShowLogFile()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{LogPath}\"");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Could not open Explorer: {ex.Message}");
+        }
+    }
+
     public void HandleMouseMove(Vector2 pos)
     {
         bool changed = Vector2.DistanceSquared(pos, _mousePos) > 0.01f;
@@ -962,6 +1020,13 @@ public class LibraryPanel : IDisposable
         if (_settingsPanel.IsOpen)
         {
             _settingsPanel.HandleMouseMove(pos);
+            return;
+        }
+
+        if (_dialogMode == DialogMode.Log)
+        {
+            if (_logDragging) _logScroll = Math.Clamp(_logDragScroll - (pos.Y - _logDragStart.Y), 0f, MaxLogScroll);
+            _renderer.SetDirty();
             return;
         }
 
@@ -997,6 +1062,8 @@ public class LibraryPanel : IDisposable
             _settingsPanel.HandleMouseUp(pos);
             return;
         }
+
+        _logDragging = false;
 
         var press = _press;
         var node = _pressNode;
@@ -1099,6 +1166,13 @@ public class LibraryPanel : IDisposable
         if (_settingsPanel.IsOpen)
         {
             _settingsPanel.HandleScroll(delta);
+            return;
+        }
+
+        if (_dialogMode == DialogMode.Log)
+        {
+            _logScroll = Math.Clamp(_logScroll - delta * 40f, 0f, MaxLogScroll);
+            _renderer.SetDirty();
             return;
         }
 

@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using MathBoard.Graphics;
 using MathBoard.Rendering;
+using Silk.NET.GLFW;
 using Silk.NET.Windowing;
 
 namespace MathBoard.Core;
@@ -16,6 +17,7 @@ public sealed partial class BoardApp : IDisposable
     private readonly StrokeRenderer _strokeRenderer;
     private readonly LibraryManager _libraryManager;
     private readonly InputManager _inputManager;
+    private readonly Updater _updater = new();
     private bool _renderFailed;
 
     public BoardApp(IWindow window, IRenderBackend backend)
@@ -30,7 +32,7 @@ public sealed partial class BoardApp : IDisposable
         var radialMenu = new RadialMenu(_strokeRenderer);
         _strokeRenderer.SetRadialMenu(radialMenu);
         _libraryManager = new LibraryManager(_document, _strokeRenderer);
-        var libraryPanel = new LibraryPanel(_strokeRenderer, _libraryManager);
+        var libraryPanel = new LibraryPanel(_strokeRenderer, _libraryManager, _updater);
         _strokeRenderer.SetLibraryPanel(libraryPanel);
         _inputManager = new InputManager(window, _strokeRenderer, _camera, _document, radialMenu, _libraryManager, libraryPanel);
         _strokeRenderer.SetQuickBar(_inputManager.QuickBar);
@@ -38,6 +40,14 @@ public sealed partial class BoardApp : IDisposable
         window.FramebufferResize += _ => _strokeRenderer.SetDirty();
         _libraryManager.OpenLastFile();
         libraryPanel.RefreshTree();
+
+        _updater.Changed += () =>
+        {
+            _inputManager.QuickBar.LibraryBadge = _updater.Status == Updater.State.Available;
+            _strokeRenderer.SetDirty();
+            GlfwProvider.GLFW.Value.PostEmptyEvent();
+        };
+        if (Settings.CheckUpdates) _updater.Check();
     }
 
     /// <summary>How long the main loop may block waiting for input before calling <see cref="Render"/> again.</summary>
@@ -58,6 +68,13 @@ public sealed partial class BoardApp : IDisposable
     {
         var size = _window.FramebufferSize;
         if (size.X == 0 || size.Y == 0) return false;
+
+        // The installer waits for the files to be released; Closing saves the document.
+        if (_updater.Status == Updater.State.Installing)
+        {
+            _window.Close();
+            return false;
+        }
 
         UpdateViewport();
         _inputManager.Update(dt);

@@ -27,6 +27,13 @@ public readonly ref struct FrameData
     /// </summary>
     public int StrokesStable { get; init; }
 
+    /// <summary>
+    /// Primitives in logical screen space drawn below the strokes (grid, labels). They follow the camera, so a cache
+    /// that is shifted with the camera stays valid until <see cref="BackgroundVersion"/> changes.
+    /// </summary>
+    public ReadOnlySpan<Prim> Background { get; init; }
+    public int BackgroundVersion { get; init; }
+
     /// <summary>Interface primitives in logical screen space, in draw order.</summary>
     public ReadOnlySpan<Prim> Ui { get; init; }
 

@@ -30,6 +30,7 @@ public static class Settings
         public const string RenderBackend = "Auto";
         public const float UiScale = 0f;
         public const string OnScreenKeyboard = "Auto";
+        public const string GridMode = "None";
 
         public const float RadialMenuLongPressThreshold = 1.0f;
         public const float RadialMenuOpenThreshold = 0.3f;
@@ -57,13 +58,15 @@ public static class Settings
             new(UiAction.Undo, 1f, 0f, -138f, 34f),
             new(UiAction.Redo, 1f, 0f, -86f, 34f),
             new(UiAction.Save, 1f, 0f, -34f, 34f),
-            new(UiAction.Brush, 1f, 0.5f, -34f, -78f),
-            new(UiAction.Eraser, 1f, 0.5f, -34f, -26f),
-            new(UiAction.Select, 1f, 0.5f, -34f, 26f),
-            new(UiAction.Pan, 1f, 0.5f, -34f, 78f),
+            new(UiAction.Brush, 1f, 0.5f, -34f, -104f),
+            new(UiAction.Eraser, 1f, 0.5f, -34f, -52f),
+            new(UiAction.Shapes, 1f, 0.5f, -34f, 0f),
+            new(UiAction.Select, 1f, 0.5f, -34f, 52f),
+            new(UiAction.Pan, 1f, 0.5f, -34f, 104f),
             new(UiAction.Color1, 0.5f, 1f, -52f, -34f),
             new(UiAction.Color2, 0.5f, 1f, 0f, -34f),
             new(UiAction.Color3, 0.5f, 1f, 52f, -34f),
+            new(UiAction.Grid, 1f, 1f, -190f, -34f),
             new(UiAction.ZoomOut, 1f, 1f, -138f, -34f),
             new(UiAction.FitView, 1f, 1f, -86f, -34f),
             new(UiAction.ZoomIn, 1f, 1f, -34f, -34f)
@@ -91,6 +94,12 @@ public static class Settings
     public static Setting<string> OnScreenKeyboard { get; } = new(Defaults.OnScreenKeyboard);
 
     public static Setting<string> LastOpenedFile { get; } = new("");
+
+    /// <summary>Look for a newer release on GitHub at startup.</summary>
+    public static Setting<bool> CheckUpdates { get; } = new(true);
+
+    /// <summary>Background grid: "None", "Squares" or "Axes". It is not part of the document.</summary>
+    public static Setting<string> GridMode { get; } = new(Defaults.GridMode);
 
     /// <summary>Names of the backend plugins found at startup (not persisted).</summary>
     public static List<string> AvailableBackends { get; set; } = [];

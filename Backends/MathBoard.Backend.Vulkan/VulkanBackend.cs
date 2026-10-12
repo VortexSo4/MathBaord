@@ -16,6 +16,7 @@ public sealed unsafe class VulkanBackend : IRenderBackend
     private PrimitiveRenderer? _primitives;
     private PrimBuffer? _strokes;
     private PrimBuffer? _ui;
+    private PrimBuffer? _background;
 
     private CommandPool _commandPool;
     private CommandBuffer _cmd;
@@ -70,6 +71,7 @@ public sealed unsafe class VulkanBackend : IRenderBackend
         _primitives = new PrimitiveRenderer(_context, _renderPass.RenderPass, _atlas.DescriptorSetLayout);
         _strokes = new PrimBuffer(_context);
         _ui = new PrimBuffer(_context);
+        _background = new PrimBuffer(_context);
 
         window.FramebufferResize += _ => _resized = true;
     }
@@ -116,6 +118,7 @@ public sealed unsafe class VulkanBackend : IRenderBackend
         _atlas!.Stage(frame.AtlasPixels, frame.AtlasSize, frame.AtlasDirtyTop, frame.AtlasDirtyBottom);
         _strokes!.Update(frame.Strokes, frame.StrokesDirtyFrom);
         _ui!.Update(frame.Ui, 0);
+        _background!.Update(frame.Background, 0);
 
         uint imageIndex = 0;
         var acquire = _swapchain!.KhrSwapchain.AcquireNextImage(device, _swapchain.Swapchain, 1_000_000_000,
@@ -199,6 +202,7 @@ public sealed unsafe class VulkanBackend : IRenderBackend
         var uiTransform = Matrix4x4.CreateScale(scale, scale, 1f) * proj;
 
         _primitives!.Bind(_cmd, extent, _atlas.DescriptorSet);
+        _primitives.Draw(_cmd, _background!, uiTransform, 1f / scale);
         _primitives.Draw(_cmd, _strokes!, strokeTransform, 1f / zoom);
         _primitives.Draw(_cmd, _ui!, uiTransform, 1f / scale);
 
@@ -216,6 +220,7 @@ public sealed unsafe class VulkanBackend : IRenderBackend
             vk.DeviceWaitIdle(device);
             _strokes?.Dispose();
             _ui?.Dispose();
+            _background?.Dispose();
             _primitives?.Dispose();
             _atlas?.Dispose();
             if (_renderFinished.Length > 0) DestroyRenderFinishedSemaphores();

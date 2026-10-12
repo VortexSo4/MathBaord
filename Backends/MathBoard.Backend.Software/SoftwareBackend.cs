@@ -19,12 +19,16 @@ public sealed partial class SoftwareBackend : IRenderBackend
     private SKCanvas? _frameCanvas;
     private SKBitmap? _layer, _spareLayer;
     private SKBitmap? _atlas;
+    // Drawing an SKBitmap copies it into a temporary image on every call, which for the 1 MB atlas made each
+    // glyph cost a full copy. Images that wrap the pixels are drawn without copying.
+    private SKImage? _atlasImage;
 
     // State the stroke layer was rendered with.
     private bool _layerValid;
     private Vector2 _layerCamera;
     private float _layerZoom;
     private Vector4 _layerClear;
+    private int _layerBackground;
     private int _baked;
 
     private readonly SKPaint _fill = new() { IsAntialias = true, Style = SKPaintStyle.Fill };
@@ -66,7 +70,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
 
         var canvas = _frameCanvas!;
         canvas.ResetMatrix();
-        canvas.DrawBitmap(_layer, 0, 0);
+        DrawWrapped(canvas, _layer!, 0, 0);
 
         float scale = frame.UiScale;
         canvas.SetMatrix(CameraMatrix(frame.CameraPosition, frame.CameraZoom, scale));
@@ -81,6 +85,12 @@ public sealed partial class SoftwareBackend : IRenderBackend
         return true;
     }
 
+    private static void DrawWrapped(SKCanvas canvas, SKBitmap bitmap, float x, float y)
+    {
+        using var image = SKImage.FromPixels(bitmap.PeekPixels());
+        canvas.DrawImage(image, x, y);
+    }
+
     private static SKMatrix CameraMatrix(Vector2 camera, float zoom, float scale) =>
         new(zoom * scale, 0, camera.X * scale, 0, zoom * scale, camera.Y * scale, 0, 0, 1);
 
@@ -91,7 +101,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
         BuildPaths(frame.Strokes, stable);
 
         bool sameView = _layerValid && _layerZoom == frame.CameraZoom * frame.UiScale && _layerClear == frame.ClearColor &&
-                        frame.StrokesDirtyFrom >= _baked;
+                        _layerBackground == frame.BackgroundVersion && frame.StrokesDirtyFrom >= _baked;
         var shift = (frame.CameraPosition - _layerCamera) * frame.UiScale;
         var whole = new Vector2(MathF.Round(shift.X), MathF.Round(shift.Y));
         var matrix = CameraMatrix(frame.CameraPosition, frame.CameraZoom, frame.UiScale);
@@ -120,7 +130,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
             if (canShift)
             {
                 // Only the strips uncovered by the shift need the strokes again.
-                canvas.DrawBitmap(_layer, whole.X, whole.Y);
+                DrawWrapped(canvas, _layer, whole.X, whole.Y);
                 regions.Clear();
                 if (whole.X > 0) regions.Add(new SKRect(0, 0, whole.X, h));
                 if (whole.X < 0) regions.Add(new SKRect(w + whole.X, 0, w, h));
@@ -132,6 +142,10 @@ public sealed partial class SoftwareBackend : IRenderBackend
             {
                 canvas.Save();
                 canvas.ClipRect(region);
+                canvas.SetMatrix(SKMatrix.CreateScale(frame.UiScale, frame.UiScale));
+                _canvasClip = Prim.NoClip;
+                foreach (var prim in frame.Background) DrawPrim(canvas, prim);
+                SetClip(canvas, Prim.NoClip);
                 canvas.SetMatrix(matrix);
                 DrawPaths(canvas, matrix, [region], 0);
                 canvas.Restore();
@@ -143,6 +157,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
         _layerCamera = frame.CameraPosition;
         _layerZoom = frame.CameraZoom * frame.UiScale;
         _layerClear = frame.ClearColor;
+        _layerBackground = frame.BackgroundVersion;
         _baked = stable;
         _bakedPaths = _paths.Count;
     }
@@ -261,12 +276,12 @@ public sealed partial class SoftwareBackend : IRenderBackend
                 }
                 else canvas.DrawLine(p.A.X, p.A.Y, p.A.Z, p.A.W, _stroke);
                 break;
-            case PrimType.Glyph when _atlas != null:
+            case PrimType.Glyph when _atlasImage != null:
             {
-                float s = _atlas.Width;
+                float s = _atlasImage.Width;
                 var src = new SKRect(p.Extra.X * s, p.Extra.Y * s, p.Extra.Z * s, p.Extra.W * s);
                 _glyph.Color = color;
-                canvas.DrawBitmap(_atlas, src, rect, _glyph);
+                canvas.DrawImage(_atlasImage, src, rect, SKSamplingOptions.Default, _glyph);
                 break;
             }
             case PrimType.Arc:
@@ -351,6 +366,8 @@ public sealed partial class SoftwareBackend : IRenderBackend
         frame.AtlasPixels.Slice(top * size, (bottom - top) * size)
             .CopyTo(new Span<byte>((byte*)_atlas.GetPixels() + top * size, (bottom - top) * size));
         _atlas.NotifyPixelsChanged();
+        _atlasImage?.Dispose();
+        _atlasImage = SKImage.FromPixels(_atlas.PeekPixels());
     }
 
     private static SKColor ToColor(Vector4 c) => new(
@@ -407,6 +424,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
     {
         ClearPaths();
         DisposeSurfaces();
+        _atlasImage?.Dispose();
         _atlas?.Dispose();
         _fill.Dispose();
         _stroke.Dispose();

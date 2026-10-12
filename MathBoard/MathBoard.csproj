@@ -8,6 +8,8 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <ApplicationIcon>resources\icon.ico</ApplicationIcon>
+        <!-- Shown in the log and compared with GitHub releases by the updater. -->
+        <Version>1.1.0</Version>
     </PropertyGroup>
 
     <ItemGroup>
@@ -46,7 +48,7 @@
         <PropertyGroup>
             <BackendsAppDir Condition="'$(BackendsAppDir)' == ''">$(MSBuildProjectDirectory)\$(OutDir)</BackendsAppDir>
         </PropertyGroup>
-        <MSBuild Projects="%(BackendProject.Identity)" Targets="Publish"
+        <MSBuild Projects="%(BackendProject.Identity)" Targets="Publish" RemoveProperties="RuntimeIdentifier;SelfContained"
                  Properties="Configuration=$(Configuration);PublishDir=$(BackendsAppDir)backends\%(BackendProject.Filename)\" />
         <ItemGroup>
             <BackendFile Include="$(BackendsAppDir)backends\*\*.dll" />

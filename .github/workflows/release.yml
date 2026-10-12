@@ -1,0 +1,31 @@
+# Pushing a tag like v1.2.0 builds the installer and publishes it as a GitHub release, where the in-app updater finds it.
+# The tag must match <Version> in MathBoard/MathBoard.csproj.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = (dotnet msbuild MathBoard/MathBoard.csproj -getProperty:Version).Trim()
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} does not match version $version" }
+          ./scripts/build-installer.ps1
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create ${{ github.ref_name }} installer/*.exe --title "MathBoard ${{ github.ref_name }}" --generate-notes

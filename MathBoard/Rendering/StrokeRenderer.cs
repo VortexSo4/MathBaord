@@ -10,10 +10,15 @@ public enum Tool
     Brush,
     Eraser,
     Select,
-    Pan
+    Pan,
+    Shape
 }
 
-public sealed class StrokeRenderer : IDisposable
+/// <summary>
+/// The board: drawing, erasing, shapes and selection, plus turning the document and the interface into
+/// primitives for the render backend. Selection and shapes live in the other partial files.
+/// </summary>
+public sealed partial class StrokeRenderer : IDisposable
 {
     // New input points closer than this (in screen pixels) to the previous one are dropped.
     private const float MinPointSpacingPx = 1.5f;
@@ -26,11 +31,13 @@ public sealed class StrokeRenderer : IDisposable
     private readonly TextAtlas _textAtlas = new();
     private readonly UiBatch _ui;
 
-    // Stroke primitives in document order; the backend uploads the range changed since the last presented frame.
+    // World primitives: objects first (below the ink), then strokes, then the stroke or shape being drawn.
+    // The backend uploads the range changed since the last presented frame.
     private Prim[] _strokePrims = new Prim[4096];
     private int _strokePrimCount;
     private int _strokesDirtyFrom;
     private bool _framePending;
+    private readonly List<Prim> _scratch = new();
 
     private LibraryPanel? _libraryPanel;
     private readonly List<IOverlay> _overlays = new();
@@ -55,32 +62,12 @@ public sealed class StrokeRenderer : IDisposable
     public bool IsQuickShapeApplied { get; set; }
     public Vector2? HoverPosition { get; set; }
 
-    public bool IsSelectMode => Tool == Tool.Select;
-    public List<Stroke> SelectedStrokes { get; } = new();
-
-    public enum SelectionState
-    {
-        None,
-        DrawingBox,
-        Moving,
-        Scaling,
-        Rotating
-    }
-
-    public SelectionState CurrentSelectionState { get; set; } = SelectionState.None;
-
-    private Vector2 _selectionStartScreen;
-    private Vector2 _selectionEndScreen;
-    private int _activeHandle = -1;
-    private Dictionary<Stroke, List<Vector2>> _originalPoints = new();
-    private (Vector2 Min, Vector2 Max) _originalBounds;
-    private Vector2 _startMouseWorld;
-
     public StrokeRenderer(Document document, Camera camera)
     {
         _document = document;
         _camera = camera;
         _ui = new UiBatch(_textAtlas);
+        _background = new UiBatch(_textAtlas);
 
         CurrentBrushWidth = Settings.DefaultBrushWidth;
         _eraserSize = Settings.DefaultEraserSize;
@@ -123,11 +110,12 @@ public sealed class StrokeRenderer : IDisposable
         _uiDirty = true;
     }
 
-    public bool NeedsRedraw => _uiDirty || _strokesDirty || _activeDirtyFrom >= 0 || _framePending;
+    public bool NeedsRedraw => _uiDirty || _strokesDirty || _activeDirtyFrom >= 0 || _liveDirty || _framePending;
 
     public void SetTool(Tool tool)
     {
         if (Tool == tool) return;
+        CancelShape();
         Tool = tool;
         ClearSelection();
     }
@@ -152,22 +140,30 @@ public sealed class StrokeRenderer : IDisposable
         float left = _libraryPanel?.IsOpen == true ? _libraryPanel.Width : 0f;
         var viewCenter = new Vector2((left + screen.X) * 0.5f, screen.Y * 0.5f);
 
-        if (_document.Strokes.Count == 0)
+        Vector2 min = new(float.MaxValue), max = new(float.MinValue);
+        foreach (var s in _document.Strokes)
+        {
+            var b = GetBoundingBox(s.Points);
+            float r = s.Width * 0.5f;
+            min = Vector2.Min(min, b.Min - new Vector2(r));
+            max = Vector2.Max(max, b.Max + new Vector2(r));
+        }
+
+        foreach (var o in _document.Objects)
+        {
+            if (o.Kind is ShapeKind.Ray or ShapeKind.InfiniteLine) continue;
+            var b = ObjectGeometry.Bounds(o);
+            min = Vector2.Min(min, b.Min);
+            max = Vector2.Max(max, b.Max);
+        }
+
+        if (min.X > max.X)
         {
             _camera.Zoom = 1f;
             _camera.Position = viewCenter;
         }
         else
         {
-            Vector2 min = new(float.MaxValue), max = new(float.MinValue);
-            foreach (var s in _document.Strokes)
-            {
-                var b = GetBoundingBox(s.Points);
-                float r = s.Width * 0.5f;
-                min = Vector2.Min(min, b.Min - new Vector2(r));
-                max = Vector2.Max(max, b.Max + new Vector2(r));
-            }
-
             var size = Vector2.Max(max - min, new Vector2(1f));
             var available = new Vector2(screen.X - left, screen.Y) * 0.85f;
             _camera.Zoom = Math.Clamp(MathF.Min(available.X / size.X, available.Y / size.Y),
@@ -207,6 +203,12 @@ public sealed class StrokeRenderer : IDisposable
             return;
         }
 
+        if (_recognized != null)
+        {
+            ResizeRecognizedShape(ScreenToWorld(screenPos));
+            return;
+        }
+
         if (_activeStroke == null) return;
         var world = ScreenToWorld(screenPos);
         if (Vector2.Distance(world, _rawTail[^1]) * _camera.Zoom < MinPointSpacingPx) return;
@@ -237,6 +239,12 @@ public sealed class StrokeRenderer : IDisposable
 
     public void EndStroke()
     {
+        if (_recognized != null)
+        {
+            CommitLiveObject();
+            _recognized = null;
+        }
+
         if (_activeStroke != null && _rawTail.Count >= 2)
         {
             var pts = _activeStroke.Points;
@@ -253,9 +261,18 @@ public sealed class StrokeRenderer : IDisposable
         IsQuickShapeApplied = false;
     }
 
-    /// <summary>Removes the stroke being drawn as if it was never started.</summary>
+    /// <summary>Removes the stroke being drawn (or the shape it became) as if it was never started.</summary>
     public void CancelStroke()
     {
+        if (_recognized != null)
+        {
+            _recognized = null;
+            _liveObject = null;
+            _document.DiscardLastState();
+            MarkStrokesDirty();
+            return;
+        }
+
         if (_activeStroke == null) return;
         _document.Strokes.Remove(_activeStroke);
         _document.DiscardLastState();
@@ -307,16 +324,40 @@ public sealed class StrokeRenderer : IDisposable
         for (int i = _document.Strokes.Count - 1; i >= 0; i--)
         {
             if (!IsStrokeHitByEraser(_document.Strokes[i], worldPos, _eraserSize)) continue;
-            if (!_eraseStateSaved)
-            {
-                _document.SaveState();
-                _eraseStateSaved = true;
-            }
-
+            SaveEraseState();
             _document.Strokes.RemoveAt(i);
-            _document.IsDirty = true;
             MarkStrokesDirty();
         }
+
+        for (int i = _document.Objects.Count - 1; i >= 0; i--)
+        {
+            var o = _document.Objects[i];
+            // A plot counts as hit only near its drawing, not anywhere inside its frame.
+            float distance = o.Kind == ShapeKind.Plot ? PlotEdgeDistance(o, worldPos) : ObjectGeometry.Distance(o, worldPos);
+            if (distance > _eraserSize) continue;
+            SaveEraseState();
+            _document.Objects.RemoveAt(i);
+            MarkStrokesDirty();
+        }
+    }
+
+    private static float PlotEdgeDistance(BoardObject plot, Vector2 world)
+    {
+        var p = plot.Points;
+        var corner = p[1] + p[2] - p[0];
+        return MathF.Min(MathF.Min(PointToSegmentDistance(world, p[0], p[1]), PointToSegmentDistance(world, p[0], p[2])),
+            MathF.Min(PointToSegmentDistance(world, p[1], corner), PointToSegmentDistance(world, p[2], corner)));
+    }
+
+    private void SaveEraseState()
+    {
+        if (!_eraseStateSaved)
+        {
+            _document.SaveState();
+            _eraseStateSaved = true;
+        }
+
+        _document.IsDirty = true;
     }
 
     private static bool IsStrokeHitByEraser(Stroke stroke, Vector2 eraserPos, float eraserRadius)
@@ -350,256 +391,40 @@ public sealed class StrokeRenderer : IDisposable
     public void ClearAll()
     {
         EndStroke();
+        CancelShape();
         _document.SaveState();
         _document.Strokes.Clear();
-        SelectedStrokes.Clear();
+        _document.Objects.Clear();
+        ClearSelection();
         MarkStrokesDirty();
     }
 
     public void Undo()
     {
         EndStroke();
+        CancelShape();
         if (_document.Undo()) OnDocumentReplaced();
     }
 
     public void Redo()
     {
         EndStroke();
+        CancelShape();
         if (_document.Redo()) OnDocumentReplaced();
     }
 
-    /// <summary>Call after the document's strokes were replaced wholesale (undo, load, new file).</summary>
+    /// <summary>Call after the document's contents were replaced wholesale (undo, load, new file).</summary>
     public void OnDocumentReplaced()
     {
         _activeStroke = null;
         _rawTail.Clear();
+        _recognized = null;
+        _liveObject = null;
+        _shapeMode = ShapeMode.None;
         SelectedStrokes.Clear();
+        SelectedObjects.Clear();
         CurrentSelectionState = SelectionState.None;
         MarkStrokesDirty();
-    }
-
-    // ---------------------------------------------------------------- selection
-
-    public void ClearSelection()
-    {
-        SelectedStrokes.Clear();
-        CurrentSelectionState = SelectionState.None;
-        _uiDirty = true;
-    }
-
-    public void DeleteSelection()
-    {
-        if (SelectedStrokes.Count == 0) return;
-        _document.SaveState();
-        var selected = SelectedStrokes.ToHashSet();
-        _document.Strokes.RemoveAll(selected.Contains);
-        ClearSelection();
-        MarkStrokesDirty();
-    }
-
-    private const float DeleteButtonSize = 36f;
-
-    /// <summary>Delete button shown next to the selection's top-right corner.</summary>
-    private Vector2 DeleteButtonPos()
-    {
-        var bbox = GetSelectedBounds();
-        var minS = WorldToScreen(bbox.Min) - new Vector2(4f);
-        var maxS = WorldToScreen(bbox.Max) + new Vector2(4f);
-        var pos = new Vector2(maxS.X + 10f, minS.Y - 10f - DeleteButtonSize);
-        return Vector2.Clamp(pos, new Vector2(4f), Vector2.Max(ScreenSize - new Vector2(DeleteButtonSize + 4f), new Vector2(4f)));
-    }
-
-    public void HandleSelectionDown(Vector2 screenPos)
-    {
-        if (SelectedStrokes.Count > 0 && UiBatch.Contains(DeleteButtonPos(), new Vector2(DeleteButtonSize), screenPos))
-        {
-            DeleteSelection();
-            return;
-        }
-
-        if (SelectedStrokes.Count > 0)
-        {
-            int handle = HitTestHandles(screenPos);
-            var bbox = GetSelectedBounds();
-            var minS = WorldToScreen(bbox.Min);
-            var maxS = WorldToScreen(bbox.Max);
-            bool insideBox = screenPos.X >= minS.X && screenPos.X <= maxS.X &&
-                             screenPos.Y >= minS.Y && screenPos.Y <= maxS.Y;
-
-            if (handle != -1 || insideBox)
-            {
-                _document.SaveState();
-                CurrentSelectionState = handle == -1 ? SelectionState.Moving
-                    : handle == 8 ? SelectionState.Rotating : SelectionState.Scaling;
-                _activeHandle = handle;
-                _originalPoints = SelectedStrokes.ToDictionary(s => s, s => s.Points);
-                _originalBounds = bbox;
-                _startMouseWorld = ScreenToWorld(screenPos);
-                return;
-            }
-        }
-
-        SelectedStrokes.Clear();
-        CurrentSelectionState = SelectionState.DrawingBox;
-        _selectionStartScreen = screenPos;
-        _selectionEndScreen = screenPos;
-        _uiDirty = true;
-    }
-
-    public void HandleSelectionMove(Vector2 screenPos)
-    {
-        if (CurrentSelectionState == SelectionState.DrawingBox)
-        {
-            _selectionEndScreen = screenPos;
-            _uiDirty = true;
-            return;
-        }
-
-        if (CurrentSelectionState == SelectionState.None) return;
-
-        var mouseWorld = ScreenToWorld(screenPos);
-        Matrix3x2 m = Matrix3x2.Identity;
-
-        if (CurrentSelectionState == SelectionState.Moving)
-        {
-            m = Matrix3x2.CreateTranslation(mouseWorld - _startMouseWorld);
-        }
-        else if (CurrentSelectionState == SelectionState.Scaling)
-        {
-            Vector2 minB = _originalBounds.Min;
-            Vector2 maxB = _originalBounds.Max;
-            float midX = (minB.X + maxB.X) / 2f;
-            float midY = (minB.Y + maxB.Y) / 2f;
-
-            Vector2 fixedCorner = _activeHandle switch
-            {
-                0 => maxB,
-                1 => new Vector2(midX, maxB.Y),
-                2 => new Vector2(minB.X, maxB.Y),
-                3 => new Vector2(maxB.X, midY),
-                4 => new Vector2(minB.X, midY),
-                5 => new Vector2(maxB.X, minB.Y),
-                6 => new Vector2(midX, minB.Y),
-                _ => minB
-            };
-
-            Vector2 newMin = minB;
-            Vector2 newMax = maxB;
-            if (_activeHandle is 0 or 3 or 5) newMin.X = mouseWorld.X;
-            if (_activeHandle is 2 or 4 or 7) newMax.X = mouseWorld.X;
-            if (_activeHandle is 0 or 1 or 2) newMin.Y = mouseWorld.Y;
-            if (_activeHandle is 5 or 6 or 7) newMax.Y = mouseWorld.Y;
-
-            Vector2 origSize = maxB - minB;
-            if (MathF.Abs(origSize.X) < 0.001f) origSize.X = 0.001f;
-            if (MathF.Abs(origSize.Y) < 0.001f) origSize.Y = 0.001f;
-            Vector2 scale = (newMax - newMin) / origSize;
-            if (!float.IsFinite(scale.X)) scale.X = 1;
-            if (!float.IsFinite(scale.Y)) scale.Y = 1;
-
-            m = Matrix3x2.CreateScale(scale, fixedCorner);
-        }
-        else if (CurrentSelectionState == SelectionState.Rotating)
-        {
-            Vector2 center = (_originalBounds.Min + _originalBounds.Max) * 0.5f;
-            float startAngle = MathF.Atan2(_startMouseWorld.Y - center.Y, _startMouseWorld.X - center.X);
-            float currentAngle = MathF.Atan2(mouseWorld.Y - center.Y, mouseWorld.X - center.X);
-            m = Matrix3x2.CreateRotation(currentAngle - startAngle, center);
-        }
-
-        foreach (var stroke in SelectedStrokes)
-            stroke.Points = _originalPoints[stroke].Select(p => Vector2.Transform(p, m)).ToList();
-
-        MarkStrokesDirty();
-    }
-
-    public void HandleSelectionUp(Vector2 screenPos)
-    {
-        if (CurrentSelectionState == SelectionState.DrawingBox)
-        {
-            var minS = Vector2.Min(_selectionStartScreen, screenPos);
-            var maxS = Vector2.Max(_selectionStartScreen, screenPos);
-
-            if ((maxS - minS).LengthSquared() < 25f)
-            {
-                var clickWorld = ScreenToWorld(screenPos);
-                Stroke? closest = null;
-                float minDist = float.MaxValue;
-                foreach (var s in _document.Strokes)
-                {
-                    if (s.Points.Count == 0) continue;
-                    for (int i = 0; i < Math.Max(1, s.Points.Count - 1); i++)
-                    {
-                        var b = s.Points[Math.Min(i + 1, s.Points.Count - 1)];
-                        float d = PointToSegmentDistance(clickWorld, s.Points[i], b) - s.Width * 0.5f;
-                        if (d < minDist)
-                        {
-                            minDist = d;
-                            closest = s;
-                        }
-                    }
-                }
-
-                if (closest != null && minDist < 10f / _camera.Zoom)
-                    SelectedStrokes.Add(closest);
-            }
-            else
-            {
-                var minW = ScreenToWorld(minS);
-                var maxW = ScreenToWorld(maxS);
-                foreach (var s in _document.Strokes)
-                {
-                    var bbox = GetBoundingBox(s.Points);
-                    if (bbox.Max.X >= minW.X && bbox.Min.X <= maxW.X &&
-                        bbox.Max.Y >= minW.Y && bbox.Min.Y <= maxW.Y)
-                    {
-                        SelectedStrokes.Add(s);
-                    }
-                }
-            }
-        }
-
-        CurrentSelectionState = SelectionState.None;
-        _uiDirty = true;
-    }
-
-    private int HitTestHandles(Vector2 screenPos)
-    {
-        var bbox = GetSelectedBounds();
-        var handles = GetHandlePositions(WorldToScreen(bbox.Min), WorldToScreen(bbox.Max));
-        for (int i = 0; i < handles.Length; i++)
-        {
-            if (Vector2.DistanceSquared(screenPos, handles[i]) < 14f * 14f)
-                return i;
-        }
-
-        return -1;
-    }
-
-    private static Vector2[] GetHandlePositions(Vector2 minS, Vector2 maxS)
-    {
-        float midX = (minS.X + maxS.X) / 2, midY = (minS.Y + maxS.Y) / 2;
-        return
-        [
-            new(minS.X, minS.Y), new(midX, minS.Y), new(maxS.X, minS.Y),
-            new(minS.X, midY), new(maxS.X, midY),
-            new(minS.X, maxS.Y), new(midX, maxS.Y), new(maxS.X, maxS.Y),
-            new(midX, minS.Y - 32f)
-        ];
-    }
-
-    public (Vector2 Min, Vector2 Max) GetSelectedBounds()
-    {
-        if (SelectedStrokes.Count == 0) return (Vector2.Zero, Vector2.Zero);
-        Vector2 min = new(float.MaxValue), max = new(float.MinValue);
-        foreach (var s in SelectedStrokes)
-        {
-            var b = GetBoundingBox(s.Points);
-            min = Vector2.Min(min, b.Min);
-            max = Vector2.Max(max, b.Max);
-        }
-
-        return (min, max);
     }
 
     public static (Vector2 Min, Vector2 Max) GetBoundingBox(List<Vector2> points)
@@ -615,136 +440,7 @@ public sealed class StrokeRenderer : IDisposable
         return (min, max);
     }
 
-    // ---------------------------------------------------------------- quick shapes
-
-    public void ApplyQuickShape()
-    {
-        var stroke = _activeStroke;
-        if (stroke == null || stroke.Points.Count < 3) return;
-
-        var bbox = GetBoundingBox(stroke.Points);
-        float diag = (bbox.Max - bbox.Min).Length();
-        if (diag < 15f) return;
-
-        var simplified = RDP(stroke.Points, diag * 0.05f);
-        var distinct = new List<Vector2>();
-        foreach (var p in simplified)
-        {
-            if (distinct.Count == 0 || Vector2.Distance(distinct[^1], p) > 1f) distinct.Add(p);
-        }
-
-        if (distinct.Count < 2) return;
-
-        bool isClosed = distinct.Count > 2 &&
-                        Vector2.Distance(distinct[0], distinct[^1]) < diag * 0.25f;
-
-        if (isClosed)
-        {
-            var merged = (distinct[0] + distinct[^1]) * 0.5f;
-            distinct[0] = merged;
-            distinct.RemoveAt(distinct.Count - 1);
-
-            var corners = FilterCorners(distinct);
-
-            if (corners.Count == 3)
-                stroke.Points = [corners[0], corners[1], corners[2], corners[0]];
-            else if (corners.Count == 4)
-                stroke.Points = GenerateRectangle(bbox.Min, bbox.Max);
-            else
-                stroke.Points = GenerateCircle(bbox.Min, bbox.Max);
-        }
-        else
-        {
-            stroke.Points = [stroke.Points[0], stroke.Points[^1]];
-        }
-
-        _rawTail.Clear();
-        _rawTail.Add(stroke.Points[^1]);
-        _document.IsDirty = true;
-        MarkStrokesDirty();
-    }
-
-    private static List<Vector2> FilterCorners(List<Vector2> pts)
-    {
-        if (pts.Count <= 3) return pts.ToList();
-
-        var result = new List<Vector2>();
-        int n = pts.Count;
-        const float angleThreshold = MathF.PI / 7f;
-
-        for (int i = 0; i < n; i++)
-        {
-            var prev = pts[(i - 1 + n) % n];
-            var curr = pts[i];
-            var next = pts[(i + 1) % n];
-
-            var v1 = curr - prev;
-            var v2 = next - curr;
-            float len1 = v1.Length();
-            float len2 = v2.Length();
-            if (len1 < 0.001f || len2 < 0.001f) continue;
-
-            float cos = Math.Clamp(Vector2.Dot(v1, v2) / (len1 * len2), -1f, 1f);
-            if (MathF.Acos(cos) > angleThreshold)
-                result.Add(curr);
-        }
-
-        return result;
-    }
-
-    private static List<Vector2> RDP(List<Vector2> points, float epsilon)
-    {
-        if (points.Count < 3) return points.ToList();
-        float maxDist = 0;
-        int index = 0;
-        for (int i = 1; i < points.Count - 1; i++)
-        {
-            float d = PointToSegmentDistanceSq(points[i], points[0], points[^1]);
-            if (d > maxDist)
-            {
-                maxDist = d;
-                index = i;
-            }
-        }
-
-        List<Vector2> result = new();
-        if (maxDist > epsilon * epsilon)
-        {
-            var left = RDP(points.GetRange(0, index + 1), epsilon);
-            var right = RDP(points.GetRange(index, points.Count - index), epsilon);
-            result.AddRange(left.Take(left.Count - 1));
-            result.AddRange(right);
-        }
-        else
-        {
-            result.Add(points[0]);
-            result.Add(points[^1]);
-        }
-
-        return result;
-    }
-
-    private static List<Vector2> GenerateRectangle(Vector2 min, Vector2 max) =>
-        [new(min.X, min.Y), new(max.X, min.Y), new(max.X, max.Y), new(min.X, max.Y), new(min.X, min.Y)];
-
-    private static List<Vector2> GenerateCircle(Vector2 min, Vector2 max)
-    {
-        List<Vector2> pts = new();
-        Vector2 center = (min + max) * 0.5f;
-        float rx = (max.X - min.X) * 0.5f;
-        float ry = (max.Y - min.Y) * 0.5f;
-        const int segments = 96;
-        for (int i = 0; i < segments; i++)
-        {
-            float a = i * MathF.PI * 2f / segments;
-            pts.Add(center + new Vector2(MathF.Cos(a) * rx, MathF.Sin(a) * ry));
-        }
-
-        pts.Add(pts[0]);
-        return pts;
-    }
-
-    // ---------------------------------------------------------------- GPU
+    // ---------------------------------------------------------------- frame building
 
     private static int SegmentCount(Stroke s) => s.Points.Count == 0 ? 0 : Math.Max(1, s.Points.Count - 1);
 
@@ -769,25 +465,46 @@ public sealed class StrokeRenderer : IDisposable
             Array.Resize(ref _strokePrims, Math.Max(count, _strokePrims.Length * 2));
     }
 
+    private int AppendPrims(List<Prim> prims, int index)
+    {
+        ReserveStrokePrims(index + prims.Count);
+        prims.CopyTo(_strokePrims, index);
+        return index + prims.Count;
+    }
+
     /// <summary>Rebuilds changed geometry and the UI before a frame is handed to the backend.</summary>
     public void PrepareFrame()
     {
         if (_strokesDirty)
         {
-            int total = 0;
-            foreach (var s in _document.Strokes) total += SegmentCount(s);
-            ReserveStrokePrims(total);
-
             int count = 0;
+            _objectLabels.Clear();
+            foreach (var o in _document.Objects)
+            {
+                _scratch.Clear();
+                ObjectGeometry.Build(o, _scratch, _objectLabels);
+                count = AppendPrims(_scratch, count);
+            }
+
+            int strokeTotal = 0;
+            foreach (var s in _document.Strokes) strokeTotal += SegmentCount(s);
+            ReserveStrokePrims(count + strokeTotal);
             foreach (var s in _document.Strokes) count = WriteStroke(s, 0, _strokePrims, count);
-            _strokePrimCount = count;
-            _strokesDirtyFrom = 0;
 
             _activeStart = _activeStroke != null && _document.Strokes.Count > 0 && _document.Strokes[^1] == _activeStroke
                 ? count - SegmentCount(_activeStroke)
                 : -1;
+            _liveStart = count;
+            _strokePrimCount = count;
+            _strokesDirtyFrom = 0;
             _strokesDirty = false;
             _activeDirtyFrom = -1;
+            _liveDirty = _liveObject != null;
+            if (!_objectsVersionKey.SequenceEqual(_document.Objects))
+            {
+                _objectsVersionKey = [.._document.Objects];
+                _objectsVersion++;
+            }
         }
         else if (_activeDirtyFrom >= 0)
         {
@@ -804,12 +521,25 @@ public sealed class StrokeRenderer : IDisposable
             _activeDirtyFrom = -1;
         }
 
+        if (_liveDirty)
+        {
+            // The shape being drawn is appended after everything else and rewritten every frame.
+            _liveLabels.Clear();
+            _scratch.Clear();
+            if (_liveObject != null) ObjectGeometry.Build(_liveObject, _scratch, _liveLabels);
+            _strokePrimCount = AppendPrims(_scratch, _liveStart);
+            _strokesDirtyFrom = Math.Min(_strokesDirtyFrom, _liveStart);
+            _liveDirty = false;
+            _uiDirty = true;
+        }
+
         if (_uiDirty)
         {
             _uiDirty = false;
             BuildUI();
         }
 
+        BuildBackgroundIfNeeded();
         _framePending = true;
     }
 
@@ -819,6 +549,8 @@ public sealed class StrokeRenderer : IDisposable
         _ui.Clear(UiScale);
         var screen = ScreenSize;
 
+        DrawLabels(_ui, _liveLabels);
+        RenderShapeGuides(_ui);
         if (Tool == Tool.Select) RenderSelectionUI(_ui);
         if (Tool == Tool.Eraser && HoverPosition is { } hover && _radialMenu?.IsOpen != true)
             _ui.Ring(hover, MathF.Max(_eraserSize * _camera.Zoom, 3f), 1.5f, new Vector4(1f, 1f, 1f, 0.6f));
@@ -841,7 +573,11 @@ public sealed class StrokeRenderer : IDisposable
         UiScale = UiScale,
         Strokes = _strokePrims.AsSpan(0, _strokePrimCount),
         StrokesDirtyFrom = Math.Min(_strokesDirtyFrom, _strokePrimCount),
-        StrokesStable = _activeStroke != null && _activeStart >= 0 ? _activeStart : _strokePrimCount,
+        StrokesStable = _activeStroke != null && _activeStart >= 0 ? _activeStart
+            : _liveObject != null ? _liveStart
+            : _strokePrimCount,
+        Background = CollectionsMarshal.AsSpan(_background.Prims),
+        BackgroundVersion = _backgroundVersion,
         Ui = CollectionsMarshal.AsSpan(_ui.Prims),
         AtlasPixels = _textAtlas.Pixels,
         AtlasSize = TextAtlas.Size,
@@ -855,43 +591,6 @@ public sealed class StrokeRenderer : IDisposable
         _strokesDirtyFrom = int.MaxValue;
         _textAtlas.ClearDirty();
         _framePending = false;
-    }
-
-    private void RenderSelectionUI(UiBatch ui)
-    {
-        var accent = Theme.Accent;
-        if (CurrentSelectionState == SelectionState.DrawingBox)
-        {
-            var min = Vector2.Min(_selectionStartScreen, _selectionEndScreen);
-            var max = Vector2.Max(_selectionStartScreen, _selectionEndScreen);
-            ui.Rect(min, max - min, Theme.WithAlpha(accent, 0.08f), 4f);
-            ui.Border(min, max - min, accent, 1.5f, 4f);
-        }
-
-        if (SelectedStrokes.Count == 0) return;
-
-        var bbox = GetSelectedBounds();
-        var minS = WorldToScreen(bbox.Min) - new Vector2(4f);
-        var maxS = WorldToScreen(bbox.Max) + new Vector2(4f);
-        ui.Border(minS, maxS - minS, accent, 1.5f, 4f);
-
-        var handles = GetHandlePositions(minS, maxS);
-        ui.Line(handles[1], handles[8], accent, 1.5f);
-        foreach (var h in handles)
-        {
-            ui.Circle(h, 7f, Theme.Text);
-            ui.Ring(h, 7f, 2f, accent);
-        }
-
-        if (CurrentSelectionState == SelectionState.None)
-        {
-            var pos = DeleteButtonPos();
-            var size = new Vector2(DeleteButtonSize);
-            bool hover = HoverPosition is { } p && UiBatch.Contains(pos, size, p);
-            ui.Rect(pos, size, hover ? Theme.Danger : Theme.WithAlpha(Theme.Surface, 0.95f), 10f);
-            ui.Border(pos, size, Theme.Border, 1f, 10f);
-            ui.Icon(Icons.Delete, pos + size * 0.5f, 16f, hover ? Theme.Text : Theme.Danger);
-        }
     }
 
     public void Dispose() => _textAtlas.Dispose();

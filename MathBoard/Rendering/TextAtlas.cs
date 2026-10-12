@@ -48,6 +48,9 @@ public sealed unsafe class TextAtlas : IDisposable
     /// <summary>Set when a string did not fit this frame; the caller should draw the UI again next frame.</summary>
     public bool NeedsRedraw { get; private set; }
 
+    /// <summary>Incremented whenever the atlas is cleared; cached glyph coordinates are invalid after that.</summary>
+    public int ResetCount { get; private set; }
+
     public TextAtlas()
     {
         _canvas = new SKCanvas(_bitmap);
@@ -121,6 +124,7 @@ public sealed unsafe class TextAtlas : IDisposable
 
         if (!_resetPending) return;
         _resetPending = false;
+        ResetCount++;
         _entries.Clear();
         _canvas.Clear(SKColors.Transparent);
         _penX = _penY = _rowHeight = 0;

@@ -18,6 +18,7 @@ Console.SetOut(logFile);
 Console.SetError(logFile);
 AppDomain.CurrentDomain.UnhandledException += (_, e) => Console.WriteLine($"Unhandled exception: {e.ExceptionObject}");
 
+SystemInfo.Log();
 Settings.Load();
 Localization.Load(Settings.Language.Value);
 

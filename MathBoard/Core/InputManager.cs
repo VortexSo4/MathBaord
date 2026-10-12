@@ -21,13 +21,16 @@ public sealed partial class InputManager : IDisposable
     private readonly LibraryPanel _libraryPanel;
     private readonly QuickBar _quickBar;
     private readonly ColorEditor _colorEditor;
+    private readonly ShapePicker _shapePicker;
+    private readonly PlotEditor _plotEditor;
+    private readonly IPopup[] _popups;
     private readonly TouchGestures? _gestures;
 
     private readonly IMouse? _mouse;
     private readonly IKeyboard? _keyboard;
 
     /// <summary>Who receives pointer events until the button that started the gesture is released.</summary>
-    private enum Capture { None, Panel, QuickBar, Radial, ColorEditor, Canvas, Erase, Pan }
+    private enum Capture { None, Panel, QuickBar, Radial, Popup, Canvas, Erase, Pan }
 
     private Capture _capture = Capture.None;
     private MouseButton _captureButton;
@@ -35,6 +38,8 @@ public sealed partial class InputManager : IDisposable
     private bool _menuPending;
     private bool _isDrawing;
     private bool _isPanning;
+    private bool _isShaping;
+    private IPopup? _capturedPopup;
     private Vector2 _mouseDownPos;
     private DateTime _mouseDownTime;
     private Vector2 _lastPanPosition;
@@ -61,7 +66,11 @@ public sealed partial class InputManager : IDisposable
         _libraryManager = libraryManager;
         _libraryPanel = libraryPanel;
         _colorEditor = new ColorEditor(strokeRenderer);
-        strokeRenderer.AddOverlay(_colorEditor);
+        _shapePicker = new ShapePicker(strokeRenderer);
+        _plotEditor = new PlotEditor(strokeRenderer);
+        _popups = [_colorEditor, _shapePicker, _plotEditor];
+        foreach (var popup in _popups) strokeRenderer.AddOverlay(popup);
+        strokeRenderer.EditPlotRequested += plot => _plotEditor.Open(plot, edited => _strokeRenderer.ReplaceObject(plot, edited));
         _quickBar = new QuickBar(strokeRenderer, Execute, IsActive, pos => _libraryPanel.IsOpen && pos.X < _libraryPanel.Width,
             (index, center) => _colorEditor.Open(index, center));
         _libraryPanel.SettingsPanel.OnCustomizeQuickButtons = _quickBar.BeginEditing;
@@ -98,7 +107,10 @@ public sealed partial class InputManager : IDisposable
     /// <summary>True while timers are running that need the loop to tick at frame rate.</summary>
     public bool NeedsFrequentUpdates =>
         _menuPending || _isDrawing || _quickBar.IsPressed || _libraryPanel.NeedsUpdates ||
-        _libraryPanel.ActiveTextBox != null || _repeatKey != null;
+        ActiveTextBox != null || _repeatKey != null;
+
+    /// <summary>The text field that receives keyboard input: a popup's field first, then the library panel's.</summary>
+    private TextBoxState? ActiveTextBox => _plotEditor.ActiveTextBox ?? _libraryPanel.ActiveTextBox;
 
     public void Update(float dt)
     {
@@ -124,7 +136,7 @@ public sealed partial class InputManager : IDisposable
         _quickBar.Update();
         _libraryPanel.Update(dt);
 
-        var textBox = _libraryPanel.ActiveTextBox;
+        var textBox = ActiveTextBox;
         UpdateTouchKeyboard(textBox != null);
         if (textBox != null)
         {
@@ -180,7 +192,8 @@ public sealed partial class InputManager : IDisposable
         // The first finger already started something through mouse emulation; a pinch replaces it.
         if (_capture == Capture.Canvas)
         {
-            if (_isDrawing && _strokeRenderer.Tool == Tool.Brush) _strokeRenderer.CancelStroke();
+            if (_isShaping) _strokeRenderer.CancelShape();
+            else if (_isDrawing && _strokeRenderer.Tool == Tool.Brush) _strokeRenderer.CancelStroke();
             else if (_isDrawing) _strokeRenderer.EndStroke();
             if (_strokeRenderer.CurrentSelectionState != StrokeRenderer.SelectionState.None)
                 _strokeRenderer.HandleSelectionUp(_mouseDownPos);
@@ -190,6 +203,7 @@ public sealed partial class InputManager : IDisposable
         _menuPending = false;
         _isDrawing = false;
         _isPanning = false;
+        _isShaping = false;
     }
 
     private void OnGestureChanged(Vector2 center, Vector2 delta, float zoom)
@@ -262,6 +276,13 @@ public sealed partial class InputManager : IDisposable
             case UiAction.Keyboard:
                 TouchKeyboard.Toggle();
                 break;
+            case UiAction.Shapes:
+                _shapePicker.Open(MousePosition);
+                break;
+            case UiAction.Grid:
+                Settings.GridMode.Value = Settings.GridMode.Value switch { "None" => "Squares", "Squares" => "Axes", _ => "None" };
+                Settings.Save();
+                break;
         }
 
         _strokeRenderer.SetDirty();
@@ -274,6 +295,8 @@ public sealed partial class InputManager : IDisposable
         UiAction.Eraser => _strokeRenderer.Tool == Tool.Eraser,
         UiAction.Select => _strokeRenderer.Tool == Tool.Select,
         UiAction.Pan => _strokeRenderer.Tool == Tool.Pan,
+        UiAction.Shapes => _strokeRenderer.Tool == Tool.Shape,
+        UiAction.Grid => Settings.GridMode.Value != "None",
         UiAction.Color1 or UiAction.Color2 or UiAction.Color3 =>
             Vector4.DistanceSquared(_strokeRenderer.CurrentColor, Settings.Colors[action - UiAction.Color1]) < 1e-4f,
         _ => false
@@ -297,9 +320,11 @@ public sealed partial class InputManager : IDisposable
         _strokeRenderer.SetDirty();
         if (_capture != Capture.None || _gestures?.IsActive == true) return;
 
-        if (_colorEditor.IsOpen)
+        if (_popups.LastOrDefault(p => p.IsOpen) is { } popup)
         {
-            if (button == MouseButton.Left) Begin(Capture.ColorEditor, button, () => _colorEditor.OnMouseDown(pos));
+            if (button != MouseButton.Left) return;
+            _capturedPopup = popup;
+            Begin(Capture.Popup, button, () => popup.OnMouseDown(pos));
             return;
         }
 
@@ -353,6 +378,14 @@ public sealed partial class InputManager : IDisposable
         _isPanning = false;
         if (_strokeRenderer.Tool == Tool.Select)
             _strokeRenderer.HandleSelectionDown(pos);
+
+        if (_strokeRenderer.Tool == Tool.Shape && _strokeRenderer.IsAnglePending)
+        {
+            // The second arm of an angle starts right away; the menu is still reachable with an empty canvas press.
+            _menuPending = false;
+            _isShaping = true;
+            _strokeRenderer.BeginShape(pos);
+        }
     }
 
     private void OnMouseMove(IMouse mouse, Vector2 position)
@@ -362,8 +395,8 @@ public sealed partial class InputManager : IDisposable
 
         switch (_capture)
         {
-            case Capture.ColorEditor:
-                _colorEditor.OnMouseMove(pos);
+            case Capture.Popup:
+                _capturedPopup?.OnMouseMove(pos);
                 return;
             case Capture.Panel:
                 _libraryPanel.HandleMouseMove(pos);
@@ -396,7 +429,8 @@ public sealed partial class InputManager : IDisposable
             _strokeRenderer.SetDirty();
         }
 
-        if (_colorEditor.IsOpen) _colorEditor.OnMouseMove(pos);
+        foreach (var popup in _popups)
+            if (popup.IsOpen) popup.OnMouseMove(pos);
         _quickBar.UpdateHover(pos);
         UpdateHover(pos);
     }
@@ -430,6 +464,10 @@ public sealed partial class InputManager : IDisposable
                     _isPanning = true;
                     _lastPanPosition = _mouseDownPos;
                     break;
+                case Tool.Shape:
+                    _strokeRenderer.BeginShape(_mouseDownPos);
+                    _isShaping = true;
+                    break;
             }
         }
 
@@ -438,6 +476,7 @@ public sealed partial class InputManager : IDisposable
         _strokeRenderer.IsQuickShapeApplied = false;
 
         if (_isDrawing) _strokeRenderer.AddPoint(pos);
+        else if (_isShaping) _strokeRenderer.UpdateShape(pos);
         else if (_isPanning)
         {
             PanBy(pos - _lastPanPosition);
@@ -465,8 +504,9 @@ public sealed partial class InputManager : IDisposable
 
         switch (capture)
         {
-            case Capture.ColorEditor:
-                _colorEditor.OnMouseUp(pos);
+            case Capture.Popup:
+                _capturedPopup?.OnMouseUp(pos);
+                _capturedPopup = null;
                 break;
             case Capture.Panel:
                 _libraryPanel.HandleMouseUp(pos);
@@ -496,6 +536,14 @@ public sealed partial class InputManager : IDisposable
                 _strokeRenderer.AddPoint(pos);
                 _strokeRenderer.EndStroke();
             }
+            else if (tool == Tool.Shape)
+            {
+                _strokeRenderer.TapShape(pos);
+            }
+        }
+        else if (_isShaping)
+        {
+            _strokeRenderer.EndShape(pos);
         }
         else if (_isDrawing)
         {
@@ -505,6 +553,7 @@ public sealed partial class InputManager : IDisposable
         if (tool == Tool.Select) _strokeRenderer.HandleSelectionUp(pos);
         _isDrawing = false;
         _isPanning = false;
+        _isShaping = false;
     }
 
     private void OnMouseWheel(IMouse mouse, ScrollWheel wheel)
@@ -534,13 +583,7 @@ public sealed partial class InputManager : IDisposable
         {
             if (key is Key.Enter or Key.KeypadEnter) _libraryPanel.ConfirmDialog();
             else if (key == Key.Escape) _libraryPanel.CancelDialog();
-            else if (_libraryPanel.ActiveTextBox?.HandleKey(key, ctrl, shift, keyboard) == true &&
-                     key is Key.Left or Key.Right or Key.Backspace or Key.Delete)
-            {
-                _repeatKey = key;
-                _repeatAt = DateTime.Now + _repeatDelay;
-            }
-
+            else if (_libraryPanel.ActiveTextBox is { } box) HandleTextKey(box, key, ctrl, shift, keyboard);
             return;
         }
 
@@ -550,15 +593,25 @@ public sealed partial class InputManager : IDisposable
             return;
         }
 
-        if (_colorEditor.IsOpen)
+        if (_plotEditor.IsOpen)
         {
-            if (key is Key.Escape or Key.Enter) _colorEditor.Close();
+            if (key is Key.Enter or Key.KeypadEnter) _plotEditor.Confirm();
+            else if (key == Key.Escape) _plotEditor.Close();
+            else if (key == Key.Tab) _plotEditor.NextField();
+            else HandleTextKey(_plotEditor.ActiveTextBox!, key, ctrl, shift, keyboard);
+            return;
+        }
+
+        if (_popups.LastOrDefault(p => p.IsOpen) is { } popup)
+        {
+            if (key is Key.Escape or Key.Enter) popup.Close();
             return;
         }
 
         if (key == Key.Escape)
         {
             if (_radialMenu.IsOpen) _radialMenu.Close();
+            else if (_strokeRenderer.IsAnglePending) _strokeRenderer.CancelShape();
             else _strokeRenderer.ClearSelection();
             return;
         }
@@ -578,13 +631,22 @@ public sealed partial class InputManager : IDisposable
                 case Key.L: Execute(UiAction.ToggleLibrary); break;
             }
         }
-        else if (key is Key.Delete or Key.Backspace && _strokeRenderer.SelectedStrokes.Count > 0)
+        else if (key is Key.Delete or Key.Backspace && (_strokeRenderer.SelectedStrokes.Count > 0 || _strokeRenderer.SelectedObjects.Count > 0))
         {
             _strokeRenderer.DeleteSelection();
         }
         else if (key == Key.E)
         {
             Execute(_strokeRenderer.Tool == Tool.Eraser ? UiAction.Brush : UiAction.Eraser);
+        }
+    }
+
+    private void HandleTextKey(TextBoxState box, Key key, bool ctrl, bool shift, IKeyboard keyboard)
+    {
+        if (box.HandleKey(key, ctrl, shift, keyboard) && key is Key.Left or Key.Right or Key.Backspace or Key.Delete)
+        {
+            _repeatKey = key;
+            _repeatAt = DateTime.Now + _repeatDelay;
         }
     }
 
@@ -595,6 +657,13 @@ public sealed partial class InputManager : IDisposable
 
     private void OnKeyChar(IKeyboard keyboard, char c)
     {
+        if (_plotEditor.ActiveTextBox is { } box)
+        {
+            box.Insert(c);
+            _strokeRenderer.SetDirty();
+            return;
+        }
+
         if (_libraryPanel.ActiveTextBox == null) return;
         _libraryPanel.HandleCharInput(c);
     }

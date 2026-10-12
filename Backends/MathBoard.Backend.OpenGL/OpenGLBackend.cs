@@ -23,9 +23,9 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
     private GL? _gl;
     private uint _program;
     private int _transformLocation, _pixelLocation;
-    private uint _strokeVbo, _uiVbo, _indexBuffer, _atlasTexture;
+    private uint _strokeVbo, _uiVbo, _backgroundVbo, _indexBuffer, _atlasTexture;
     private int _strokeCapacity, _indexCapacity, _atlasSize;
-    private int _strokeCount, _uiCount;
+    private int _strokeCount, _uiCount, _backgroundCount;
     private float[] _scratch = [];
 
     public string Name => "OpenGL";
@@ -54,6 +54,7 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
 
         _strokeVbo = gl.GenBuffer();
         _uiVbo = gl.GenBuffer();
+        _backgroundVbo = gl.GenBuffer();
         _indexBuffer = gl.GenBuffer();
         _atlasTexture = gl.GenTexture();
         gl.BindTexture(TextureTarget.Texture2D, _atlasTexture);
@@ -74,7 +75,9 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         UploadStrokes(frame.Strokes, frame.StrokesDirtyFrom);
         _uiCount = frame.Ui.Length;
         Upload(_uiVbo, frame.Ui, 0, frame.Ui.Length, reallocate: true);
-        EnsureIndices(Math.Max(_strokeCount, _uiCount));
+        _backgroundCount = frame.Background.Length;
+        Upload(_backgroundVbo, frame.Background, 0, frame.Background.Length, reallocate: true);
+        EnsureIndices(Math.Max(Math.Max(_strokeCount, _uiCount), _backgroundCount));
 
         gl.Viewport(0, 0, (uint)size.X, (uint)size.Y);
         gl.ClearColor(frame.ClearColor.X, frame.ClearColor.Y, frame.ClearColor.Z, frame.ClearColor.W);
@@ -91,6 +94,7 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         var cam = frame.CameraPosition * scale;
         // OpenGL clip space has y pointing up, so the top of the framebuffer is mapped to +1.
         var proj = Matrix4x4.CreateOrthographicOffCenter(0, size.X, size.Y, 0, -1f, 1f);
+        Draw(_backgroundVbo, _backgroundCount, Matrix4x4.CreateScale(scale, scale, 1f) * proj, 1f / scale);
         Draw(_strokeVbo, _strokeCount,
             Matrix4x4.CreateScale(zoom, zoom, 1f) * Matrix4x4.CreateTranslation(cam.X, cam.Y, 0f) * proj, 1f / zoom);
         Draw(_uiVbo, _uiCount, Matrix4x4.CreateScale(scale, scale, 1f) * proj, 1f / scale);
@@ -251,6 +255,7 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         if (_program != 0) _gl.DeleteProgram(_program);
         if (_strokeVbo != 0) _gl.DeleteBuffer(_strokeVbo);
         if (_uiVbo != 0) _gl.DeleteBuffer(_uiVbo);
+        if (_backgroundVbo != 0) _gl.DeleteBuffer(_backgroundVbo);
         if (_indexBuffer != 0) _gl.DeleteBuffer(_indexBuffer);
         if (_atlasTexture != 0) _gl.DeleteTexture(_atlasTexture);
         _gl.Dispose();

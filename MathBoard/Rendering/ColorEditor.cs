@@ -7,7 +7,7 @@ namespace MathBoard.Rendering;
 /// Edits a palette color with vertical hue / saturation / brightness bars. Opened by double-tapping a color button,
 /// changes apply live; tapping outside or "Done" closes it.
 /// </summary>
-public sealed class ColorEditor(StrokeRenderer renderer) : IOverlay
+public sealed class ColorEditor(StrokeRenderer renderer) : IPopup
 {
     private const float Padding = 16f;
     private const float TitleHeight = 40f;

@@ -57,9 +57,12 @@ public class SettingsPanel : IDisposable
     public Action? OnOpenLog { get; set; }
     public Action? OnCustomizeQuickButtons { get; set; }
 
-    public SettingsPanel(StrokeRenderer renderer)
+    private readonly Updater _updater;
+
+    public SettingsPanel(StrokeRenderer renderer, Updater updater)
     {
         _renderer = renderer;
+        _updater = updater;
     }
 
     public void Open()
@@ -131,6 +134,16 @@ public class SettingsPanel : IDisposable
             Label = v => v == "0"
                 ? Localization.Get("settings_auto", "Auto")
                 : (float.Parse(v, Invariant) * 100f).ToString("0", Invariant) + "%"
+        });
+
+        _items.Add(new SettingItem
+        {
+            Name = Localization.Get("settings_grid", "Background grid"),
+            Type = SettingType.Enum,
+            GetValue = () => Settings.GridMode.Value,
+            SetValue = v => Settings.GridMode.Value = v,
+            Options = ["None", "Squares", "Axes"],
+            Label = v => Localization.Get("grid_" + v.ToLowerInvariant(), v)
         });
 
         _items.Add(new SettingItem
@@ -215,6 +228,34 @@ public class SettingsPanel : IDisposable
             () => Settings.RadialMenuInnerRadius, v => Settings.RadialMenuInnerRadius.Value = Math.Max(10f, v), "0"));
         _items.Add(Numeric("settings_radialmenu_center_radius", "RadialMenu Center Radius",
             () => Settings.RadialMenuCenterRadius, v => Settings.RadialMenuCenterRadius.Value = Math.Max(5f, v), "0"));
+
+        _items.Add(new SettingItem
+        {
+            Name = Localization.Get("settings_check_updates", "Check for updates at startup"),
+            Type = SettingType.Bool,
+            GetValue = () => Settings.CheckUpdates.Value.ToString(),
+            OnClick = () => Settings.CheckUpdates.Value = !Settings.CheckUpdates.Value
+        });
+
+        _items.Add(new SettingItem
+        {
+            Name = Localization.Get("settings_version", "Version") + " " + Updater.CurrentVersion.ToString(3),
+            Type = SettingType.Action,
+            GetValue = () => _updater.Status switch
+            {
+                Updater.State.Checking => Localization.Get("update_checking", "Checking..."),
+                Updater.State.UpToDate => Localization.Get("update_latest", "Up to date"),
+                Updater.State.Available => Localization.Get("update_install", "Install") + " " + _updater.AvailableVersion!.ToString(3),
+                Updater.State.Downloading or Updater.State.Installing => $"{_updater.Progress:P0}",
+                Updater.State.Failed => Localization.Get("update_failed", "Failed, retry"),
+                _ => Localization.Get("update_check", "Check")
+            },
+            OnClick = () =>
+            {
+                if (_updater.Status == Updater.State.Available) _updater.DownloadAndInstall();
+                else _updater.Check();
+            }
+        });
 
         _items.Add(new SettingItem
         {

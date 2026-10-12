@@ -3,7 +3,13 @@
 ; Non-commercial use only
 
 #define MyAppName "MathBoard"
-#define MyAppVersion "1.0.0"
+; build-installer.ps1 passes the version from MathBoard.csproj and the publish folder.
+#ifndef MyAppVersion
+  #define MyAppVersion "1.1.0"
+#endif
+#ifndef PublishDir
+  #define PublishDir "..\publish"
+#endif
 #define MyAppPublisher "Vortex_so"
 #define MyAppExeName "MathBoard.exe"
 #define MyAppAssocName MyAppName + " File"
@@ -32,7 +38,11 @@ ChangesAssociations=yes
 DisableProgramGroupPage=yes
 ; Remove the following line to run in administrative install mode (install for all users).
 PrivilegesRequired=lowest
-OutputBaseFilename=mysetup
+; The updater looks for this name in the GitHub release.
+OutputBaseFilename=MathBoard-{#MyAppVersion}-setup
+OutputDir=..\installer
+; The updater starts the installer with /SILENT while the app is still closing.
+CloseApplications=force
 SetupIconFile=resources\icon.ico
 SolidCompression=yes
 WizardStyle=modern windows11
@@ -44,9 +54,12 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[InstallDelete]
+; Backend plugins of the previous version must not stay next to the new ones.
+Type: filesandordirs; Name: "{app}\backends"
+
 [Files]
-Source: "C:\Users\Maxim\RiderProjects\MathBoard\publish\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\Maxim\RiderProjects\MathBoard\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Registry]
@@ -61,4 +74,10 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: RestartAfterUpdate
 
+[Code]
+function RestartAfterUpdate: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:restart|0}') = '1');
+end;

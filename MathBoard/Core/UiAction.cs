@@ -20,5 +20,7 @@ public enum UiAction
     ZoomIn,
     ZoomOut,
     FitView,
-    Keyboard
+    Keyboard,
+    Shapes,
+    Grid
 }

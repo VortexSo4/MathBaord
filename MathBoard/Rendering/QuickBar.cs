@@ -42,6 +42,9 @@ public class QuickBar
 
     /// <param name="isCovered">True where other UI (the library panel) lies on top of the buttons.</param>
     /// <param name="editColor">Opens the color editor for a palette slot; a color button invokes it on double tap.</param>
+    /// <summary>Marks the library button, which leads to the settings where an update can be installed.</summary>
+    public bool LibraryBadge { get; set; }
+
     public QuickBar(StrokeRenderer renderer, Action<UiAction> execute, Func<UiAction, bool> isActive,
         Func<Vector2, bool> isCovered, Action<int, Vector2> editColor)
     {
@@ -396,10 +399,17 @@ public class QuickBar
             ui.Circle(center, 12f, color);
             if (active) ui.Ring(center, 17f, 2f, Theme.Text);
         }
+        else if (action == UiAction.Shapes)
+        {
+            // Shows the shape that the tool draws right now.
+            ShapePicker.DrawPreview(ui, _renderer.CurrentShape, center, 20f, Theme.Text);
+        }
         else
         {
             ui.Icon(IconFor(action), center, 18f, Theme.Text);
         }
+
+        if (action == UiAction.ToggleLibrary && LibraryBadge) ui.Circle(center + new Vector2(11f, -11f), 4f, Theme.Accent);
     }
 
     public static string IconFor(UiAction action) => action switch
@@ -419,6 +429,8 @@ public class QuickBar
         UiAction.ZoomOut => Icons.ZoomOut,
         UiAction.FitView => Icons.FitView,
         UiAction.Keyboard => Icons.Keyboard,
+        UiAction.Shapes => Icons.Shapes,
+        UiAction.Grid => Icons.Grid,
         _ => Icons.Palette
     };
 }
