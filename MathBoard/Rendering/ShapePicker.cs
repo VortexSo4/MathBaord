@@ -1,5 +1,6 @@
 using System.Numerics;
 using MathBoard.Core;
+using MathBoard.Graphics;
 
 namespace MathBoard.Rendering;
 
@@ -99,6 +100,15 @@ public sealed class ShapePicker(StrokeRenderer renderer) : IPopup
     {
         float h = size * 0.5f;
         const float w = 2f;
+        if (ObjectGeometry.IsSolid(kind))
+        {
+            // The real drawing, scaled into the cell.
+            var prims = new List<Prim>();
+            ObjectGeometry.Build(ObjectGeometry.FromDrag(kind, c - new Vector2(h), c + new Vector2(h), color, 1.5f), prims, null);
+            foreach (var p in prims) ui.Line(new Vector2(p.A.X, p.A.Y), new Vector2(p.A.Z, p.A.W), color, 1.5f);
+            return;
+        }
+
         switch (kind)
         {
             case ShapeKind.Line:

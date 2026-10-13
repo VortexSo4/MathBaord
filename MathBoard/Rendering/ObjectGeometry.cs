@@ -9,7 +9,7 @@ namespace MathBoard.Rendering;
 public readonly record struct ObjectLabel(Vector2 World, string Text, Vector4 Color);
 
 /// <summary>Turns <see cref="BoardObject"/>s into capsule primitives and implements their editing rules.</summary>
-public static class ObjectGeometry
+public static partial class ObjectGeometry
 {
     /// <summary>World units per math unit on grids and new plots.</summary>
     public const float GridUnit = 50f;
@@ -24,6 +24,12 @@ public static class ObjectGeometry
 
     public static void Build(BoardObject o, List<Prim> prims, List<ObjectLabel>? labels)
     {
+        if (IsSolid(o.Kind))
+        {
+            BuildSolid(o, prims);
+            return;
+        }
+
         var p = o.Points;
         float r = o.Width * 0.5f;
         var c = o.Color;
@@ -289,6 +295,7 @@ public static class ObjectGeometry
             ShapeKind.Plot or ShapeKind.Image => [..o.Points, o.Points[1] + o.Points[2] - o.Points[0]],
             ShapeKind.Circle => CircleBox(o.Points[0], Vector2.Distance(o.Points[0], o.Points[1])),
             ShapeKind.Ellipse => EllipsePoints(o.Points[0], o.Points[1] - o.Points[0], o.Points[2] - o.Points[0], 32),
+            var kind when IsSolid(kind) => SolidOutlinePoints(o),
             _ => o.Points
         };
         Vector2 min = new(float.MaxValue), max = new(float.MinValue);
@@ -302,6 +309,13 @@ public static class ObjectGeometry
     }
 
     private static Vector2[] CircleBox(Vector2 c, float radius) => [c - new Vector2(radius), c + new Vector2(radius)];
+
+    private static Vector2[] SolidOutlinePoints(BoardObject o)
+    {
+        var prims = new List<Prim>();
+        BuildSolid(o, prims);
+        return prims.SelectMany(p => new[] { new Vector2(p.A.X, p.A.Y), new Vector2(p.A.Z, p.A.W) }).ToArray();
+    }
 
     /// <summary>Distance from a world point to the drawn object, 0 inside a plot or an image.</summary>
     public static float Distance(BoardObject o, Vector2 point)
@@ -335,7 +349,7 @@ public static class ObjectGeometry
     public static BoardObject MoveControlPoint(BoardObject o, int index, Vector2 target)
     {
         var p = (Vector2[])o.Points.Clone();
-        bool translateAll = index == 0 && o.Kind is ShapeKind.Ellipse or ShapeKind.Circle or ShapeKind.Angle or ShapeKind.Plot;
+        bool translateAll = index == 0 && (o.Kind is ShapeKind.Ellipse or ShapeKind.Circle or ShapeKind.Angle or ShapeKind.Plot || IsSolid(o.Kind));
         if (translateAll)
         {
             var delta = target - p[0];
@@ -381,6 +395,7 @@ public static class ObjectGeometry
             ShapeKind.Point => [end],
             ShapeKind.Angle => [start, end, start + Vector2.Transform(end - start, Matrix3x2.CreateRotation(-MathF.PI / 3f))],
             ShapeKind.Plot => [new(min.X, max.Y), new(max.X, max.Y), new(min.X, min.Y)],
+            _ when IsSolid(kind) => SolidFromDrag(kind, min, max),
             _ => [start, end]
         };
 

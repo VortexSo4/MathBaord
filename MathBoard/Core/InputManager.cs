@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Runtime.InteropServices;
 using MathBoard.Rendering;
 using Silk.NET.Input;
@@ -8,8 +8,6 @@ namespace MathBoard.Core;
 
 public sealed partial class InputManager : IDisposable
 {
-    // Moving farther than this always means "draw", even after the radial menu escape time.
-    private const float MenuCancelDistance = 12f;
     private const double QuickShapeHoldSeconds = 1.0;
 
     private readonly IInputContext _input;
@@ -23,6 +21,8 @@ public sealed partial class InputManager : IDisposable
     private readonly ColorEditor _colorEditor;
     private readonly ShapePicker _shapePicker;
     private readonly PlotEditor _plotEditor;
+    private readonly ThicknessPicker _thicknessPicker;
+    private readonly ConfirmPopup _confirm;
     private readonly IPopup[] _popups;
     private readonly TouchGestures? _gestures;
 
@@ -40,11 +40,14 @@ public sealed partial class InputManager : IDisposable
     private bool _isDrawing;
     private bool _isPanning;
     private bool _isShaping;
+    private bool _editingSelection;
     private IPopup? _capturedPopup;
     private Vector2 _mouseDownPos;
     private DateTime _mouseDownTime;
     private Vector2 _lastPanPosition;
     private Vector2 _lastMovePos;
+    private Vector2 _pointer;
+    private float? _palmRadius;
     private DateTime _lastMoveTime = DateTime.Now;
 
     private Key? _repeatKey;
@@ -69,13 +72,15 @@ public sealed partial class InputManager : IDisposable
         _colorEditor = new ColorEditor(strokeRenderer);
         _shapePicker = new ShapePicker(strokeRenderer);
         _plotEditor = new PlotEditor(strokeRenderer);
-        _popups = [_colorEditor, _shapePicker, _plotEditor, new UpdatePopup(strokeRenderer, updater)];
+        _thicknessPicker = new ThicknessPicker(strokeRenderer);
+        _confirm = new ConfirmPopup(strokeRenderer);
+        _popups = [_colorEditor, _shapePicker, _plotEditor, _thicknessPicker, _confirm, new UpdatePopup(strokeRenderer, updater)];
         foreach (var popup in _popups) strokeRenderer.AddOverlay(popup);
         // The screenshot overlay is drawn by the renderer itself because it hides the rest of the interface.
         _popups = [.._popups, strokeRenderer.Screenshot];
         strokeRenderer.EditPlotRequested += plot => _plotEditor.Open(plot, edited => _strokeRenderer.ReplaceObject(plot, edited));
-        _quickBar = new QuickBar(strokeRenderer, Execute, IsActive, pos => _libraryPanel.IsOpen && pos.X < _libraryPanel.Width,
-            (index, center) => _colorEditor.Open(index, center));
+        _quickBar = new QuickBar(strokeRenderer, ExecuteButton, IsButtonActive, pos => _libraryPanel.IsOpen && pos.X < _libraryPanel.Width,
+            EditButtonColor);
         _libraryPanel.SettingsPanel.OnCustomizeQuickButtons = _quickBar.BeginEditing;
 
         (_repeatDelay, _repeatInterval) = ReadKeyboardRepeat();
@@ -86,6 +91,14 @@ public sealed partial class InputManager : IDisposable
             _gestures = new TouchGestures(win32.Hwnd);
             _gestures.Started += OnGestureStarted;
             _gestures.Changed += OnGestureChanged;
+            _gestures.Down += (pos, contact) => TouchDown(ToLogical(pos), contact);
+            _gestures.Move += (pos, contact) => TouchMove(ToLogical(pos), contact);
+            _gestures.Up += pos =>
+            {
+                PointerUp(ToLogical(pos), MouseButton.Left);
+                // A finger does not hover, so the eraser circle should not stay where it lifted.
+                _strokeRenderer.HoverPosition = null;
+            };
         }
 
         window.FileDrop += OnFileDrop;
@@ -126,6 +139,12 @@ public sealed partial class InputManager : IDisposable
             _menuPending = false;
             if (_strokeRenderer.CurrentSelectionState == StrokeRenderer.SelectionState.DrawingBox)
                 _strokeRenderer.CurrentSelectionState = StrokeRenderer.SelectionState.None;
+            if (_isDrawing)
+            {
+                _strokeRenderer.EndStroke();
+                _isDrawing = false;
+            }
+
             _radialMenu.OpenAt(_mouseDownPos);
             _radialMenu.OnMouseDown(MousePosition);
             _capture = Capture.Radial;
@@ -209,6 +228,9 @@ public sealed partial class InputManager : IDisposable
         _isDrawing = false;
         _isPanning = false;
         _isShaping = false;
+        _editingSelection = false;
+        // The eraser circle follows a pointer; between two fingers it would hang where the first one was.
+        _strokeRenderer.HoverPosition = null;
     }
 
     private void OnGestureChanged(Vector2 center, Vector2 delta, float zoom)
@@ -218,7 +240,8 @@ public sealed partial class InputManager : IDisposable
         _strokeRenderer.ZoomAt(ToLogical(center), zoom);
     }
 
-    private Vector2 MousePosition => ToLogical(_mouse?.Position ?? Vector2.Zero);
+    /// <summary>Where the mouse or the finger was last seen, in logical pixels.</summary>
+    private Vector2 MousePosition => _pointer;
 
     /// <summary>Converts window pixels to the logical pixels the whole UI works in.</summary>
     private Vector2 ToLogical(Vector2 windowPos) => windowPos / _strokeRenderer.UiScale;
@@ -265,9 +288,20 @@ public sealed partial class InputManager : IDisposable
             case UiAction.Pan:
                 _strokeRenderer.SetTool(Tool.Pan);
                 break;
-            case UiAction.Color1 or UiAction.Color2 or UiAction.Color3:
-                _strokeRenderer.SetColor(Settings.Colors[action - UiAction.Color1]);
-                if (_strokeRenderer.Tool is Tool.Eraser or Tool.Pan) _strokeRenderer.SetTool(Tool.Brush);
+            case UiAction.Thickness:
+                _thicknessPicker.Open(MousePosition);
+                break;
+            case UiAction.ClearBoard:
+                _confirm.Open(Localization.Get("clear_title", "Clear the board?"),
+                    Localization.Get("clear_text", "Everything is removed; Undo brings it back."),
+                    Localization.Get("clear_confirm", "Clear"), _strokeRenderer.ClearAll);
+                break;
+            case UiAction.BackgroundColor:
+                _colorEditor.Open(Localization.Get("action_BackgroundColor", "Background color"), Settings.Background,
+                    MousePosition, color => Settings.Background = color);
+                break;
+            case UiAction.Export when _hwnd != 0:
+                Export();
                 break;
             case UiAction.ZoomIn:
                 _strokeRenderer.ZoomAt(CanvasCenter, 1.25f);
@@ -326,6 +360,54 @@ public sealed partial class InputManager : IDisposable
         if (bitmap != null) _strokeRenderer.InsertImage(bitmap, CanvasCenter);
     }
 
+    private void ExecuteButton(QuickButtonConfig button)
+    {
+        if (button.Color is { } color)
+        {
+            // Tapping a color while something is selected also repaints the selection.
+            _strokeRenderer.RecolorSelection(color);
+            PickColor(color);
+        }
+        else
+        {
+            Execute(button.Action);
+        }
+    }
+
+    private void PickColor(Vector4 color)
+    {
+        _strokeRenderer.SetColor(color);
+        if (_strokeRenderer.Tool is Tool.Eraser or Tool.Pan) _strokeRenderer.SetTool(Tool.Brush);
+        _strokeRenderer.SetDirty();
+    }
+
+    private void EditButtonColor(QuickButtonConfig button, Vector2 anchor)
+    {
+        _colorEditor.Open(Localization.Get("action_Color", "Color"), button.Color!.Value, anchor, color =>
+        {
+            button = Settings.SetButtonColor(button, color);
+            PickColor(color);
+        });
+    }
+
+    private void Export()
+    {
+        string title = Localization.Get("action_Export", "Export");
+        if (ImageSources.PickExportFile(_hwnd, title, _libraryManager.CurrentName ?? "MathBoard") is not { } path) return;
+        try
+        {
+            if (!BoardExporter.Export(_document, path)) Console.WriteLine("Export skipped: the board is empty");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Export failed: {ex.Message}");
+        }
+    }
+
+    private bool IsButtonActive(QuickButtonConfig button) => button.Color is { } color
+        ? Vector4.DistanceSquared(_strokeRenderer.CurrentColor, color) < 1e-4f
+        : IsActive(button.Action);
+
     private bool IsActive(UiAction action) => action switch
     {
         UiAction.ToggleLibrary => _libraryPanel.IsOpen,
@@ -335,8 +417,6 @@ public sealed partial class InputManager : IDisposable
         UiAction.Pan => _strokeRenderer.Tool == Tool.Pan,
         UiAction.Shapes => _strokeRenderer.Tool == Tool.Shape,
         UiAction.Grid => Settings.GridMode.Value != "None",
-        UiAction.Color1 or UiAction.Color2 or UiAction.Color3 =>
-            Vector4.DistanceSquared(_strokeRenderer.CurrentColor, Settings.Colors[action - UiAction.Color1]) < 1e-4f,
         _ => false
     };
 
@@ -352,9 +432,53 @@ public sealed partial class InputManager : IDisposable
 
     // ------------------------------------------------------------- mouse
 
-    private void OnMouseDown(IMouse mouse, MouseButton button)
+    private void OnMouseDown(IMouse mouse, MouseButton button) => PointerDown(ToLogical(mouse.Position), button);
+
+    private void OnMouseMove(IMouse mouse, Vector2 position) => PointerMove(ToLogical(position));
+
+    private void OnMouseUp(IMouse mouse, MouseButton button) => PointerUp(ToLogical(mouse.Position), button);
+
+    private bool IsPalm(float contactMillimetres) =>
+        Settings.PalmEraseMillimetres > 0 && contactMillimetres >= Settings.PalmEraseMillimetres;
+
+    private void TouchDown(Vector2 pos, float contact)
     {
-        var pos = ToLogical(mouse.Position);
+        if (IsPalm(contact) && _capture == Capture.None && !_popups.Any(p => p.IsOpen) && !_libraryPanel.IsModalOpen &&
+            !_libraryPanel.Contains(pos) && !_quickBar.Contains(pos))
+            StartPalmErase(pos, contact);
+        else
+            PointerDown(pos, MouseButton.Left);
+    }
+
+    private void TouchMove(Vector2 pos, float contact)
+    {
+        // A palm often lands edge first, so a touch that started as a finger can still become the eraser.
+        if (_capture == Capture.Canvas && IsPalm(contact) && (_menuPending || _isDrawing)) StartPalmErase(pos, contact);
+        else PointerMove(pos);
+    }
+
+    /// <summary>Erases under a palm or fist laid on the board, as wide as the contact.</summary>
+    private void StartPalmErase(Vector2 pos, float contactMillimetres)
+    {
+        if (_capture == Capture.Canvas)
+        {
+            if (_isDrawing && _strokeRenderer.Tool == Tool.Brush) _strokeRenderer.CancelStroke();
+            else if (_isDrawing) _strokeRenderer.EndStroke();
+            _menuPending = false;
+            _isDrawing = false;
+        }
+
+        _pointer = pos;
+        _palmRadius = contactMillimetres * 0.5f / 25.4f * 96f;
+        _capture = Capture.Erase;
+        _captureButton = MouseButton.Left;
+        _strokeRenderer.BeginErase();
+        _strokeRenderer.EraseAt(pos, _palmRadius);
+    }
+
+    private void PointerDown(Vector2 pos, MouseButton button)
+    {
+        _pointer = pos;
         _strokeRenderer.SetDirty();
         if (_capture != Capture.None || _gestures?.IsActive == true) return;
 
@@ -389,6 +513,7 @@ public sealed partial class InputManager : IDisposable
 
         if (button == MouseButton.Right)
         {
+            _palmRadius = null;
             Begin(Capture.Erase, button, () =>
             {
                 _strokeRenderer.BeginErase();
@@ -412,10 +537,35 @@ public sealed partial class InputManager : IDisposable
     {
         _mouseDownPos = pos;
         _mouseDownTime = DateTime.Now;
+        _lastMovePos = pos;
+        _lastMoveTime = DateTime.Now;
         _menuPending = true;
         _isPanning = false;
-        if (_strokeRenderer.Tool == Tool.Select)
+        var tool = _strokeRenderer.Tool;
+
+        // A shape that was just drawn stays selected: its points and handles can be dragged without switching tools.
+        if (tool == Tool.Shape && !_strokeRenderer.IsAnglePending)
+        {
+            if (_strokeRenderer.HitsSelectionControls(pos)) _editingSelection = true;
+            else _strokeRenderer.ClearSelection();
+        }
+
+        if (tool == Tool.Select || _editingSelection)
+        {
             _strokeRenderer.HandleSelectionDown(pos);
+            // Dragging a point or a handle must not turn into the radial menu when the pen holds still.
+            if (_editingSelection ||
+                _strokeRenderer.CurrentSelectionState is not (StrokeRenderer.SelectionState.None or StrokeRenderer.SelectionState.DrawingBox))
+                _menuPending = false;
+            return;
+        }
+
+        if (tool == Tool.Eraser)
+        {
+            // Erasing starts at once; a long still press still opens the menu.
+            _strokeRenderer.BeginStroke(pos);
+            _isDrawing = true;
+        }
 
         if (_strokeRenderer.Tool == Tool.Shape && _strokeRenderer.IsAnglePending)
         {
@@ -426,9 +576,9 @@ public sealed partial class InputManager : IDisposable
         }
     }
 
-    private void OnMouseMove(IMouse mouse, Vector2 position)
+    private void PointerMove(Vector2 pos)
     {
-        var pos = ToLogical(position);
+        _pointer = pos;
         if (_gestures?.IsActive == true) return;
 
         switch (_capture)
@@ -447,12 +597,13 @@ public sealed partial class InputManager : IDisposable
                 _strokeRenderer.SetDirty();
                 return;
             case Capture.Erase:
-                _strokeRenderer.EraseAt(pos);
+                _strokeRenderer.EraseAt(pos, _palmRadius);
                 UpdateHover(pos);
                 return;
             case Capture.Pan:
                 PanBy(pos - _lastPanPosition);
                 _lastPanPosition = pos;
+                UpdateHover(pos);
                 return;
             case Capture.Canvas:
                 MoveCanvasPress(pos);
@@ -482,19 +633,29 @@ public sealed partial class InputManager : IDisposable
 
     private void MoveCanvasPress(Vector2 pos)
     {
+        if (_editingSelection)
+        {
+            _strokeRenderer.HandleSelectionMove(pos);
+            return;
+        }
+
         if (_menuPending)
         {
             float elapsed = (float)(DateTime.Now - _mouseDownTime).TotalSeconds;
             float dist = Vector2.Distance(_mouseDownPos, pos);
             bool escaped = (dist > Settings.RadialMenuEscapeDistance && elapsed < Settings.RadialMenuEscapeTime) ||
-                           dist > MenuCancelDistance;
-            if (!escaped) return;
+                           dist > Settings.HoldTolerance;
+            if (!escaped)
+            {
+                if (_isDrawing) _strokeRenderer.AddPoint(pos);
+                UpdateHover(pos);
+                return;
+            }
 
             _menuPending = false;
             switch (_strokeRenderer.Tool)
             {
                 case Tool.Brush:
-                case Tool.Eraser:
                     _strokeRenderer.BeginStroke(_mouseDownPos);
                     _isDrawing = true;
                     break;
@@ -509,9 +670,13 @@ public sealed partial class InputManager : IDisposable
             }
         }
 
-        _lastMovePos = pos;
-        _lastMoveTime = DateTime.Now;
-        _strokeRenderer.IsQuickShapeApplied = false;
+        // Trembling within the tolerance still counts as holding still, so a shape can be recognised from a hand held in the air.
+        if (Vector2.Distance(pos, _lastMovePos) > Settings.HoldTolerance)
+        {
+            _lastMovePos = pos;
+            _lastMoveTime = DateTime.Now;
+            _strokeRenderer.IsQuickShapeApplied = false;
+        }
 
         if (_isDrawing) _strokeRenderer.AddPoint(pos);
         else if (_isShaping) _strokeRenderer.UpdateShape(pos);
@@ -531,9 +696,9 @@ public sealed partial class InputManager : IDisposable
         _strokeRenderer.SetDirty();
     }
 
-    private void OnMouseUp(IMouse mouse, MouseButton button)
+    private void PointerUp(Vector2 pos, MouseButton button)
     {
-        var pos = ToLogical(mouse.Position);
+        _pointer = pos;
         _strokeRenderer.SetDirty();
         if (_capture == Capture.None || button != _captureButton) return;
 
@@ -563,13 +728,24 @@ public sealed partial class InputManager : IDisposable
 
     private void EndCanvasPress(Vector2 pos)
     {
+        if (_editingSelection)
+        {
+            _strokeRenderer.HandleSelectionUp(pos);
+            _editingSelection = false;
+            return;
+        }
+
         var tool = _strokeRenderer.Tool;
         if (_menuPending)
         {
             _menuPending = false;
-            if (tool is Tool.Brush or Tool.Eraser)
+            if (tool == Tool.Eraser)
             {
-                // A tap leaves a dot (or erases under the pen).
+                _strokeRenderer.EndStroke();
+            }
+            else if (tool == Tool.Brush)
+            {
+                // A tap leaves a dot.
                 _strokeRenderer.BeginStroke(_mouseDownPos);
                 _strokeRenderer.AddPoint(pos);
                 _strokeRenderer.EndStroke();

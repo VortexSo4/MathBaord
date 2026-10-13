@@ -9,7 +9,7 @@
         <Nullable>enable</Nullable>
         <ApplicationIcon>resources\icon.ico</ApplicationIcon>
         <!-- Shown in the log and compared with GitHub releases by the updater. -->
-        <Version>1.0.1</Version>
+        <Version>1.0.2</Version>
     </PropertyGroup>
 
     <ItemGroup>
@@ -46,7 +46,7 @@
     <!-- Files the app already ships are shared with plugins at run time, so the plugins' copies are removed. -->
     <Target Name="PublishBackends">
         <PropertyGroup>
-            <BackendsAppDir Condition="'$(BackendsAppDir)' == ''">$(MSBuildProjectDirectory)\$(OutDir)</BackendsAppDir>
+            <BackendsAppDir Condition="'$(BackendsAppDir)' == ''">$([System.IO.Path]::Combine($(MSBuildProjectDirectory), $(OutDir)))</BackendsAppDir>
         </PropertyGroup>
         <MSBuild Projects="%(BackendProject.Identity)" Targets="Publish" RemoveProperties="RuntimeIdentifier;SelfContained"
                  Properties="Configuration=$(Configuration);PublishDir=$(BackendsAppDir)backends\%(BackendProject.Filename)\" />

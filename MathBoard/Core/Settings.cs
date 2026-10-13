@@ -14,13 +14,6 @@ public static class Settings
     // ====================== ОДИН ИСТОЧНИК ПРАВДЫ ======================
     private static class Defaults
     {
-        public static readonly List<string> Colors =
-        [
-            "#D3D3D3",
-            "#FF8383",
-            "#3A994C"
-        ];
-
         public const string Language = "EN_US";
 
         public static readonly string DefaultBackgroundColor = "#121212";
@@ -55,32 +48,47 @@ public static class Settings
         public static readonly QuickButtonConfig[] QuickButtons =
         [
             new(UiAction.ToggleLibrary, 0f, 0f, 34f, 34f),
-            new(UiAction.Redo, 1f, 0f, -86f, 34f),
+            new(UiAction.Redo, 1f, 0f, -138f, 34f),
             new(UiAction.Save, 1f, 0f, -34f, 34f),
             new(UiAction.Brush, 1f, 1f, -34f, -195f),
-            new(UiAction.Eraser, 1f, 0.5f, -34f, 113f),
-            new(UiAction.Select, 1f, 0.5f, -34f, 61f),
+            new(UiAction.Eraser, 1f, 1f, -34f, -247f),
+            new(UiAction.Select, 1f, 1f, -34f, -299f),
             new(UiAction.Pan, 1f, 1f, -34f, -143f),
-            new(UiAction.Color1, 0.5f, 1f, -52f, -34f),
-            new(UiAction.Color2, 0.5f, 1f, 0f, -34f),
-            new(UiAction.Color3, 0.5f, 1f, 52f, -34f),
+            new(UiAction.Color, 0.5f, 1f, -52f, -34f, HexToVector4("#D3D3D3")),
+            new(UiAction.Color, 0.5f, 1f, 0f, -34f, HexToVector4("#FF8383")),
+            new(UiAction.Color, 0.5f, 1f, 52f, -34f, HexToVector4("#3A994C")),
+            new(UiAction.Color, 0.5f, 1f, 104f, -34f, HexToVector4("#FFD54F")),
+            new(UiAction.Color, 0.5f, 1f, -104f, -34f, HexToVector4("#5B9BFF")),
             new(UiAction.ZoomOut, 1f, 1f, -138f, -34f),
             new(UiAction.FitView, 1f, 1f, -86f, -34f),
             new(UiAction.ZoomIn, 1f, 1f, -34f, -34f),
-            new(UiAction.Undo, 1f, 0f, -138f, 34f),
+            new(UiAction.Undo, 1f, 0f, -190f, 34f),
             new(UiAction.Shapes, 1f, 1f, -86f, -143f),
             new(UiAction.InsertImage, 1f, 1f, -86f, -195f),
-            new(UiAction.Screenshot, 1f, 0.5f, -86f, 113f)
+            new(UiAction.Screenshot, 1f, 1f, -86f, -247f),
+            new(UiAction.Export, 1f, 0f, -86f, 34f)
         ];
     }
 
     // ====================== Настройки ======================
-    public static List<Vector4> Colors { get; private set; } = Defaults.Colors.Select(HexToVector4).ToList();
-
     public static Setting<string> Language { get; } = new(Defaults.Language);
 
     public static Setting<Vector4> BackgroundColor { get; } =
         new(HexToVector4(Defaults.DefaultBackgroundColor));
+
+    public static Setting<bool> LightTheme { get; } = new(false);
+    public static Setting<Vector4> BackgroundColorLight { get; } = new(HexToVector4("#F7F7F4"));
+
+    /// <summary>The board's background in the current theme; each theme keeps its own.</summary>
+    public static Vector4 Background
+    {
+        get => LightTheme ? BackgroundColorLight : BackgroundColor;
+        set
+        {
+            if (LightTheme) BackgroundColorLight.Value = value;
+            else BackgroundColor.Value = value;
+        }
+    }
 
     public static Setting<string> LibraryRootPath { get; } = new(Defaults.LibraryRootPath);
     public static Setting<int> AutoSaveIntervalMinutes { get; } = new(Defaults.AutoSaveIntervalMinutes);
@@ -95,6 +103,12 @@ public static class Settings
     public static Setting<string> OnScreenKeyboard { get; } = new(Defaults.OnScreenKeyboard);
 
     public static Setting<string> LastOpenedFile { get; } = new("");
+
+    /// <summary>How far (logical px) a pen may tremble and still count as held still: for the radial menu and shape recognition.</summary>
+    public static Setting<float> HoldTolerance { get; } = new(12f);
+
+    /// <summary>A touch at least this wide (a palm or a fist) erases; 0 turns it off.</summary>
+    public static Setting<float> PalmEraseMillimetres { get; } = new(30f);
 
     /// <summary>Look for a newer release on GitHub at startup.</summary>
     public static Setting<bool> CheckUpdates { get; } = new(true);
@@ -127,6 +141,33 @@ public static class Settings
 
     /// <summary>Visible quick buttons. Replace the array when changing it: the default instance is shared.</summary>
     public static Setting<QuickButtonConfig[]> QuickButtons { get; } = new(Defaults.QuickButtons);
+
+    /// <summary>The colors of the color buttons, in layout order.</summary>
+    public static List<Vector4> Palette => QuickButtons.Value.Where(b => b.Color != null).Select(b => b.Color!.Value).ToList();
+
+    /// <summary>Replaces <paramref name="button"/> with a copy of another color and returns the copy.</summary>
+    public static QuickButtonConfig SetButtonColor(QuickButtonConfig button, Vector4 color)
+    {
+        var buttons = QuickButtons.Value.ToArray();
+        var changed = button with { Color = color };
+        int index = Array.IndexOf(buttons, button);
+        if (index >= 0)
+        {
+            buttons[index] = changed;
+            QuickButtons.Value = buttons;
+        }
+
+        return changed;
+    }
+
+    public static void ResetQuickButtons()
+    {
+        QuickButtons.Value = Defaults.QuickButtons;
+        Save();
+    }
+
+    public static void SetPaletteColor(int index, Vector4 color) =>
+        SetButtonColor(QuickButtons.Value.Where(b => b.Color != null).ElementAt(index), color);
 
     // ====================== Вспомогательный класс ======================
     public class Setting<T>
@@ -172,6 +213,11 @@ public static class Settings
             var json = File.ReadAllText(SettingPath);
             using var doc = JsonDocument.Parse(json);
 
+            // Before 1.1 there were exactly three color buttons (Color1..3) taking their colors from "Colors".
+            var legacyColors = doc.RootElement.TryGetProperty("Colors", out var colorsElem) && colorsElem.ValueKind == JsonValueKind.Array
+                ? colorsElem.Deserialize<List<string>>(_jsonOptions)!.Select(HexToVector4).ToList()
+                : [];
+
             if (doc.RootElement.TryGetProperty("Values", out var valuesElem))
             {
                 foreach (var prop in valuesElem.EnumerateObject())
@@ -189,7 +235,9 @@ public static class Settings
 
                     try
                     {
-                        if (targetType == typeof(string))
+                        if (prop.Name == nameof(QuickButtons))
+                            value = JsonSerializer.Deserialize(MigrateColorButtons(elem.GetRawText(), legacyColors), targetType, _jsonOptions);
+                        else if (targetType == typeof(string))
                             value = elem.ValueKind == JsonValueKind.String
                                 ? elem.GetString()
                                 : elem.GetRawText();
@@ -211,15 +259,6 @@ public static class Settings
                         valueProp.SetValue(settingObj, value);
                 }
             }
-
-            // Восстановление цветов (раньше вообще не применялось!)
-            if (doc.RootElement.TryGetProperty("Colors", out var colorsElem) &&
-                colorsElem.ValueKind == JsonValueKind.Array)
-            {
-                var colors = colorsElem.Deserialize<List<string>>(_jsonOptions);
-                if (colors != null && colors.Count >= 3)
-                    Colors = colors.Take(3).Select(HexToVector4).ToList();
-            }
         }
         catch
         {
@@ -240,11 +279,7 @@ public static class Settings
                 values[kvp.Key] = valueProp?.GetValue(settingObj)!;
             }
 
-            var data = new SettingsData
-            {
-                Colors = Colors.Select(Vector4ToHex).ToList(),
-                Values = values
-            };
+            var data = new SettingsData { Values = values };
 
             var json = JsonSerializer.Serialize(data, _jsonOptions);
             File.WriteAllText(SettingPath, json);
@@ -253,6 +288,14 @@ public static class Settings
         {
         }
     }
+
+    private static string MigrateColorButtons(string json, List<Vector4> colors) =>
+        System.Text.RegularExpressions.Regex.Replace(json, "\"Action\":\\s*\"Color([123])\"", m =>
+        {
+            int i = m.Groups[1].Value[0] - '1';
+            var c = i < colors.Count ? colors[i] : Vector4.One;
+            return FormattableString.Invariant($"\"Action\": \"Color\", \"Color\": {{\"X\": {c.X}, \"Y\": {c.Y}, \"Z\": {c.Z}, \"W\": 1}}");
+        });
 
     private static Vector4 HexToVector4(string hex)
     {
@@ -271,17 +314,8 @@ public static class Settings
         return new Vector4(1, 1, 1, 1); // fallback
     }
 
-    private static string Vector4ToHex(Vector4 color)
-    {
-        byte r = (byte)Math.Clamp(color.X * 255, 0, 255);
-        byte g = (byte)Math.Clamp(color.Y * 255, 0, 255);
-        byte b = (byte)Math.Clamp(color.Z * 255, 0, 255);
-        return $"#{r:X2}{g:X2}{b:X2}";
-    }
-
     public static void ResetToDefaults()
     {
-        Colors = Defaults.Colors.Select(HexToVector4).ToList();
         BackgroundColor.Value = HexToVector4(Defaults.DefaultBackgroundColor);
 
         foreach (var kvp in _settingProperties)
@@ -299,10 +333,9 @@ public static class Settings
 
     private class SettingsData
     {
-        public List<string> Colors { get; set; } = [];
         public Dictionary<string, object> Values { get; set; } = new();
     }
 }
 
-/// <summary>A quick button centered at <c>anchor * screenSize + offset</c>.</summary>
-public sealed record QuickButtonConfig(UiAction Action, float AnchorX, float AnchorY, float OffsetX, float OffsetY);
+/// <summary>A quick button centered at <c>anchor * screenSize + offset</c>; color buttons carry their color.</summary>
+public sealed record QuickButtonConfig(UiAction Action, float AnchorX, float AnchorY, float OffsetX, float OffsetY, Vector4? Color = null);

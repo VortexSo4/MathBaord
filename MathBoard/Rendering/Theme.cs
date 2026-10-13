@@ -1,4 +1,5 @@
 using System.Numerics;
+using MathBoard.Core;
 
 namespace MathBoard.Rendering;
 
@@ -11,6 +12,7 @@ public enum FontFace
 
 public readonly record struct TextStyle(FontFace Face, float Size);
 
+/// <summary>Interface colors of the dark or the light theme (<see cref="Settings.LightTheme"/>); the board's ink keeps its colors.</summary>
 public static class Theme
 {
     public static readonly TextStyle Body = new(FontFace.Regular, 15f);
@@ -18,14 +20,16 @@ public static class Theme
     public static readonly TextStyle Title = new(FontFace.Semibold, 17f);
     public static readonly TextStyle Label = new(FontFace.Semibold, 15f);
 
-    public static readonly Vector4 PanelBg = Rgb(0x15, 0x16, 0x1C);
-    public static readonly Vector4 HeaderBg = Rgb(0x20, 0x22, 0x2B);
-    public static readonly Vector4 PopupBg = Rgb(0x1C, 0x1E, 0x26);
-    public static readonly Vector4 Surface = Rgb(0x2A, 0x2D, 0x39);
-    public static readonly Vector4 SurfaceHover = Rgb(0x36, 0x3A, 0x48);
-    public static readonly Vector4 Field = Rgb(0x12, 0x13, 0x18);
-    public static readonly Vector4 Border = Rgb(0x34, 0x37, 0x45);
-    public static readonly Vector4 RowHover = new(1f, 1f, 1f, 0.05f);
+    private static bool Light => Settings.LightTheme;
+
+    public static Vector4 PanelBg => Light ? Rgb(0xF3, 0xF4, 0xF7) : Rgb(0x15, 0x16, 0x1C);
+    public static Vector4 HeaderBg => Light ? Rgb(0xE6, 0xE8, 0xEE) : Rgb(0x20, 0x22, 0x2B);
+    public static Vector4 PopupBg => Light ? Rgb(0xFF, 0xFF, 0xFF) : Rgb(0x1C, 0x1E, 0x26);
+    public static Vector4 Surface => Light ? Rgb(0xE9, 0xEB, 0xF0) : Rgb(0x2A, 0x2D, 0x39);
+    public static Vector4 SurfaceHover => Light ? Rgb(0xDA, 0xDE, 0xE7) : Rgb(0x36, 0x3A, 0x48);
+    public static Vector4 Field => Light ? Rgb(0xFF, 0xFF, 0xFF) : Rgb(0x12, 0x13, 0x18);
+    public static Vector4 Border => Light ? Rgb(0xC8, 0xCC, 0xD6) : Rgb(0x34, 0x37, 0x45);
+    public static Vector4 RowHover => Light ? new(0f, 0f, 0f, 0.05f) : new(1f, 1f, 1f, 0.05f);
     public static readonly Vector4 Overlay = new(0f, 0f, 0f, 0.55f);
 
     public static readonly Vector4 Accent = Rgb(0x4C, 0x8D, 0xFF);
@@ -33,10 +37,12 @@ public static class Theme
     public static readonly Vector4 AccentSoft = new(0.30f, 0.55f, 1f, 0.18f);
     public static readonly Vector4 Danger = Rgb(0xE5, 0x48, 0x4D);
     public static readonly Vector4 DangerHover = Rgb(0xF0, 0x62, 0x67);
+    /// <summary>Text and icons on accent or danger backgrounds.</summary>
+    public static readonly Vector4 OnAccent = Vector4.One;
 
-    public static readonly Vector4 Text = Rgb(0xEC, 0xED, 0xF2);
-    public static readonly Vector4 TextSecondary = Rgb(0xA3, 0xA8, 0xB8);
-    public static readonly Vector4 TextMuted = Rgb(0x6E, 0x73, 0x84);
+    public static Vector4 Text => Light ? Rgb(0x1B, 0x1D, 0x24) : Rgb(0xEC, 0xED, 0xF2);
+    public static Vector4 TextSecondary => Light ? Rgb(0x4F, 0x55, 0x66) : Rgb(0xA3, 0xA8, 0xB8);
+    public static Vector4 TextMuted => Light ? Rgb(0x8A, 0x90, 0xA0) : Rgb(0x6E, 0x73, 0x84);
 
     public const float ButtonRadius = 8f;
     public const float PopupRadius = 12f;
@@ -85,4 +91,5 @@ public static class Icons
     public const string Screenshot = "\uF406";
     public const string Picture = "\uEB9F";
     public const string Monitor = "\uE7F4";
+    public const string Export = "\uE72D";
 }

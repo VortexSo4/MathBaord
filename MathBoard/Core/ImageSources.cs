@@ -9,7 +9,7 @@ public sealed record ScreenCapture(SKBitmap Bitmap, SKRectI[] Monitors, int Curr
     public void Dispose() => Bitmap.Dispose();
 }
 
-/// <summary>Where pictures come from: the screen, the clipboard and the open file dialog (Windows only).</summary>
+/// <summary>Where pictures come from — the screen, the clipboard, the open file dialog — and the export save dialog (Windows only).</summary>
 public static unsafe partial class ImageSources
 {
     private static readonly List<SKRectI> FoundMonitors = new();
@@ -168,13 +168,21 @@ public static unsafe partial class ImageSources
     }
 
     /// <summary>Shows the system "Open" dialog for pictures; returns the chosen file or null.</summary>
-    public static string? PickFile(nint owner, string title)
+    public static string? PickFile(nint owner, string title) =>
+        FileDialog(owner, title, "Images\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp\0\0", "", save: false);
+
+    /// <summary>Shows the system "Save as" dialog for a PNG or PDF; returns the chosen file or null.</summary>
+    public static string? PickExportFile(nint owner, string title, string name) =>
+        FileDialog(owner, title, "PNG\0*.png\0PDF\0*.pdf\0\0", name, save: true);
+
+    private static string? FileDialog(nint owner, string title, string filter, string name, bool save)
     {
-        const string filter = "Images\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp\0\0";
         var buffer = new char[1024];
+        name.CopyTo(0, buffer, 0, Math.Min(name.Length, buffer.Length - 1));
         fixed (char* file = buffer)
         fixed (char* filterPtr = filter)
         fixed (char* titlePtr = title)
+        fixed (char* extension = "png")
         {
             var dialog = new OpenFileName
             {
@@ -184,9 +192,11 @@ public static unsafe partial class ImageSources
                 File = file,
                 MaxFile = (uint)buffer.Length,
                 Title = titlePtr,
-                Flags = 0x00001000 | 0x00000800 | 0x00080000 // FILEMUSTEXIST | PATHMUSTEXIST | EXPLORER
+                DefaultExtension = extension,
+                // EXPLORER | PATHMUSTEXIST, and OVERWRITEPROMPT or FILEMUSTEXIST
+                Flags = 0x00080000 | 0x00000800 | (save ? 0x00000002u : 0x00001000u)
             };
-            if (!GetOpenFileNameW(&dialog)) return null;
+            if (!(save ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog))) return null;
         }
 
         return new string(buffer, 0, Array.IndexOf(buffer, '\0'));
@@ -301,4 +311,8 @@ public static unsafe partial class ImageSources
     [LibraryImport("comdlg32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetOpenFileNameW(OpenFileName* dialog);
+
+    [LibraryImport("comdlg32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetSaveFileNameW(OpenFileName* dialog);
 }

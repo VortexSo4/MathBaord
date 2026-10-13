@@ -161,7 +161,8 @@ public sealed class UiBatch(TextAtlas atlas)
     public void TextButton(string label, Vector2 pos, Vector2 size, bool hovered, ButtonKind kind)
     {
         ButtonBackground(pos, size, hovered, kind);
-        TextInRect(label, pos + new Vector2(8f, 0), size - new Vector2(16f, 0), Theme.Text, Theme.Label, Align.Center);
+        var color = kind is ButtonKind.Primary or ButtonKind.Danger ? Theme.OnAccent : Theme.Text;
+        TextInRect(label, pos + new Vector2(8f, 0), size - new Vector2(16f, 0), color, Theme.Label, Align.Center);
     }
 
     public void TextField(TextBoxState box, Vector2 pos, Vector2 size, bool focused, TextStyle style, Vector4 textColor)

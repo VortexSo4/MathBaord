@@ -32,7 +32,6 @@ public sealed partial class SoftwareBackend : IRenderBackend
     private Vector4 _layerClear;
     private int _layerBackground;
     private int _layerImages;
-    private int _baked;
 
     private readonly SKPaint _fill = new() { IsAntialias = true, Style = SKPaintStyle.Fill };
     private readonly SKPaint _stroke = new() { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeCap = SKStrokeCap.Round, StrokeJoin = SKStrokeJoin.Round };
@@ -136,12 +135,12 @@ public sealed partial class SoftwareBackend : IRenderBackend
     private void UpdateLayer(in FrameData frame)
     {
         int stable = Math.Min(frame.StrokesStable, frame.Strokes.Length);
-        if (frame.StrokesDirtyFrom < _pathsBuilt) ClearPaths();
+        if (frame.StrokesDirtyFrom < _pathsBuilt) DropPathsFrom(frame.StrokesDirtyFrom);
         BuildPaths(frame.Strokes, stable);
+        var removed = DisposeDroppedPaths();
 
         bool sameView = _layerValid && _layerZoom == frame.CameraZoom * frame.UiScale && _layerClear == frame.ClearColor &&
-                        _layerBackground == frame.BackgroundVersion && _layerImages == frame.ImagesVersion &&
-                        frame.StrokesDirtyFrom >= _baked;
+                        _layerBackground == frame.BackgroundVersion && _layerImages == frame.ImagesVersion;
         var shift = (frame.CameraPosition - _layerCamera) * frame.UiScale;
         var whole = new Vector2(MathF.Round(shift.X), MathF.Round(shift.Y));
         var matrix = CameraMatrix(frame.CameraPosition, frame.CameraZoom, frame.UiScale);
@@ -149,15 +148,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
 
         if (sameView && shift == Vector2.Zero)
         {
-            if (stable > _baked)
-            {
-                using var canvas = new SKCanvas(_layer);
-                canvas.SetMatrix(matrix);
-                DrawPaths(canvas, matrix, [new SKRect(0, 0, w, h)], _bakedPaths);
-                _baked = stable;
-                _bakedPaths = _paths.Count;
-            }
-
+            UpdateLayerInPlace(frame, matrix, removed);
             return;
         }
 
@@ -166,7 +157,8 @@ public sealed partial class SoftwareBackend : IRenderBackend
             canvas.Clear(ToColor(frame.ClearColor));
             var regions = new List<SKRect> { new(0, 0, w, h) };
             bool canShift = sameView && Vector2.DistanceSquared(shift, whole) < 1e-4f &&
-                            MathF.Abs(whole.X) < w && MathF.Abs(whole.Y) < h;
+                            MathF.Abs(whole.X) < w && MathF.Abs(whole.Y) < h && removed.IsEmpty &&
+                            _paths.All(path => path.InLayer);
             if (canShift)
             {
                 // Only the strips uncovered by the shift need the strokes again.
@@ -178,19 +170,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
                 if (whole.Y < 0) regions.Add(new SKRect(0, h + whole.Y, w, h));
             }
 
-            foreach (var region in regions)
-            {
-                canvas.Save();
-                canvas.ClipRect(region);
-                canvas.SetMatrix(SKMatrix.CreateScale(frame.UiScale, frame.UiScale));
-                _canvasClip = Prim.NoClip;
-                foreach (var prim in frame.Background) DrawPrim(canvas, prim);
-                SetClip(canvas, Prim.NoClip);
-                canvas.SetMatrix(matrix);
-                DrawPictures(canvas, frame.Images);
-                DrawPaths(canvas, matrix, [region], 0);
-                canvas.Restore();
-            }
+            foreach (var region in regions) RedrawRegion(canvas, frame, matrix, region);
         }
 
         (_layer, _spareLayer) = (_spareLayer, _layer);
@@ -200,26 +180,123 @@ public sealed partial class SoftwareBackend : IRenderBackend
         _layerClear = frame.ClearColor;
         _layerBackground = frame.BackgroundVersion;
         _layerImages = frame.ImagesVersion;
-        _baked = stable;
-        _bakedPaths = _paths.Count;
+        foreach (var path in _paths) path.InLayer = true;
     }
 
-    /// <summary>A run of connected capsules with the same color and width, kept as one polyline in world space.</summary>
-    private sealed record StrokePath(SKPath Path, SKRect Bounds, SKColor Color, float Width) : IDisposable
+    /// <summary>
+    /// Brings the layer up to date without moving it: erased strokes are cleared by redrawing only the area they covered,
+    /// new strokes at the end are simply drawn on top.
+    /// </summary>
+    private void UpdateLayerInPlace(in FrameData frame, SKMatrix matrix, SKRect removed)
     {
+        // A new path below one already in the layer would end up on top of it, so its area is redrawn too.
+        var dirty = removed;
+        int lastInLayer = _paths.FindLastIndex(path => path.InLayer);
+        for (int i = 0; i < lastInLayer; i++)
+            if (!_paths[i].InLayer) dirty = Union(dirty, _paths[i].Bounds);
+
+        if (dirty.IsEmpty && lastInLayer == _paths.Count - 1) return;
+
+        using var canvas = new SKCanvas(_layer);
+        if (!dirty.IsEmpty)
+        {
+            var region = matrix.MapRect(dirty);
+            region = SKRect.Intersect(new SKRect(MathF.Floor(region.Left), MathF.Floor(region.Top), MathF.Ceiling(region.Right),
+                MathF.Ceiling(region.Bottom)), new SKRect(0, 0, _layer!.Width, _layer.Height));
+            if (!region.IsEmpty) RedrawRegion(canvas, frame, matrix, region);
+        }
+
+        canvas.SetMatrix(matrix);
+        foreach (var path in _paths.Where(path => !path.InLayer)) DrawPath(canvas, path);
+        foreach (var path in _paths) path.InLayer = true;
+    }
+
+    private void RedrawRegion(SKCanvas canvas, in FrameData frame, SKMatrix matrix, SKRect region)
+    {
+        canvas.Save();
+        canvas.ClipRect(region);
+        canvas.Clear(ToColor(frame.ClearColor));
+        canvas.SetMatrix(SKMatrix.CreateScale(frame.UiScale, frame.UiScale));
+        _canvasClip = Prim.NoClip;
+        foreach (var prim in frame.Background) DrawPrim(canvas, prim);
+        SetClip(canvas, Prim.NoClip);
+        canvas.SetMatrix(matrix);
+        DrawPictures(canvas, frame.Images);
+        DrawPaths(canvas, matrix, [region], 0);
+        canvas.Restore();
+    }
+
+    private static SKRect Union(SKRect a, SKRect b) => a.IsEmpty ? b : SKRect.Union(a, b);
+
+    /// <summary>
+    /// A run of connected capsules with the same color and width, primitives [Start, End), kept as one polyline in world
+    /// space. <see cref="InLayer"/> tells whether the cached layer already shows it.
+    /// </summary>
+    private sealed class StrokePath(SKPath path, SKRect bounds, SKColor color, float width) : IDisposable
+    {
+        public SKPath Path { get; } = path;
+        public SKRect Bounds { get; } = bounds;
+        public SKColor Color { get; } = color;
+        public float Width { get; } = width;
+        public int Start, End;
+        public bool InLayer;
+        /// <summary>First and last primitive, color and width, and length: what identifies the same run elsewhere.</summary>
+        public (Vector4, Vector4, Vector4, int) Key;
+
         public void Dispose() => Path.Dispose();
     }
 
     private readonly List<StrokePath> _paths = new();
     private int _pathsBuilt;
-    private int _bakedPaths;
+
+    // Paths dropped because primitives before them changed, by their first and last primitive. When the same run comes
+    // back at another index (strokes after an erased one shift down), the path and its place in the layer are reused.
+    private readonly Dictionary<(Vector4, Vector4, Vector4, int), StrokePath> _dropped = new();
+
+    /// <summary>Takes the paths that include primitives from <paramref name="prim"/> on out of the list, for reuse.</summary>
+    private void DropPathsFrom(int prim)
+    {
+        while (_paths.Count > 0 && _paths[^1].End > prim)
+        {
+            var path = _paths[^1];
+            _paths.RemoveAt(_paths.Count - 1);
+            if (!_dropped.TryAdd(path.Key, path))
+            {
+                Erase(path);
+                path.Dispose();
+            }
+        }
+
+        _pathsBuilt = _paths.Count > 0 ? _paths[^1].End : 0;
+    }
+
+    private SKRect _erased;
+
+    private void Erase(StrokePath path)
+    {
+        if (path.InLayer) _erased = Union(_erased, path.Bounds);
+    }
+
+    /// <summary>Frees the dropped paths that did not come back and returns the area they covered in the layer.</summary>
+    private SKRect DisposeDroppedPaths()
+    {
+        foreach (var path in _dropped.Values)
+        {
+            Erase(path);
+            path.Dispose();
+        }
+
+        _dropped.Clear();
+        var erased = _erased;
+        _erased = SKRect.Empty;
+        return erased;
+    }
 
     private void ClearPaths()
     {
         foreach (var path in _paths) path.Dispose();
         _paths.Clear();
         _pathsBuilt = 0;
-        _bakedPaths = 0;
         _layerValid = false;
     }
 
@@ -232,26 +309,43 @@ public sealed partial class SoftwareBackend : IRenderBackend
             var first = prims[i];
             float radius = first.B.X;
             var end = new Vector2(first.A.Z, first.A.W);
-            var path = new SKPath();
-            path.MoveTo(first.A.X, first.A.Y);
-            path.LineTo(end.X, end.Y);
             int j = i + 1;
             while (j < to)
             {
                 var next = prims[j];
                 if (next.B.X != radius || next.Color != first.Color || next.A.X != end.X || next.A.Y != end.Y) break;
                 end = new Vector2(next.A.Z, next.A.W);
-                path.LineTo(end.X, end.Y);
                 j++;
             }
 
+            var key = (first.A, prims[j - 1].A, new Vector4(first.Color.X, first.Color.Y, first.Color.Z, radius), j - i);
+            if (_dropped.Remove(key, out var reused))
+            {
+                reused.Start = i;
+                reused.End = j;
+                _paths.Add(reused);
+                i = j;
+                continue;
+            }
+
+            var path = new SKPath();
+            path.MoveTo(first.A.X, first.A.Y);
+            for (int k = i; k < j; k++) path.LineTo(prims[k].A.Z, prims[k].A.W);
             var bounds = path.Bounds;
             bounds.Inflate(radius, radius);
-            _paths.Add(new StrokePath(path, bounds, ToColor(first.Color), radius * 2f));
+            _paths.Add(new StrokePath(path, bounds, ToColor(first.Color), radius * 2f) { Start = i, End = j, Key = key });
             i = j;
         }
 
         _pathsBuilt = Math.Max(_pathsBuilt, to);
+    }
+
+    private void DrawPath(SKCanvas canvas, StrokePath p)
+    {
+        _stroke.Color = p.Color;
+        _stroke.StrokeWidth = p.Width;
+        _stroke.Shader = null;
+        canvas.DrawPath(p.Path, _stroke);
     }
 
     /// <summary>Draws cached paths from index <paramref name="from"/> that touch one of the device-space regions.</summary>
@@ -262,11 +356,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
         for (int i = from; i < _paths.Count; i++)
         {
             var p = _paths[i];
-            if (!world.Any(r => r.IntersectsWith(p.Bounds))) continue;
-            _stroke.Color = p.Color;
-            _stroke.StrokeWidth = p.Width;
-            _stroke.Shader = null;
-            canvas.DrawPath(p.Path, _stroke);
+            if (world.Any(r => r.IntersectsWith(p.Bounds))) DrawPath(canvas, p);
         }
     }
 
