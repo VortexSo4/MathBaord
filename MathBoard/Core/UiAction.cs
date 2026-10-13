@@ -1,4 +1,4 @@
-namespace MathBoard.Core;
+﻿namespace MathBoard.Core;
 
 /// <summary>Commands available both as keyboard shortcuts and as on-screen quick buttons.</summary>
 public enum UiAction
@@ -14,9 +14,7 @@ public enum UiAction
     Eraser,
     Select,
     Pan,
-    Color1,
-    Color2,
-    Color3,
+    Color,
     ZoomIn,
     ZoomOut,
     FitView,
@@ -24,5 +22,9 @@ public enum UiAction
     Shapes,
     Grid,
     Screenshot,
-    InsertImage
+    InsertImage,
+    Thickness,
+    ClearBoard,
+    BackgroundColor,
+    Export
 }

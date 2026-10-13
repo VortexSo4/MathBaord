@@ -4,8 +4,8 @@ using MathBoard.Core;
 namespace MathBoard.Rendering;
 
 /// <summary>
-/// Edits a palette color with vertical hue / saturation / brightness bars. Opened by double-tapping a color button,
-/// changes apply live; tapping outside or "Done" closes it.
+/// Edits a color with vertical hue / saturation / brightness bars: a color button's (double tap) or the background's.
+/// Changes apply live; tapping outside or "Done" closes it.
 /// </summary>
 public sealed class ColorEditor(StrokeRenderer renderer) : IPopup
 {
@@ -21,18 +21,20 @@ public sealed class ColorEditor(StrokeRenderer renderer) : IPopup
         Padding * 2 + BarWidth * 3 + BarGap * 2,
         TitleHeight + BarHeight + LabelHeight + FooterHeight + Padding);
 
-    private int _index = -1;
+    private Action<Vector4>? _changed;
+    private string _title = "";
     private float _hue, _saturation, _value;
     private Vector2 _pos;
     private Vector2 _mouse;
     private int _activeBar = -1;
 
-    public bool IsOpen => _index >= 0;
+    public bool IsOpen => _changed != null;
 
-    public void Open(int index, Vector2 anchor)
+    public void Open(string title, Vector4 color, Vector2 anchor, Action<Vector4> changed)
     {
-        _index = index;
-        (_hue, _saturation, _value) = ColorMath.RgbToHsv(Settings.Colors[index]);
+        _title = title;
+        _changed = changed;
+        (_hue, _saturation, _value) = ColorMath.RgbToHsv(color);
 
         // Above the button when there is room, otherwise below; always inside the screen.
         var screen = renderer.ScreenSize;
@@ -45,7 +47,7 @@ public sealed class ColorEditor(StrokeRenderer renderer) : IPopup
     public void Close()
     {
         if (!IsOpen) return;
-        _index = -1;
+        _changed = null;
         _activeBar = -1;
         Settings.Save();
         renderer.SetDirty();
@@ -97,10 +99,7 @@ public sealed class ColorEditor(StrokeRenderer renderer) : IPopup
             default: _value = t; break;
         }
 
-        var color = ColorMath.HsvToRgb(_hue, _saturation, _value);
-        Settings.Colors[_index] = color;
-        renderer.SetColor(color);
-        if (renderer.Tool is Tool.Eraser or Tool.Pan) renderer.SetTool(Tool.Brush);
+        _changed!(ColorMath.HsvToRgb(_hue, _saturation, _value));
         renderer.SetDirty();
     }
 
@@ -115,7 +114,7 @@ public sealed class ColorEditor(StrokeRenderer renderer) : IPopup
         var color = ColorMath.HsvToRgb(_hue, _saturation, _value);
         ui.Circle(_pos + new Vector2(Padding + 10f, TitleHeight * 0.5f), 10f, color);
         ui.Ring(_pos + new Vector2(Padding + 10f, TitleHeight * 0.5f), 10f, 1f, Theme.Border);
-        ui.TextInRect(Localization.Get($"tooltip_color_{_index + 1}", $"Color {_index + 1}"), _pos + new Vector2(Padding + 28f, 0),
+        ui.TextInRect(_title, _pos + new Vector2(Padding + 28f, 0),
             new Vector2(PopupSize.X - Padding * 2 - 28f, TitleHeight), Theme.Text, Theme.Title);
 
         float[] values = [_hue, _saturation, _value];

@@ -117,6 +117,7 @@ public sealed partial class StrokeRenderer
         {
             ShapeKind.Line or ShapeKind.Arrow or ShapeKind.Ray or ShapeKind.InfiniteLine or ShapeKind.Angle => SnapDirection(_shapeStart, world),
             ShapeKind.Rectangle or ShapeKind.Ellipse or ShapeKind.Triangle or ShapeKind.Plot => SnapSquare(_shapeStart, world),
+            var kind when ObjectGeometry.IsSolid(kind) => SnapSquare(_shapeStart, world),
             _ => world
         };
         UpdateLive(ObjectGeometry.FromDrag(CurrentShape, _shapeStart, end, CurrentColor, CurrentBrushWidth));
@@ -149,6 +150,10 @@ public sealed partial class StrokeRenderer
 
         var created = _liveObject;
         CommitLiveObject();
+        // Selected right away, so it can be adjusted without switching tools.
+        SelectedStrokes.Clear();
+        SelectedObjects.Clear();
+        SelectedObjects.Add(created);
         if (created.Kind == ShapeKind.Plot) EditPlotRequested?.Invoke(created);
     }
 
@@ -352,7 +357,7 @@ public sealed partial class StrokeRenderer
     {
         (Vector2 Camera, float Zoom, float Scale, Vector2 Screen, string Grid, int Objects, int Resets, Vector4 Clear) key =
             (_camera.Position, _camera.Zoom, UiScale, ScreenSize, Settings.GridMode.Value, _objectsVersion,
-                _textAtlas.ResetCount, Settings.BackgroundColor.Value);
+                _textAtlas.ResetCount, Settings.Background);
         if (key == _backgroundKey) return;
 
         // Camera moves keep the background attached to the world, so caches that follow the camera stay valid;
@@ -383,7 +388,7 @@ public sealed partial class StrokeRenderer
         string mode = Settings.GridMode.Value;
         if (mode is not ("Squares" or "Axes")) return;
 
-        var ink = ColorMath.ContrastOn(Settings.BackgroundColor.Value);
+        var ink = ColorMath.ContrastOn(Settings.Background);
         float zoom = _camera.Zoom;
 
         // Lines at least 24 px apart; numbers and stronger lines at least 56 px apart, both at round values.

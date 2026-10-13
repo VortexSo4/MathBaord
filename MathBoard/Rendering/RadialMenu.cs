@@ -36,7 +36,9 @@ public class RadialMenu
     private const float PickerRingGap = 6f;
 
     private const int SectorCount = 6;
-    private int CurrentSectorCount => _isColorMenuOpen ? 4 : SectorCount;
+    // The color sectors: the color buttons' colors (at most seven), then the background.
+    private static int PaletteCount => Math.Min(Settings.Palette.Count, 7);
+    private int CurrentSectorCount => _isColorMenuOpen ? PaletteCount + 1 : SectorCount;
     private static float OuterRadius => Settings.RadialMenuOuterRadius;
     private static float InnerRadius => Settings.RadialMenuInnerRadius;
     private static float CenterRadius => Settings.RadialMenuCenterRadius;
@@ -222,7 +224,7 @@ public class RadialMenu
 
         if (_isColorMenuOpen)
         {
-            if (_selectedIndex < 3) HandleColorPress(_selectedIndex);
+            if (_selectedIndex < PaletteCount) HandleColorPress(_selectedIndex);
             else OpenBackgroundPicker();
             return;
         }
@@ -270,7 +272,8 @@ public class RadialMenu
             return;
         }
 
-        _renderer.SetColor(Settings.Colors[colorIdx]);
+        _renderer.RecolorSelection(Settings.Palette[colorIdx]);
+        _renderer.SetColor(Settings.Palette[colorIdx]);
         if (_renderer.Tool is Tool.Eraser or Tool.Pan) _renderer.SetTool(Tool.Brush);
         if (Settings.RadialMenuCloseOnToolSelect) Close();
         else _isColorMenuOpen = false;
@@ -293,7 +296,7 @@ public class RadialMenu
 
         var newColor = ColorMath.HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
         if (_isPickingBackground)
-            Settings.BackgroundColor.Value = newColor;
+            Settings.Background = newColor;
         else
             _renderer.SetColor(newColor);
         _renderer.SetDirty();
@@ -303,7 +306,7 @@ public class RadialMenu
     {
         _isPickingColor = true;
         _colorEditIndex = colorIndex;
-        (_pickerHue, _pickerSaturation, _pickerValue) = ColorMath.RgbToHsv(Settings.Colors[colorIndex]);
+        (_pickerHue, _pickerSaturation, _pickerValue) = ColorMath.RgbToHsv(Settings.Palette[colorIndex]);
         _activePickerRing = -1;
         _selectedIndex = -1;
         _renderer.SetDirty();
@@ -312,7 +315,7 @@ public class RadialMenu
     private void ApplyPickerColor()
     {
         var newColor = ColorMath.HsvToRgb(_pickerHue, _pickerSaturation, _pickerValue);
-        Settings.Colors[_colorEditIndex] = newColor;
+        Settings.SetPaletteColor(_colorEditIndex, newColor);
         Settings.Save();
         _renderer.SetColor(newColor);
         Close();
@@ -324,7 +327,7 @@ public class RadialMenu
         _isPickingColor = false;
         _isAdjustingThickness = false;
         _isConfirmingClear = false;
-        (_pickerHue, _pickerSaturation, _pickerValue) = ColorMath.RgbToHsv(Settings.BackgroundColor.Value);
+        (_pickerHue, _pickerSaturation, _pickerValue) = ColorMath.RgbToHsv(Settings.Background);
         _activePickerRing = -1;
         _selectedIndex = -1;
         _renderer.SetDirty();
@@ -349,6 +352,7 @@ public class RadialMenu
         }
 
         int sectorCount = CurrentSectorCount;
+        var palette = Settings.Palette;
         float sectorAngle = MathF.PI * 2f / sectorCount;
         const float gap = 0.03f;
 
@@ -365,7 +369,7 @@ public class RadialMenu
             Vector4 fill;
             if (_isColorMenuOpen)
             {
-                fill = i == 3 ? Settings.BackgroundColor.Value : Settings.Colors[i];
+                fill = i == PaletteCount ? Settings.Background : palette[i];
                 if (isSelected) fill = Vector4.Lerp(fill, Vector4.One, 0.25f);
             }
             else
@@ -378,8 +382,8 @@ public class RadialMenu
             var iconCenter = Position + new Vector2(MathF.Cos(centerAngle), MathF.Sin(centerAngle)) * IconRadius;
             if (_isColorMenuOpen)
             {
-                if (i == 3) ui.Icon(Icons.Palette, iconCenter, 20f, ColorMath.ContrastOn(fill));
-                else if (Vector4.DistanceSquared(Settings.Colors[i], _renderer.CurrentColor) < 1e-4f)
+                if (i == PaletteCount) ui.Icon(Icons.Palette, iconCenter, 20f, ColorMath.ContrastOn(fill));
+                else if (Vector4.DistanceSquared(palette[i], _renderer.CurrentColor) < 1e-4f)
                     ui.Icon(Icons.CheckMark, iconCenter, 18f, ColorMath.ContrastOn(fill));
             }
             else
@@ -402,13 +406,9 @@ public class RadialMenu
         else if (_selectedIndex >= 0)
         {
             tooltip = _isColorMenuOpen
-                ? _selectedIndex switch
-                {
-                    0 => Localization.Get("tooltip_color_1", "Color 1"),
-                    1 => Localization.Get("tooltip_color_2", "Color 2"),
-                    2 => Localization.Get("tooltip_color_3", "Color 3"),
-                    _ => Localization.Get("tooltip_background_color", "Background Color")
-                }
+                ? _selectedIndex < PaletteCount
+                    ? Localization.Get("action_Color", "Color") + " " + (_selectedIndex + 1)
+                    : Localization.Get("tooltip_background_color", "Background Color")
                 : _selectedIndex switch
                 {
                     0 => Localization.Get("tooltip_brush", "Brush"),

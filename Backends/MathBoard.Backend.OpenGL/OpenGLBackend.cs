@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
 using MathBoard.Graphics;
 using Silk.NET.OpenGL;
 using Silk.NET.Windowing;
@@ -13,6 +14,7 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
 {
     // corner(2) + A(4) + B(4) + color(4) + extra(4) + clip(4)
     private const int FloatsPerVertex = 22;
+    private const int PrimFloats = 20;
     private const int FloatsPerPrim = FloatsPerVertex * 4;
     // GL_ALPHA8 is a compatibility-profile format that Silk.NET's enums leave out.
     private const InternalFormat AlphaInternalFormat = (InternalFormat)0x803C;
@@ -202,34 +204,25 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         if (count <= 0) return;
         if (_scratch.Length < count * FloatsPerPrim) _scratch = new float[count * FloatsPerPrim * 3 / 2];
 
+        // A prim's fields are laid out like the vertex attributes after the corner, so each corner copies them as one block.
+        var source = MemoryMarshal.Cast<Prim, float>(prims.Slice(from, count));
+        var target = _scratch.AsSpan();
         for (int i = 0; i < count; i++)
         {
-            var p = prims[from + i];
+            var fields = source.Slice(i * PrimFloats, PrimFloats);
             int baseIndex = i * FloatsPerPrim;
             for (int corner = 0; corner < 4; corner++)
             {
                 int o = baseIndex + corner * FloatsPerVertex;
-                _scratch[o] = corner is 1 or 2 ? 1f : 0f;
-                _scratch[o + 1] = corner >= 2 ? 1f : 0f;
-                Write(o + 2, p.A);
-                Write(o + 6, p.B);
-                Write(o + 10, p.Color);
-                Write(o + 14, p.Extra);
-                Write(o + 18, p.Clip);
+                target[o] = corner is 1 or 2 ? 1f : 0f;
+                target[o + 1] = corner >= 2 ? 1f : 0f;
+                fields.CopyTo(target.Slice(o + 2, PrimFloats));
             }
         }
 
         fixed (float* data = _scratch)
             gl.BufferSubData(BufferTargetARB.ArrayBuffer, from * FloatsPerPrim * sizeof(float),
                 (nuint)(count * FloatsPerPrim * sizeof(float)), data);
-    }
-
-    private void Write(int offset, Vector4 v)
-    {
-        _scratch[offset] = v.X;
-        _scratch[offset + 1] = v.Y;
-        _scratch[offset + 2] = v.Z;
-        _scratch[offset + 3] = v.W;
     }
 
     private void EnsureIndices(int primCount)

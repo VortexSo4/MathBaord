@@ -58,6 +58,8 @@ public class SettingsPanel : IDisposable
     public Action? OnCustomizeQuickButtons { get; set; }
 
     private readonly Updater _updater;
+    // Resetting the button layout asks for a second tap.
+    private bool _confirmLayoutReset;
 
     public SettingsPanel(StrokeRenderer renderer, Updater updater)
     {
@@ -68,6 +70,7 @@ public class SettingsPanel : IDisposable
     public void Open()
     {
         IsOpen = true;
+        _confirmLayoutReset = false;
         _scrollY = 0;
         _activeFieldIndex = -1;
         _openDropdownIndex = -1;
@@ -138,6 +141,14 @@ public class SettingsPanel : IDisposable
 
         _items.Add(new SettingItem
         {
+            Name = Localization.Get("settings_light_theme", "Light theme"),
+            Type = SettingType.Bool,
+            GetValue = () => Settings.LightTheme.Value.ToString(),
+            OnClick = () => Settings.LightTheme.Value = !Settings.LightTheme.Value
+        });
+
+        _items.Add(new SettingItem
+        {
             Name = Localization.Get("settings_grid", "Background grid"),
             Type = SettingType.Enum,
             GetValue = () => Settings.GridMode.Value,
@@ -180,6 +191,21 @@ public class SettingsPanel : IDisposable
 
         _items.Add(new SettingItem
         {
+            Name = Localization.Get("settings_reset_layout", "Default button layout"),
+            Type = SettingType.Action,
+            GetValue = () => _confirmLayoutReset
+                ? Localization.Get("settings_reset_layout_confirm", "Tap again")
+                : Localization.Get("settings_reset_layout_action", "Restore"),
+            OnClick = () =>
+            {
+                if (_confirmLayoutReset) Settings.ResetQuickButtons();
+                _confirmLayoutReset = !_confirmLayoutReset;
+                _renderer.SetDirty();
+            }
+        });
+
+        _items.Add(new SettingItem
+        {
             Name = Localization.Get("settings_radialmenu_close_on_tool_select", "RadialMenu Close On Tool Select"),
             Type = SettingType.Bool,
             GetValue = () => Settings.RadialMenuCloseOnToolSelect.Value.ToString(),
@@ -198,6 +224,10 @@ public class SettingsPanel : IDisposable
             }
         });
 
+        _items.Add(Numeric("settings_hold_tolerance", "Hold tolerance, px",
+            () => Settings.HoldTolerance, v => Settings.HoldTolerance.Value = Math.Clamp(v, 2f, 60f), "0"));
+        _items.Add(Numeric("settings_palm_erase", "Palm erases from, mm (0 = off)",
+            () => Settings.PalmEraseMillimetres, v => Settings.PalmEraseMillimetres.Value = Math.Max(0f, v), "0"));
         _items.Add(Numeric("settings_radialmenu_long_press", "RadialMenu Long Press",
             () => Settings.RadialMenuLongPressThreshold, v => Settings.RadialMenuLongPressThreshold.Value = Math.Max(0.1f, v)));
         _items.Add(Numeric("settings_radialmenu_open_threshold", "RadialMenu Open Threshold",

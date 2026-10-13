@@ -15,14 +15,23 @@ public enum ShapeKind
     Circle,
     Angle,
     Plot,
-    Image
+    Image,
+    Box,
+    Prism,
+    Pyramid,
+    Cylinder,
+    Cone,
+    Sphere
 }
 
 /// <summary>
 /// An editable shape on the board, defined by control points in world space so any transform stays exact:
 /// Line/Arrow/Ray/InfiniteLine: two points; Rectangle: four corners; Triangle: three vertices;
 /// Ellipse: center and the ends of both semi-axes; Point: one point; Circle: center and a point on it;
-/// Angle: vertex and a point on each arm; Plot and Image: origin (top-left) corner, end of the x side, end of the y side.
+/// Angle: vertex and a point on each arm; Plot and Image: origin (top-left) corner, end of the x side, end of the y side;
+/// Box and Prism: front bottom-left corner, then the ends of the width, height and depth edges; Pyramid: the same
+/// with the apex in place of the height; Cylinder and Cone: base center, end of the width radius, top center or apex,
+/// end of the depth radius; Sphere: center, end of the radius, end of the equator's depth radius.
 /// Objects are immutable: edits replace them, so undo snapshots can share them.
 /// </summary>
 public sealed record BoardObject(ShapeKind Kind, Vector2[] Points, Vector4 Color, float Width)

@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using MathBoard.Core;
 using MathBoard.Graphics;
@@ -34,6 +35,8 @@ public sealed partial class StrokeRenderer : IDisposable
     // World primitives: objects first (below the ink), then strokes, then the stroke or shape being drawn.
     // The backend uploads the range changed since the last presented frame.
     private Prim[] _strokePrims = new Prim[4096];
+    // The previous rebuild's primitives: comparing with them tells the backend where the changes really start.
+    private Prim[] _previousPrims = new Prim[4096];
     private int _strokePrimCount;
     private int _strokesDirtyFrom;
     private bool _framePending;
@@ -55,9 +58,11 @@ public sealed partial class StrokeRenderer : IDisposable
 
     private float _eraserSize;
     private bool _eraseStateSaved;
+    private Vector2? _lastErase;
+    private readonly Dictionary<Stroke, (Vector2 Min, Vector2 Max)> _eraseBounds = new();
 
     public Tool Tool { get; private set; } = Tool.Brush;
-    public Vector4 CurrentColor { get; private set; } = Settings.Colors[0];
+    public Vector4 CurrentColor { get; private set; } = Settings.Palette.FirstOrDefault(Vector4.One);
     public float CurrentBrushWidth { get; set; }
     public bool IsQuickShapeApplied { get; set; }
     public Vector2? HoverPosition { get; set; }
@@ -135,14 +140,11 @@ public sealed partial class StrokeRenderer : IDisposable
         _uiDirty = true;
     }
 
-    public void FitToContent()
+    /// <summary>World bounds of everything drawn (rays and lines count only by their points); null for an empty board.</summary>
+    public static (Vector2 Min, Vector2 Max)? ContentBounds(Document document)
     {
-        var screen = ScreenSize;
-        float left = _libraryPanel?.IsOpen == true ? _libraryPanel.Width : 0f;
-        var viewCenter = new Vector2((left + screen.X) * 0.5f, screen.Y * 0.5f);
-
         Vector2 min = new(float.MaxValue), max = new(float.MinValue);
-        foreach (var s in _document.Strokes)
+        foreach (var s in document.Strokes)
         {
             var b = GetBoundingBox(s.Points);
             float r = s.Width * 0.5f;
@@ -150,15 +152,23 @@ public sealed partial class StrokeRenderer : IDisposable
             max = Vector2.Max(max, b.Max + new Vector2(r));
         }
 
-        foreach (var o in _document.Objects)
+        foreach (var o in document.Objects)
         {
-            if (o.Kind is ShapeKind.Ray or ShapeKind.InfiniteLine) continue;
-            var b = ObjectGeometry.Bounds(o);
+            var b = o.Kind is ShapeKind.Ray or ShapeKind.InfiniteLine ? GetBoundingBox([..o.Points]) : ObjectGeometry.Bounds(o);
             min = Vector2.Min(min, b.Min);
             max = Vector2.Max(max, b.Max);
         }
 
-        if (min.X > max.X)
+        return min.X > max.X ? null : (min, max);
+    }
+
+    public void FitToContent()
+    {
+        var screen = ScreenSize;
+        float left = _libraryPanel?.IsOpen == true ? _libraryPanel.Width : 0f;
+        var viewCenter = new Vector2((left + screen.X) * 0.5f, screen.Y * 0.5f);
+
+        if (ContentBounds(_document) is not var (min, max))
         {
             _camera.Zoom = 1f;
             _camera.Position = viewCenter;
@@ -317,32 +327,60 @@ public sealed partial class StrokeRenderer : IDisposable
     }
 
     /// <summary>Starts an erase gesture; the whole gesture becomes a single undo step.</summary>
-    public void BeginErase() => _eraseStateSaved = false;
-
-    public void EraseAt(Vector2 screenPos)
+    public void BeginErase()
     {
-        var worldPos = ScreenToWorld(screenPos);
+        _eraseStateSaved = false;
+        _lastErase = null;
+        // Only erasing changes the board during the gesture, so stroke bounds are computed once to skip far strokes quickly.
+        _eraseBounds.Clear();
+        foreach (var s in _document.Strokes) _eraseBounds[s] = GetBoundingBox(s.Points);
+    }
+
+    /// <param name="screenRadius">Eraser radius in screen pixels; the eraser size setting if null.</param>
+    public void EraseAt(Vector2 screenPos, float? screenRadius = null)
+    {
+        var to = ScreenToWorld(screenPos);
+        var from = _lastErase ?? to;
+        _lastErase = to;
+        float size = screenRadius / _camera.Zoom ?? _eraserSize;
+        // The eraser covers the whole path since the previous event, so fast moves leave no gaps.
+        var pathMin = Vector2.Min(from, to) - new Vector2(size);
+        var pathMax = Vector2.Max(from, to) + new Vector2(size);
+
         for (int i = _document.Strokes.Count - 1; i >= 0; i--)
         {
-            if (!IsStrokeHitByEraser(_document.Strokes[i], worldPos, _eraserSize)) continue;
+            var stroke = _document.Strokes[i];
+            var b = _eraseBounds.TryGetValue(stroke, out var known) ? known : GetBoundingBox(stroke.Points);
+            if (!Overlaps(b, pathMin, pathMax, stroke.Width * 0.5f) || !IsStrokeHitByEraser(stroke, from, to, size)) continue;
             SaveEraseState();
             _document.Strokes.RemoveAt(i);
             MarkStrokesDirty();
         }
 
+        int steps = Math.Clamp((int)MathF.Ceiling(Vector2.Distance(from, to) / MathF.Max(size * 0.5f, 1e-3f)), 1, 64);
         for (int i = _document.Objects.Count - 1; i >= 0; i--)
         {
             var o = _document.Objects[i];
             // Pictures are only removed through the selection, so ink on them can be erased.
             if (o.Kind == ShapeKind.Image) continue;
-            // A plot counts as hit only near its drawing, not anywhere inside its frame.
-            float distance = o.Kind == ShapeKind.Plot ? PlotEdgeDistance(o, worldPos) : ObjectGeometry.Distance(o, worldPos);
-            if (distance > _eraserSize) continue;
+            if (o.Kind is not (ShapeKind.Ray or ShapeKind.InfiniteLine) && !Overlaps(ObjectGeometry.Bounds(o), pathMin, pathMax, o.Width)) continue;
+            bool hit = false;
+            for (int step = 0; step <= steps && !hit; step++)
+            {
+                var point = Vector2.Lerp(from, to, step / (float)steps);
+                // A plot counts as hit only near its drawing, not anywhere inside its frame.
+                hit = (o.Kind == ShapeKind.Plot ? PlotEdgeDistance(o, point) : ObjectGeometry.Distance(o, point)) <= size;
+            }
+
+            if (!hit) continue;
             SaveEraseState();
             _document.Objects.RemoveAt(i);
             MarkStrokesDirty();
         }
     }
+
+    private static bool Overlaps((Vector2 Min, Vector2 Max) b, Vector2 min, Vector2 max, float margin) =>
+        b.Max.X + margin >= min.X && b.Min.X - margin <= max.X && b.Max.Y + margin >= min.Y && b.Min.Y - margin <= max.Y;
 
     private static float PlotEdgeDistance(BoardObject plot, Vector2 world)
     {
@@ -363,20 +401,29 @@ public sealed partial class StrokeRenderer : IDisposable
         _document.IsDirty = true;
     }
 
-    private static bool IsStrokeHitByEraser(Stroke stroke, Vector2 eraserPos, float eraserRadius)
+    /// <summary>Whether the eraser moving from one point to another passes within reach of the stroke.</summary>
+    private static bool IsStrokeHitByEraser(Stroke stroke, Vector2 from, Vector2 to, float eraserRadius)
     {
         float threshold = eraserRadius + stroke.Width * 0.5f;
         float thresholdSq = threshold * threshold;
         var pts = stroke.Points;
         if (pts.Count == 0) return false;
-        if (pts.Count == 1) return Vector2.DistanceSquared(pts[0], eraserPos) < thresholdSq;
+        if (pts.Count == 1) return PointToSegmentDistanceSq(pts[0], from, to) < thresholdSq;
         for (int i = 0; i < pts.Count - 1; i++)
         {
-            if (PointToSegmentDistanceSq(eraserPos, pts[i], pts[i + 1]) < thresholdSq)
+            if (SegmentDistanceSq(from, to, pts[i], pts[i + 1]) < thresholdSq)
                 return true;
         }
 
         return false;
+    }
+
+    private static float SegmentDistanceSq(Vector2 a, Vector2 b, Vector2 c, Vector2 d)
+    {
+        static float Side(Vector2 o, Vector2 p, Vector2 q) => (p.X - o.X) * (q.Y - o.Y) - (p.Y - o.Y) * (q.X - o.X);
+        if (Side(c, d, a) > 0 != Side(c, d, b) > 0 && Side(a, b, c) > 0 != Side(a, b, d) > 0) return 0f;
+        return MathF.Min(MathF.Min(PointToSegmentDistanceSq(a, c, d), PointToSegmentDistanceSq(b, c, d)),
+            MathF.Min(PointToSegmentDistanceSq(c, a, b), PointToSegmentDistanceSq(d, a, b)));
     }
 
     private static float PointToSegmentDistanceSq(Vector2 p, Vector2 a, Vector2 b)
@@ -480,6 +527,8 @@ public sealed partial class StrokeRenderer : IDisposable
     {
         if (_strokesDirty)
         {
+            (_strokePrims, _previousPrims) = (_previousPrims, _strokePrims);
+            int previousCount = _strokePrimCount;
             int count = 0;
             _objectLabels.Clear();
             _images.Clear();
@@ -502,7 +551,10 @@ public sealed partial class StrokeRenderer : IDisposable
                 : -1;
             _liveStart = count;
             _strokePrimCount = count;
-            _strokesDirtyFrom = 0;
+            // Erasing one stroke leaves everything before it as it was, so backends can keep that part.
+            int unchanged = MemoryMarshal.AsBytes(_previousPrims.AsSpan(0, previousCount))
+                .CommonPrefixLength(MemoryMarshal.AsBytes(_strokePrims.AsSpan(0, count))) / Unsafe.SizeOf<Prim>();
+            _strokesDirtyFrom = Math.Min(_strokesDirtyFrom, unchanged);
             _strokesDirty = false;
             _activeDirtyFrom = -1;
             _liveDirty = _liveObject != null;
@@ -565,9 +617,9 @@ public sealed partial class StrokeRenderer : IDisposable
 
         DrawLabels(_ui, _liveLabels);
         RenderShapeGuides(_ui);
-        if (Tool == Tool.Select) RenderSelectionUI(_ui);
+        if (Tool is Tool.Select or Tool.Shape) RenderSelectionUI(_ui);
         if (Tool == Tool.Eraser && HoverPosition is { } hover && _radialMenu?.IsOpen != true)
-            _ui.Ring(hover, MathF.Max(_eraserSize * _camera.Zoom, 3f), 1.5f, new Vector4(1f, 1f, 1f, 0.6f));
+            _ui.Ring(hover, MathF.Max(_eraserSize * _camera.Zoom, 3f), 1.5f, Theme.WithAlpha(ColorMath.ContrastOn(Settings.Background), 0.6f));
 
         _quickBar?.Render(_ui, screen);
         _libraryPanel?.Render(_ui, screen);
@@ -581,7 +633,7 @@ public sealed partial class StrokeRenderer : IDisposable
 
     public FrameData GetFrame() => new()
     {
-        ClearColor = Settings.BackgroundColor.Value,
+        ClearColor = Settings.Background,
         CameraPosition = _camera.Position,
         CameraZoom = _camera.Zoom,
         UiScale = UiScale,

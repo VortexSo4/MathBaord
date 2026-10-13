@@ -19,6 +19,8 @@ public sealed partial class StrokeRenderer
 
     private const float ToolbarButtonSize = 36f;
     private const float PointHandleRadius = 16f;
+    // Scale and rotate handles sit this far outside the selection, so they do not cover the shape's own points.
+    private const float HandleOffset = 18f;
 
     public bool IsSelectMode => Tool == Tool.Select;
     public List<Stroke> SelectedStrokes { get; } = new();
@@ -41,6 +43,8 @@ public sealed partial class StrokeRenderer
 
     public void ClearSelection()
     {
+        // A point being dragged lives outside the document until it is put back.
+        if (CurrentSelectionState == SelectionState.DraggingPoint) CommitLiveObject();
         SelectedStrokes.Clear();
         SelectedObjects.Clear();
         CurrentSelectionState = SelectionState.None;
@@ -83,6 +87,25 @@ public sealed partial class StrokeRenderer
         MarkStrokesDirty();
     }
 
+    /// <summary>Gives the selected ink and shapes another color as one undo step; false if nothing is selected.</summary>
+    public bool RecolorSelection(Vector4 color)
+    {
+        if (!HasSelection || CurrentSelectionState != SelectionState.None) return false;
+        _document.SaveState();
+        foreach (var stroke in SelectedStrokes) stroke.Color = color;
+        for (int i = 0; i < SelectedObjects.Count; i++)
+        {
+            var o = SelectedObjects[i];
+            if (o.Kind == ShapeKind.Image) continue;
+            int index = _document.Objects.FindIndex(x => ReferenceEquals(x, o));
+            SelectedObjects[i] = o with { Color = color };
+            if (index >= 0) _document.Objects[index] = SelectedObjects[i];
+        }
+
+        MarkStrokesDirty();
+        return true;
+    }
+
     /// <summary>Replaces an object (for example after editing a plot's functions) as one undo step.</summary>
     public void ReplaceObject(BoardObject original, BoardObject replacement)
     {
@@ -104,14 +127,12 @@ public sealed partial class StrokeRenderer
         return actions;
     }
 
-    /// <summary>Buttons in a row above the selection's top-right corner.</summary>
+    /// <summary>Buttons in a row below the selection's bottom-right handle (the rotate handle is above).</summary>
     private Vector2 ToolbarButtonPos(int index, int count)
     {
-        var bbox = GetSelectedBounds();
-        var minS = WorldToScreen(bbox.Min) - new Vector2(4f);
-        var maxS = WorldToScreen(bbox.Max) + new Vector2(4f);
+        var (_, maxS) = HandleFrame();
         float width = count * ToolbarButtonSize + (count - 1) * 6f;
-        var start = new Vector2(maxS.X + 10f - width + ToolbarButtonSize, minS.Y - 10f - ToolbarButtonSize);
+        var start = new Vector2(maxS.X - width + ToolbarButtonSize * 0.5f, maxS.Y + 14f);
         start = Vector2.Clamp(start, new Vector2(4f), Vector2.Max(ScreenSize - new Vector2(width + 4f, ToolbarButtonSize + 4f), new Vector2(4f)));
         return start + new Vector2(index * (ToolbarButtonSize + 6f), 0);
     }
@@ -354,10 +375,26 @@ public sealed partial class StrokeRenderer
         }
     }
 
-    private int HitTestHandles(Vector2 screenPos)
+    /// <summary>True if the press is on something that edits the selection: a toolbar button, a shape's point or a handle.</summary>
+    public bool HitsSelectionControls(Vector2 screenPos)
+    {
+        if (!HasSelection) return false;
+        var actions = ToolbarActions();
+        for (int i = 0; i < actions.Count; i++)
+            if (UiBatch.Contains(ToolbarButtonPos(i, actions.Count), new Vector2(ToolbarButtonSize), screenPos)) return true;
+        return HitTestControlPoint(screenPos) >= 0 || HitTestHandles(screenPos) >= 0;
+    }
+
+    private (Vector2 Min, Vector2 Max) HandleFrame()
     {
         var bbox = GetSelectedBounds();
-        var handles = GetHandlePositions(WorldToScreen(bbox.Min), WorldToScreen(bbox.Max));
+        return (WorldToScreen(bbox.Min) - new Vector2(HandleOffset), WorldToScreen(bbox.Max) + new Vector2(HandleOffset));
+    }
+
+    private int HitTestHandles(Vector2 screenPos)
+    {
+        var (minS, maxS) = HandleFrame();
+        var handles = GetHandlePositions(minS, maxS);
         for (int i = 0; i < handles.Length; i++)
         {
             if (Vector2.DistanceSquared(screenPos, handles[i]) < 14f * 14f)
@@ -418,7 +455,8 @@ public sealed partial class StrokeRenderer
         var maxS = WorldToScreen(bbox.Max) + new Vector2(4f);
         ui.Border(minS, maxS - minS, Theme.WithAlpha(accent, 0.8f), 1.5f, 4f);
 
-        var handles = GetHandlePositions(minS, maxS);
+        var (handleMin, handleMax) = HandleFrame();
+        var handles = GetHandlePositions(handleMin, handleMax);
         ui.Line(handles[1], handles[8], accent, 1.5f);
         foreach (var h in handles)
         {

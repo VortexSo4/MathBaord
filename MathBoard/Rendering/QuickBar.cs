@@ -5,7 +5,8 @@ namespace MathBoard.Rendering;
 
 /// <summary>
 /// Floating buttons for actions that otherwise need the keyboard. Long-press a button (or use the settings entry)
-/// to rearrange them: drag to move, drop on the tray to hide, drag from the tray to show.
+/// to rearrange them: drag to move, drop on the tray to hide, drag from the tray to show. Color buttons are
+/// independent: the tray always offers one more.
 /// </summary>
 public class QuickBar
 {
@@ -18,19 +19,28 @@ public class QuickBar
     // Distance between neighbouring button centers in an evenly spaced row or column.
     private const float Stride = Size + TrayButtonGap;
 
+    // Offered for a new color button, the first one not on the board yet.
+    private static readonly Vector4[] NewColors =
+    [
+        Theme.Rgb(0xD3, 0xD3, 0xD3), Theme.Rgb(0xFF, 0x83, 0x83), Theme.Rgb(0x3A, 0x99, 0x4C), Theme.Rgb(0x5B, 0x9B, 0xFF),
+        Theme.Rgb(0xFF, 0xD5, 0x4F), Theme.Rgb(0xC0, 0x84, 0xFC), Theme.Rgb(0xFB, 0x92, 0x3C), Theme.Rgb(0x2D, 0xD4, 0xBF),
+        Theme.Rgb(0xF4, 0x72, 0xB6), Vector4.One
+    ];
+
     private readonly StrokeRenderer _renderer;
-    private readonly Action<UiAction> _execute;
-    private readonly Func<UiAction, bool> _isActive;
+    private readonly Action<QuickButtonConfig> _execute;
+    private readonly Func<QuickButtonConfig, bool> _isActive;
     private readonly Func<Vector2, bool> _isCovered;
-    private readonly Action<int, Vector2> _editColor;
-    private UiAction? _lastTap;
+    private readonly Action<QuickButtonConfig, Vector2> _editColor;
+    private QuickButtonConfig? _lastTap;
     private DateTime _lastTapTime;
 
     private List<QuickButtonConfig> _working = [];
+    private QuickButtonConfig? _newColorButton;
     private Vector2 _screen = new(1280, 720);
     private Vector2 _mouse = new(-1000);
 
-    private UiAction? _pressed;
+    private QuickButtonConfig? _pressed;
     private bool _pressedFromTray;
     private Vector2 _pressPos;
     private DateTime _pressTime;
@@ -40,13 +50,13 @@ public class QuickBar
     public bool IsEditing { get; private set; }
     public bool IsPressed => _pressed != null;
 
-    /// <param name="isCovered">True where other UI (the library panel) lies on top of the buttons.</param>
-    /// <param name="editColor">Opens the color editor for a palette slot; a color button invokes it on double tap.</param>
     /// <summary>Marks the library button, which leads to the settings where an update can be installed.</summary>
     public bool LibraryBadge { get; set; }
 
-    public QuickBar(StrokeRenderer renderer, Action<UiAction> execute, Func<UiAction, bool> isActive,
-        Func<Vector2, bool> isCovered, Action<int, Vector2> editColor)
+    /// <param name="isCovered">True where other UI (the library panel) lies on top of the buttons.</param>
+    /// <param name="editColor">Opens the color editor for a color button; invoked on double tap.</param>
+    public QuickBar(StrokeRenderer renderer, Action<QuickButtonConfig> execute, Func<QuickButtonConfig, bool> isActive,
+        Func<Vector2, bool> isCovered, Action<QuickButtonConfig, Vector2> editColor)
     {
         _editColor = editColor;
         _renderer = renderer;
@@ -66,7 +76,7 @@ public class QuickBar
         return Vector2.Clamp(c, new Vector2(Size * 0.5f), Vector2.Max(_screen - new Vector2(Size * 0.5f), new Vector2(Size * 0.5f)));
     }
 
-    private UiAction? ButtonAt(Vector2 pos)
+    private QuickButtonConfig? ButtonAt(Vector2 pos)
     {
         var buttons = Buttons;
         for (int i = buttons.Count - 1; i >= 0; i--)
@@ -74,7 +84,7 @@ public class QuickBar
             if (IsHidden(buttons[i])) continue;
             var c = CenterOf(buttons[i]);
             if (MathF.Abs(pos.X - c.X) <= Size * 0.5f && MathF.Abs(pos.Y - c.Y) <= Size * 0.5f)
-                return buttons[i].Action;
+                return buttons[i];
         }
 
         return null;
@@ -101,8 +111,17 @@ public class QuickBar
 
     // ------------------------------------------------------------- tray layout (edit mode)
 
-    private List<UiAction> HiddenActions() =>
-        Enum.GetValues<UiAction>().Where(a => _working.All(b => b.Action != a)).ToList();
+    private List<QuickButtonConfig> TrayButtons()
+    {
+        var palette = _working.Where(b => b.Color != null).Select(b => b.Color!.Value).ToList();
+        _newColorButton ??= new QuickButtonConfig(UiAction.Color, 0, 0, 0, 0,
+            NewColors.FirstOrDefault(c => palette.All(p => Vector4.DistanceSquared(p, c) > 1e-4f), Vector4.One));
+        return Enum.GetValues<UiAction>()
+            .Where(a => a != UiAction.Color && _working.All(b => b.Action != a))
+            .Select(a => new QuickButtonConfig(a, 0, 0, 0, 0))
+            .Append(_newColorButton)
+            .ToList();
+    }
 
     private (Vector2 Pos, Vector2 Size, Vector2 DonePos, Vector2 DoneSize, Vector2 FirstButton) TrayLayout(int hiddenCount)
     {
@@ -116,15 +135,15 @@ public class QuickBar
         return (pos, new Vector2(w, h), donePos, new Vector2(doneW, 36f), new Vector2(pos.X + pad + Size * 0.5f, pos.Y + 24f + pad + Size * 0.5f));
     }
 
-    private UiAction? TrayButtonAt(Vector2 pos)
+    private QuickButtonConfig? TrayButtonAt(Vector2 pos)
     {
-        var hidden = HiddenActions();
-        var layout = TrayLayout(hidden.Count);
-        for (int i = 0; i < hidden.Count; i++)
+        var tray = TrayButtons();
+        var layout = TrayLayout(tray.Count);
+        for (int i = 0; i < tray.Count; i++)
         {
             var c = layout.FirstButton + new Vector2(i * (Size + TrayButtonGap), 0);
             if (MathF.Abs(pos.X - c.X) <= Size * 0.5f && MathF.Abs(pos.Y - c.Y) <= Size * 0.5f)
-                return hidden[i];
+                return tray[i];
         }
 
         return null;
@@ -132,7 +151,7 @@ public class QuickBar
 
     private bool IsOverTray(Vector2 pos)
     {
-        var layout = TrayLayout(HiddenActions().Count);
+        var layout = TrayLayout(TrayButtons().Count);
         return UiBatch.Contains(layout.Pos, layout.Size, pos);
     }
 
@@ -147,7 +166,7 @@ public class QuickBar
 
         if (IsEditing)
         {
-            var layout = TrayLayout(HiddenActions().Count);
+            var layout = TrayLayout(TrayButtons().Count);
             if (UiBatch.Contains(layout.DonePos, layout.DoneSize, pos))
             {
                 FinishEditing();
@@ -162,13 +181,7 @@ public class QuickBar
                 _pressedFromTray = _pressed != null;
             }
 
-            if (_pressed is { } action)
-            {
-                var center = _pressedFromTray
-                    ? pos
-                    : CenterOf(_working.First(b => b.Action == action));
-                _grabOffset = center - pos;
-            }
+            if (_pressed != null) _grabOffset = (_pressedFromTray ? pos : CenterOf(_pressed)) - pos;
         }
         else
         {
@@ -193,20 +206,19 @@ public class QuickBar
     public void OnMouseUp(Vector2 pos)
     {
         _mouse = pos;
-        if (_pressed is not { } action) return;
+        if (_pressed is not { } button) return;
 
         if (IsEditing)
         {
-            if (_dragging) Drop(action, pos);
+            if (_dragging) Drop(button, pos);
         }
-        else if (ButtonAt(pos) == action)
+        else if (ReferenceEquals(ButtonAt(pos), button))
         {
-            _execute(action);
-            bool doubleTap = _lastTap == action && (DateTime.Now - _lastTapTime).TotalSeconds < DoubleTapSeconds;
-            _lastTap = doubleTap ? null : action;
+            _execute(button);
+            bool doubleTap = ReferenceEquals(_lastTap, button) && (DateTime.Now - _lastTapTime).TotalSeconds < DoubleTapSeconds;
+            _lastTap = doubleTap ? null : button;
             _lastTapTime = DateTime.Now;
-            if (doubleTap && action is UiAction.Color1 or UiAction.Color2 or UiAction.Color3)
-                _editColor(action - UiAction.Color1, CenterOf(Buttons.First(b => b.Action == action)));
+            if (doubleTap && button.Action == UiAction.Color) _editColor(button, CenterOf(button));
         }
 
         CancelPress();
@@ -218,19 +230,20 @@ public class QuickBar
         if (Vector2.DistanceSquared(pos, _mouse) < 0.01f) return;
         bool wasOver = ButtonAt(_mouse) != null;
         _mouse = pos;
-        if (wasOver || ButtonAt(pos) != null) _renderer.SetDirty();
+        // While editing, names are shown for the tray buttons too, so every move may change the label.
+        if (IsEditing || wasOver || ButtonAt(pos) != null) _renderer.SetDirty();
     }
 
     /// <summary>Returns true while a long press is being timed.</summary>
     public bool Update()
     {
-        if (IsEditing || _pressed is not { } action) return false;
+        if (IsEditing || _pressed is not { } button) return false;
         if ((DateTime.Now - _pressTime).TotalSeconds < LongPressSeconds) return true;
 
         // Keep the press so the user can drag the button right away without lifting the pen.
         BeginEditing();
         _pressedFromTray = false;
-        _grabOffset = CenterOf(_working.First(b => b.Action == action)) - _pressPos;
+        _grabOffset = CenterOf(button) - _pressPos;
         return false;
     }
 
@@ -244,11 +257,11 @@ public class QuickBar
     /// Where a dragged button lands: snapped to the row or column of nearby buttons, and to even spacing
     /// inside that row or column. The ghost preview and the drop both use this, so they always agree.
     /// </summary>
-    private (Vector2 Center, bool InRow, bool InColumn) SnapTarget(UiAction action, Vector2 raw)
+    private (Vector2 Center, bool InRow, bool InColumn) SnapTarget(QuickButtonConfig button, Vector2 raw)
     {
         var half = new Vector2(Size * 0.5f);
         var c = Vector2.Clamp(raw, half, Vector2.Max(_screen - half, half));
-        var others = _working.Where(b => b.Action != action && !IsOverTray(CenterOf(b))).Select(CenterOf).ToList();
+        var others = _working.Where(b => !ReferenceEquals(b, button) && !IsOverTray(CenterOf(b))).Select(CenterOf).ToList();
 
         static float? Nearest(IEnumerable<float> values, float target)
         {
@@ -283,23 +296,24 @@ public class QuickBar
         return (new Vector2(MathF.Round(c.X), MathF.Round(c.Y)), inRow, inColumn);
     }
 
-    private void Drop(UiAction action, Vector2 pos)
+    private void Drop(QuickButtonConfig button, Vector2 pos)
     {
-        int index = _working.FindIndex(b => b.Action == action);
+        int index = _working.FindIndex(b => ReferenceEquals(b, button));
         if (IsOverTray(pos))
         {
             if (index >= 0) _working.RemoveAt(index);
             return;
         }
 
-        var center = SnapTarget(action, pos + _grabOffset).Center;
+        var center = SnapTarget(button, pos + _grabOffset).Center;
         // Anchor to the nearest screen third so the button keeps its place relative to that edge on resize.
         float ax = center.X < _screen.X / 3f ? 0f : center.X > _screen.X * 2f / 3f ? 1f : 0.5f;
         float ay = center.Y < _screen.Y / 3f ? 0f : center.Y > _screen.Y * 2f / 3f ? 1f : 0.5f;
-        var config = new QuickButtonConfig(action, ax, ay, center.X - ax * _screen.X, center.Y - ay * _screen.Y);
+        var placed = button with { AnchorX = ax, AnchorY = ay, OffsetX = center.X - ax * _screen.X, OffsetY = center.Y - ay * _screen.Y };
 
-        if (index >= 0) _working[index] = config;
-        else _working.Add(config);
+        if (index >= 0) _working[index] = placed;
+        else _working.Add(placed);
+        if (ReferenceEquals(button, _newColorButton)) _newColorButton = null;
     }
 
     // ------------------------------------------------------------- rendering
@@ -310,7 +324,7 @@ public class QuickBar
         if (IsEditing) return;
 
         foreach (var b in Buttons)
-            if (!IsHidden(b)) DrawButton(ui, b.Action, CenterOf(b));
+            if (!IsHidden(b)) DrawButton(ui, b, CenterOf(b));
     }
 
     public void RenderOverlay(UiBatch ui, Vector2 screen)
@@ -319,7 +333,7 @@ public class QuickBar
         {
             ui.Rect(Vector2.Zero, screen, new Vector4(0, 0, 0, 0.35f));
             foreach (var b in Buttons)
-                if (!(_dragging && _pressed == b.Action)) DrawButton(ui, b.Action, CenterOf(b));
+                if (!(_dragging && ReferenceEquals(_pressed, b))) DrawButton(ui, b, CenterOf(b));
             RenderTray(ui);
             if (_dragging && _pressed is { } dragged)
             {
@@ -327,18 +341,21 @@ public class QuickBar
                 DrawButton(ui, dragged, _mouse + _grabOffset, lifted: true);
             }
 
+            // Names help with the buttons that are not on the board yet; with a finger they show while pressed.
+            if ((_dragging ? _pressed : ButtonAt(_mouse) ?? TrayButtonAt(_mouse)) is { } named)
+                ui.Tooltip(Localization.Get("action_" + named.Action, named.Action.ToString()), _mouse, screen);
             return;
         }
 
         if (_pressed == null && ButtonAt(_mouse) is { } hovered)
-            ui.Tooltip(Localization.Get("action_" + hovered, hovered.ToString()), _mouse, screen);
+            ui.Tooltip(Localization.Get("action_" + hovered.Action, hovered.Action.ToString()), _mouse, screen);
     }
 
-    private void RenderLandingGhost(UiBatch ui, UiAction action)
+    private void RenderLandingGhost(UiBatch ui, QuickButtonConfig button)
     {
-        var (center, inRow, inColumn) = SnapTarget(action, _mouse + _grabOffset);
+        var (center, inRow, inColumn) = SnapTarget(button, _mouse + _grabOffset);
         var guide = Theme.WithAlpha(Theme.Accent, 0.7f);
-        var others = _working.Where(b => b.Action != action).Select(CenterOf).ToList();
+        var others = _working.Where(b => !ReferenceEquals(b, button)).Select(CenterOf).ToList();
         if (inRow)
         {
             var row = others.Where(o => MathF.Abs(o.Y - center.Y) < 0.5f).Select(o => o.X).Append(center.X).ToList();
@@ -358,8 +375,8 @@ public class QuickBar
 
     private void RenderTray(UiBatch ui)
     {
-        var hidden = HiddenActions();
-        var layout = TrayLayout(hidden.Count);
+        var tray = TrayButtons();
+        var layout = TrayLayout(tray.Count);
         bool dropping = _dragging && IsOverTray(_mouse) && !_pressedFromTray;
 
         ui.Rect(layout.Pos, layout.Size, Theme.PopupBg, Theme.PopupRadius);
@@ -367,10 +384,10 @@ public class QuickBar
         ui.TextInRect(Localization.Get("quickbar_edit_hint", "Drag buttons to move them, drop here to hide"),
             layout.Pos + new Vector2(14f, 8f), new Vector2(layout.Size.X - 28f, 22f), Theme.TextSecondary, Theme.Small);
 
-        for (int i = 0; i < hidden.Count; i++)
+        for (int i = 0; i < tray.Count; i++)
         {
-            if (_dragging && _pressedFromTray && _pressed == hidden[i]) continue;
-            DrawButton(ui, hidden[i], layout.FirstButton + new Vector2(i * (Size + TrayButtonGap), 0));
+            if (_dragging && _pressedFromTray && _pressed!.Action == tray[i].Action) continue;
+            DrawButton(ui, tray[i], layout.FirstButton + new Vector2(i * (Size + TrayButtonGap), 0));
         }
 
         bool doneHover = UiBatch.Contains(layout.DonePos, layout.DoneSize, _mouse) && !_dragging;
@@ -378,24 +395,23 @@ public class QuickBar
             UiBatch.ButtonKind.Primary);
     }
 
-    private void DrawButton(UiBatch ui, UiAction action, Vector2 center, bool lifted = false)
+    private void DrawButton(UiBatch ui, QuickButtonConfig button, Vector2 center, bool lifted = false)
     {
         var pos = center - new Vector2(Size * 0.5f);
         var size = new Vector2(Size);
         bool hovered = !IsEditing && UiBatch.Contains(pos, size, _mouse);
-        bool pressed = !IsEditing && _pressed == action && hovered;
-        bool active = _isActive(action);
-        bool isColor = action is UiAction.Color1 or UiAction.Color2 or UiAction.Color3;
+        bool pressed = !IsEditing && ReferenceEquals(_pressed, button) && hovered;
+        bool active = _isActive(button);
+        var action = button.Action;
 
         var bg = pressed ? Theme.Accent
-            : active && !isColor ? Theme.WithAlpha(Theme.Accent, 0.9f)
+            : active && button.Color == null ? Theme.WithAlpha(Theme.Accent, 0.9f)
             : hovered ? Theme.SurfaceHover : Theme.WithAlpha(Theme.Surface, 0.94f);
         ui.Rect(pos, size, bg, 10f);
         ui.Border(pos, size, lifted || IsEditing ? Theme.Accent : Theme.Border, lifted ? 2f : 1f, 10f);
 
-        if (isColor)
+        if (button.Color is { } color)
         {
-            var color = Settings.Colors[action - UiAction.Color1];
             ui.Circle(center, 12f, color);
             if (active) ui.Ring(center, 17f, 2f, Theme.Text);
         }
@@ -404,9 +420,14 @@ public class QuickBar
             // Shows the shape that the tool draws right now.
             ShapePicker.DrawPreview(ui, _renderer.CurrentShape, center, 20f, Theme.Text);
         }
+        else if (action == UiAction.BackgroundColor)
+        {
+            ui.Rect(center - new Vector2(10f), new Vector2(20f), Settings.Background, 5f);
+            ui.Border(center - new Vector2(10f), new Vector2(20f), Theme.Text, 1.5f, 5f);
+        }
         else
         {
-            ui.Icon(IconFor(action), center, 18f, Theme.Text);
+            ui.Icon(IconFor(action), center, 18f, pressed || active ? Theme.OnAccent : Theme.Text);
         }
 
         if (action == UiAction.ToggleLibrary && LibraryBadge) ui.Circle(center + new Vector2(11f, -11f), 4f, Theme.Accent);
@@ -433,6 +454,9 @@ public class QuickBar
         UiAction.Grid => Icons.Grid,
         UiAction.Screenshot => Icons.Screenshot,
         UiAction.InsertImage => Icons.Picture,
+        UiAction.Thickness => Icons.Thickness,
+        UiAction.ClearBoard => Icons.Delete,
+        UiAction.Export => Icons.Export,
         _ => Icons.Palette
     };
 }
