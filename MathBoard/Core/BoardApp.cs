@@ -88,6 +88,18 @@ public sealed partial class BoardApp : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Shows the window, created hidden, once everything is loaded and a frame is drawn, so it never appears blank.
+    /// The frame is drawn again right away: a hidden window may drop what was presented to it (the software backend's GDI).
+    /// </summary>
+    public void Show()
+    {
+        Render(0f);
+        _window.IsVisible = true;
+        _strokeRenderer.SetDirty();
+        Render(0f);
+    }
+
     private void UpdateViewport()
     {
         var size = _window.FramebufferSize;

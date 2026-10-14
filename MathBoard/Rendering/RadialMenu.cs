@@ -16,7 +16,7 @@ public class RadialMenu
     private bool _isConfirmingClear;
     private bool _isAdjustingThickness;
     private float _previewThickness;
-    private float _thicknessBaseWidth;
+    private const float ThicknessScale = 5f;
 
     private bool _isPickingBackground;
     private bool _isColorMenuOpen;
@@ -35,23 +35,54 @@ public class RadialMenu
     private const float PickerCenterRadius = 18f;
     private const float PickerRingGap = 6f;
 
-    private const int SectorCount = 6;
+    // Sectors come from the settings; the special ones (tools, thickness, clear, colors) are handled here,
+    // any other action is run by the input manager.
+    private static UiAction[] Items => Settings.RadialItems.Value.Length > 0 ? Settings.RadialItems.Value : Settings.DefaultRadialItems;
+
+    /// <summary>Runs an action picked in a sector that the menu does not handle itself.</summary>
+    public Action<UiAction>? Execute { get; set; }
+
+    /// <summary>Whether an action is in effect (its tool is chosen), shown with a dot.</summary>
+    public Func<UiAction, bool>? IsActive { get; set; }
     // The color sectors: the color buttons' colors (at most seven), then the background.
     private static int PaletteCount => Math.Min(Settings.Palette.Count, 7);
-    private int CurrentSectorCount => _isColorMenuOpen ? PaletteCount + 1 : SectorCount;
+    private int CurrentSectorCount => _isColorMenuOpen ? PaletteCount + 1 : Items.Length;
     private static float OuterRadius => Settings.RadialMenuOuterRadius;
     private static float InnerRadius => Settings.RadialMenuInnerRadius;
     private static float CenterRadius => Settings.RadialMenuCenterRadius;
     private static float IconRadius => (OuterRadius + InnerRadius) * 0.5f;
 
-    private const float RenderAngleOffset = MathF.PI;
+    // Sector 0 is at the bottom, so any count is symmetric; the others follow clockwise.
+    public const float FirstSectorAngle = MathF.PI * 0.5f;
+    // The gaps between the sectors: rays of the same width all along.
+    private const float SectorGap = 4f;
+
+    /// <summary>The direction's angle clockwise from the middle of sector 0, in [0, 2π).</summary>
+    public static float AngleFromFirst(Vector2 dir) =>
+        ((MathF.Atan2(dir.Y, dir.X) - FirstSectorAngle) % MathF.Tau + MathF.Tau) % MathF.Tau;
+
+    public static int SectorIndex(Vector2 dir, int count)
+    {
+        float step = MathF.Tau / count;
+        return (int)((AngleFromFirst(dir) + step * 0.5f) / step) % count;
+    }
+
+    public static void DrawSectorGaps(UiBatch ui, Vector2 center, float inner, float outer, int count)
+    {
+        if (count < 2) return;
+        for (int i = 0; i < count; i++)
+        {
+            float angle = FirstSectorAngle + (i + 0.5f) * MathF.Tau / count;
+            var dir = new Vector2(MathF.Cos(angle), MathF.Sin(angle));
+            ui.Line(center + dir * inner, center + dir * outer, Theme.PanelBg, SectorGap);
+        }
+    }
     private bool _isMouseDown;
 
     public RadialMenu(StrokeRenderer renderer)
     {
         _renderer = renderer;
         _previewThickness = Settings.DefaultBrushWidth;
-        _thicknessBaseWidth = Settings.DefaultBrushWidth;
     }
 
     public void OpenAt(Vector2 screenPos)
@@ -67,7 +98,6 @@ public class RadialMenu
         _isMouseDown = false;
         _selectedIndex = -1;
         _previewThickness = _renderer.CurrentBrushWidth;
-        _thicknessBaseWidth = _renderer.CurrentBrushWidth;
         _isPickingBackground = false;
         _renderer.SetDirty();
     }
@@ -127,8 +157,9 @@ public class RadialMenu
 
         if (_isAdjustingThickness)
         {
-            float deltaY = Position.Y - screenPos.Y;
-            _previewThickness = Math.Clamp(_thicknessBaseWidth + deltaY * 0.6f, Settings.MinBrushWidth, Settings.MaxBrushWidth);
+            // The farther from the center, the thicker: 5 px of distance per unit of width, so small widths are easy to hit.
+            float radius = Vector2.Distance(screenPos, Position);
+            _previewThickness = Math.Clamp(radius / ThicknessScale, Settings.MinBrushWidth, Settings.MaxBrushWidth);
             _renderer.SetDirty();
             return;
         }
@@ -154,9 +185,9 @@ public class RadialMenu
             return;
         }
 
-        float angle = MathF.Atan2(dir.Y, dir.X) + MathF.PI;
-        float sectorAngle = MathF.PI * 2f / CurrentSectorCount;
-        _selectedIndex = (int)((angle + sectorAngle * 0.5f) / sectorAngle) % CurrentSectorCount;
+        _selectedIndex = SectorIndex(dir, CurrentSectorCount);
+        // An empty sector only takes its place in the ring.
+        if (!_isColorMenuOpen && Items[_selectedIndex] == UiAction.Spacer) _selectedIndex = -1;
     }
 
     public void OnMouseUp(Vector2 screenPos)
@@ -229,30 +260,33 @@ public class RadialMenu
             return;
         }
 
-        switch (_selectedIndex)
+        switch (Items[_selectedIndex])
         {
-            case 0:
+            case UiAction.Brush:
                 SelectTool(Tool.Brush);
                 break;
-            case 1:
+            case UiAction.Eraser:
                 SelectTool(Tool.Eraser);
                 break;
-            case 2:
+            case UiAction.Thickness:
                 _isAdjustingThickness = true;
                 _previewThickness = _renderer.CurrentBrushWidth;
-                _thicknessBaseWidth = _renderer.CurrentBrushWidth;
                 _renderer.SetDirty();
                 break;
-            case 3:
+            case UiAction.ClearBoard:
                 _isConfirmingClear = true;
                 _renderer.SetDirty();
                 break;
-            case 4:
+            case UiAction.Select:
                 SelectTool(_renderer.Tool == Tool.Select ? Tool.Brush : Tool.Select);
                 break;
-            case 5:
+            case UiAction.Color:
                 _isColorMenuOpen = true;
                 _renderer.SetDirty();
+                break;
+            case var action:
+                Close();
+                Execute?.Invoke(action);
                 break;
         }
     }
@@ -354,7 +388,6 @@ public class RadialMenu
         int sectorCount = CurrentSectorCount;
         var palette = Settings.Palette;
         float sectorAngle = MathF.PI * 2f / sectorCount;
-        const float gap = 0.03f;
 
         ui.Circle(Position, OuterRadius + 3f, Theme.WithAlpha(Theme.Border, 0.9f));
         ui.Circle(Position, OuterRadius + 2f, Theme.PanelBg);
@@ -362,9 +395,9 @@ public class RadialMenu
         for (int i = 0; i < sectorCount; i++)
         {
             bool isSelected = i == _selectedIndex;
-            float centerAngle = i * sectorAngle + RenderAngleOffset;
-            float start = centerAngle - sectorAngle * 0.5f + gap;
-            float end = centerAngle + sectorAngle * 0.5f - gap;
+            float centerAngle = i * sectorAngle + FirstSectorAngle;
+            float start = centerAngle - sectorAngle * 0.5f;
+            float end = centerAngle + sectorAngle * 0.5f;
 
             Vector4 fill;
             if (_isColorMenuOpen)
@@ -374,7 +407,7 @@ public class RadialMenu
             }
             else
             {
-                fill = isSelected ? Theme.Accent : Theme.Surface;
+                fill = Items[i] == UiAction.Spacer ? Theme.PanelBg : isSelected ? Theme.Accent : Theme.Surface;
             }
 
             ui.Arc(Position, InnerRadius, OuterRadius, start, end, fill);
@@ -388,12 +421,14 @@ public class RadialMenu
             }
             else
             {
-                ui.Icon(SectorIcon(i), iconCenter, 22f, isSelected || IsSectorActive(i) ? Theme.Text : Theme.TextSecondary);
+                DrawSectorIcon(ui, _renderer, Items[i], iconCenter, isSelected || IsSectorActive(i) ? Theme.Text : Theme.TextSecondary);
                 if (IsSectorActive(i) && !isSelected)
                     ui.Circle(Position + new Vector2(MathF.Cos(centerAngle), MathF.Sin(centerAngle)) * (OuterRadius - 10f),
                         3f, Theme.Accent);
             }
         }
+
+        DrawSectorGaps(ui, Position, InnerRadius, OuterRadius, sectorCount);
 
         var centerFill = _isConfirmingClear ? Theme.Danger : Theme.Surface;
         ui.Circle(Position, CenterRadius + 3f, Theme.Border);
@@ -409,15 +444,7 @@ public class RadialMenu
                 ? _selectedIndex < PaletteCount
                     ? Localization.Get("action_Color", "Color") + " " + (_selectedIndex + 1)
                     : Localization.Get("tooltip_background_color", "Background Color")
-                : _selectedIndex switch
-                {
-                    0 => Localization.Get("tooltip_brush", "Brush"),
-                    1 => Localization.Get("tooltip_eraser", "Eraser"),
-                    2 => Localization.Get("tooltip_thickness", "Thickness"),
-                    3 => Localization.Get("tooltip_clear", "Clear All"),
-                    4 => Localization.Get("tooltip_select", "Select"),
-                    _ => Localization.Get("tooltip_colorpicker", "Color Picker")
-                };
+                : ItemName(Items[_selectedIndex]);
         }
 
         if (tooltip != null)
@@ -431,23 +458,18 @@ public class RadialMenu
         }
     }
 
-    private bool IsSectorActive(int index) => index switch
-    {
-        0 => _renderer.Tool == Tool.Brush,
-        1 => _renderer.Tool == Tool.Eraser,
-        4 => _renderer.Tool == Tool.Select,
-        _ => false
-    };
+    private bool IsSectorActive(int index) => Items[index] != UiAction.Color && IsActive?.Invoke(Items[index]) == true;
 
-    private static string SectorIcon(int index) => index switch
+    /// <summary>A sector's name: the action's, except the colors sector, which opens the palette.</summary>
+    public static string ItemName(UiAction action) => action == UiAction.Color
+        ? Localization.Get("tooltip_colorpicker", "Color Picker")
+        : Localization.Get("action_" + action, action.ToString());
+
+    public static void DrawSectorIcon(UiBatch ui, StrokeRenderer renderer, UiAction action, Vector2 center, Vector4 color)
     {
-        0 => Icons.Pen,
-        1 => Icons.Eraser,
-        2 => Icons.Thickness,
-        3 => Icons.Delete,
-        4 => Icons.Select,
-        _ => Icons.Palette
-    };
+        if (action == UiAction.Color) ui.Icon(Icons.Palette, center, 20f, color);
+        else if (action != UiAction.Spacer) QuickBar.DrawActionIcon(ui, renderer, action, center, color);
+    }
 
     private void RenderColorPicker(UiBatch ui)
     {

@@ -26,5 +26,8 @@ public enum UiAction
     Thickness,
     ClearBoard,
     BackgroundColor,
-    Export
+    Export,
+    Fill,
+    // An empty sector of the radial menu, to even out the ring.
+    Spacer
 }

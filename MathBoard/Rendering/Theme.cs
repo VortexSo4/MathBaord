@@ -92,4 +92,6 @@ public static class Icons
     public const string Picture = "\uEB9F";
     public const string Monitor = "\uE7F4";
     public const string Export = "\uE72D";
+    public const string Sun = "\uE706";
+    public const string Moon = "\uE708";
 }

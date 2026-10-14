@@ -25,7 +25,9 @@ Localization.Load(Settings.Language.Value);
 var baseOptions = WindowOptions.Default with
 {
     Size = new Vector2D<int>(1280, 720),
-    Title = "MathBoard"
+    Title = "MathBoard",
+    // Shown by BoardApp.Show once the first frame is ready.
+    IsVisible = false
 };
 
 // Try backends in order and fall back to the next one if the window or the backend cannot start.
@@ -68,6 +70,7 @@ if (window == null || backend == null)
 SetWindowIcon(window);
 var app = new BoardApp(window, backend);
 window.Closing += app.Dispose;
+app.Show();
 
 var clock = Stopwatch.StartNew();
 double lastFrame = 0;

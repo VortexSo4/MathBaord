@@ -139,6 +139,12 @@ public static class Settings
     public static Setting<float> RadialMenuInnerRadius { get; } = new(Defaults.RadialMenuInnerRadius);
     public static Setting<float> RadialMenuCenterRadius { get; } = new(Defaults.RadialMenuCenterRadius);
 
+    public static readonly UiAction[] DefaultRadialItems =
+        [UiAction.Thickness, UiAction.Eraser, UiAction.Brush, UiAction.Undo, UiAction.Redo, UiAction.Select, UiAction.Shapes];
+
+    /// <summary>Sectors of the radial menu, clockwise from the bottom. Replace the array when changing it.</summary>
+    public static Setting<UiAction[]> RadialItems { get; } = new(DefaultRadialItems);
+
     /// <summary>Visible quick buttons. Replace the array when changing it: the default instance is shared.</summary>
     public static Setting<QuickButtonConfig[]> QuickButtons { get; } = new(Defaults.QuickButtons);
 
@@ -158,12 +164,6 @@ public static class Settings
         }
 
         return changed;
-    }
-
-    public static void ResetQuickButtons()
-    {
-        QuickButtons.Value = Defaults.QuickButtons;
-        Save();
     }
 
     public static void SetPaletteColor(int index, Vector4 color) =>

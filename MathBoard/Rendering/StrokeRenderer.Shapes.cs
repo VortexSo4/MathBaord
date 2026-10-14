@@ -15,6 +15,98 @@ public sealed partial class StrokeRenderer
     private const float SquareSnap = 0.06f;
 
     public ShapeKind CurrentShape { get; set; } = ShapeKind.Line;
+    public string FillStyle { get; set; } = ObjectGeometry.FillHatch;
+
+    /// <summary>The hatch spacing used last; a new fill starts with it.</summary>
+    public float FillSpacing { get; set; } = ObjectGeometry.DefaultHatchSpacing;
+
+    // A fill being placed: the one it replaces (put back if cancelled) and where the drag that sets the spacing started.
+    private BoardObject? _fillReplaced;
+    private int _fillReplacedIndex;
+    private float _fillStartX, _fillStartSpacing;
+    private bool _fillDragged;
+
+    /// <summary>
+    /// Starts filling the region under the point with the current color and style; until <see cref="EndFill"/> moving
+    /// left or right changes the hatch spacing. A fill already there is replaced (or removed by the "clear" style).
+    /// </summary>
+    public void BeginFill(Vector2 screenPos)
+    {
+        var world = ScreenToWorld(screenPos);
+        int existing = _document.Objects.FindLastIndex(o => o.Kind == ShapeKind.Fill && ObjectGeometry.Distance(o, world) == 0f);
+        var old = existing >= 0 ? _document.Objects[existing] : null;
+        float spacing = old?.Width > 0 ? old.Width : FillSpacing;
+        var created = FillStyle == ObjectGeometry.FillClear
+            ? null
+            : ObjectGeometry.FillAt(_document.Objects, world, CurrentColor, FillStyle, spacing);
+        if (old == null && created == null) return;
+
+        _document.SaveState();
+        if (old != null) _document.Objects.RemoveAt(existing);
+        (_fillReplaced, _fillReplacedIndex) = (old, existing);
+        (_fillStartX, _fillStartSpacing, _fillDragged) = (screenPos.X, spacing, false);
+        // Fills go first, below the shapes that bound them.
+        if (created != null) BeginLive(created, 0);
+        MarkStrokesDirty();
+    }
+
+    public void UpdateFill(Vector2 screenPos)
+    {
+        if (_liveObject?.Kind != ShapeKind.Fill) return;
+        float dx = screenPos.X - _fillStartX;
+        if (MathF.Abs(dx) < 6f && !_fillDragged) return;
+        _fillDragged = true;
+        float spacing = Math.Clamp(_fillStartSpacing * MathF.Exp(dx / 150f), ObjectGeometry.MinHatchSpacing, ObjectGeometry.MaxHatchSpacing);
+        UpdateLive(_liveObject with { Width = spacing });
+    }
+
+    public void EndFill()
+    {
+        if (_liveObject?.Kind == ShapeKind.Fill)
+        {
+            // A plain tap on a fill of the same color and style takes it away.
+            if (!_fillDragged && _fillReplaced is { } old && old.Text == FillStyle && old.Color == CurrentColor)
+            {
+                _liveObject = null;
+                MarkStrokesDirty();
+            }
+            else
+            {
+                FillSpacing = _liveObject.Width;
+                CommitLiveObject();
+            }
+        }
+
+        _fillReplaced = null;
+    }
+
+    /// <summary>Undoes a fill that is being placed, for example when the press turns into the radial menu.</summary>
+    public void CancelFill()
+    {
+        if (_liveObject?.Kind == ShapeKind.Fill || _fillReplaced != null)
+        {
+            _liveObject = null;
+            if (_fillReplaced != null) _document.Objects.Insert(_fillReplacedIndex, _fillReplaced);
+            _document.DiscardLastState();
+            MarkStrokesDirty();
+        }
+
+        _fillReplaced = null;
+    }
+
+    /// <summary>
+    /// After a shape was removed: the fills inside it go too, the others take the space it no longer cuts off (an Euler
+    /// circle's fill becomes whole again when the other circle is erased).
+    /// </summary>
+    private void RemoveFillsOf(BoardObject shape)
+    {
+        _document.Objects.RemoveAll(o => o.Kind == ShapeKind.Fill && ObjectGeometry.IsFillInside(o, shape));
+        for (int i = 0; i < _document.Objects.Count; i++)
+        {
+            if (_document.Objects[i].Kind == ShapeKind.Fill && ObjectGeometry.Refill(_document.Objects[i], _document.Objects) is { } refilled)
+                _document.Objects[i] = refilled;
+        }
+    }
     public bool IsAnglePending => _shapeMode == ShapeMode.AnglePending;
 
     private ShapeMode _shapeMode;
@@ -386,7 +478,7 @@ public sealed partial class StrokeRenderer
     private void BuildGrid(UiBatch ui)
     {
         string mode = Settings.GridMode.Value;
-        if (mode is not ("Squares" or "Axes")) return;
+        if (mode is not ("Squares" or "Dots" or "Axes")) return;
 
         var ink = ColorMath.ContrastOn(Settings.Background);
         float zoom = _camera.Zoom;
@@ -401,6 +493,18 @@ public sealed partial class StrokeRenderer
         var screen = ScreenSize;
         int kx0 = (int)MathF.Ceiling(minW.X / step), kx1 = (int)MathF.Floor(maxW.X / step);
         int ky0 = (int)MathF.Ceiling(minW.Y / step), ky1 = (int)MathF.Floor(maxW.Y / step);
+
+        if (mode == "Dots")
+        {
+            for (int kx = kx0; kx <= kx1; kx++)
+            for (int ky = ky0; ky <= ky1; ky++)
+            {
+                bool strong = kx % every == 0 && ky % every == 0;
+                ui.Circle(WorldToScreen(new Vector2(kx, ky) * step), strong ? 2f : 1.3f, Theme.WithAlpha(ink, strong ? 0.45f : 0.3f));
+            }
+
+            return;
+        }
 
         for (int k = kx0; k <= kx1; k++)
         {

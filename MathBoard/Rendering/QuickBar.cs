@@ -117,22 +117,24 @@ public class QuickBar
         _newColorButton ??= new QuickButtonConfig(UiAction.Color, 0, 0, 0, 0,
             NewColors.FirstOrDefault(c => palette.All(p => Vector4.DistanceSquared(p, c) > 1e-4f), Vector4.One));
         return Enum.GetValues<UiAction>()
-            .Where(a => a != UiAction.Color && _working.All(b => b.Action != a))
+            .Where(a => a is not (UiAction.Color or UiAction.Spacer) && _working.All(b => b.Action != a))
             .Select(a => new QuickButtonConfig(a, 0, 0, 0, 0))
             .Append(_newColorButton)
             .ToList();
     }
 
-    private (Vector2 Pos, Vector2 Size, Vector2 DonePos, Vector2 DoneSize, Vector2 FirstButton) TrayLayout(int hiddenCount)
+    private (Vector2 Pos, Vector2 Size, Vector2 DonePos, Vector2 ResetPos, Vector2 ButtonSize, Vector2 FirstButton) TrayLayout(int hiddenCount)
     {
-        const float pad = 14f;
-        const float doneW = 110f;
+        // As in the radial menu editor: the hint and the buttons in the top row, the hidden buttons centered below.
+        const float pad = 12f;
+        var buttonSize = new Vector2(130f, 36f);
         float buttonsW = Math.Max(hiddenCount, 1) * (Size + TrayButtonGap) - TrayButtonGap;
-        float w = Math.Min(_screen.X - 32f, Math.Max(buttonsW, 260f) + doneW + pad * 3);
-        float h = Size + pad * 2 + 24f;
+        float w = Math.Min(_screen.X - 32f, Math.Max(buttonsW + pad * 2, 720f));
+        float h = pad * 3 + buttonSize.Y + Size;
         var pos = new Vector2((_screen.X - w) * 0.5f, 16f);
-        var donePos = new Vector2(pos.X + w - pad - doneW, pos.Y + 24f + pad + (Size - 36f) * 0.5f);
-        return (pos, new Vector2(w, h), donePos, new Vector2(doneW, 36f), new Vector2(pos.X + pad + Size * 0.5f, pos.Y + 24f + pad + Size * 0.5f));
+        var donePos = new Vector2(pos.X + w - pad - buttonSize.X, pos.Y + pad);
+        return (pos, new Vector2(w, h), donePos, donePos - new Vector2(buttonSize.X + 8f, 0), buttonSize,
+            new Vector2(pos.X + (w - buttonsW + Size) * 0.5f, pos.Y + pad * 2 + buttonSize.Y + Size * 0.5f));
     }
 
     private QuickButtonConfig? TrayButtonAt(Vector2 pos)
@@ -167,9 +169,16 @@ public class QuickBar
         if (IsEditing)
         {
             var layout = TrayLayout(TrayButtons().Count);
-            if (UiBatch.Contains(layout.DonePos, layout.DoneSize, pos))
+            if (UiBatch.Contains(layout.DonePos, layout.ButtonSize, pos))
             {
                 FinishEditing();
+                return;
+            }
+
+            if (UiBatch.Contains(layout.ResetPos, layout.ButtonSize, pos))
+            {
+                _working = Settings.QuickButtons.Default.ToList();
+                _renderer.SetDirty();
                 return;
             }
 
@@ -382,7 +391,8 @@ public class QuickBar
         ui.Rect(layout.Pos, layout.Size, Theme.PopupBg, Theme.PopupRadius);
         ui.Border(layout.Pos, layout.Size, dropping ? Theme.Accent : Theme.Border, dropping ? 2f : 1f, Theme.PopupRadius);
         ui.TextInRect(Localization.Get("quickbar_edit_hint", "Drag buttons to move them, drop here to hide"),
-            layout.Pos + new Vector2(14f, 8f), new Vector2(layout.Size.X - 28f, 22f), Theme.TextSecondary, Theme.Small);
+            layout.Pos + new Vector2(14f, 12f), new Vector2(layout.ResetPos.X - layout.Pos.X - 24f, layout.ButtonSize.Y),
+            Theme.TextSecondary, Theme.Body);
 
         for (int i = 0; i < tray.Count; i++)
         {
@@ -390,9 +400,10 @@ public class QuickBar
             DrawButton(ui, tray[i], layout.FirstButton + new Vector2(i * (Size + TrayButtonGap), 0));
         }
 
-        bool doneHover = UiBatch.Contains(layout.DonePos, layout.DoneSize, _mouse) && !_dragging;
-        ui.TextButton(Localization.Get("quickbar_done", "Done"), layout.DonePos, layout.DoneSize, doneHover,
-            UiBatch.ButtonKind.Primary);
+        ui.TextButton(Localization.Get("radial_reset", "Default"), layout.ResetPos, layout.ButtonSize,
+            UiBatch.Contains(layout.ResetPos, layout.ButtonSize, _mouse) && !_dragging, UiBatch.ButtonKind.Secondary);
+        ui.TextButton(Localization.Get("quickbar_done", "Done"), layout.DonePos, layout.ButtonSize,
+            UiBatch.Contains(layout.DonePos, layout.ButtonSize, _mouse) && !_dragging, UiBatch.ButtonKind.Primary);
     }
 
     private void DrawButton(UiBatch ui, QuickButtonConfig button, Vector2 center, bool lifted = false)
@@ -415,22 +426,33 @@ public class QuickBar
             ui.Circle(center, 12f, color);
             if (active) ui.Ring(center, 17f, 2f, Theme.Text);
         }
-        else if (action == UiAction.Shapes)
-        {
-            // Shows the shape that the tool draws right now.
-            ShapePicker.DrawPreview(ui, _renderer.CurrentShape, center, 20f, Theme.Text);
-        }
-        else if (action == UiAction.BackgroundColor)
-        {
-            ui.Rect(center - new Vector2(10f), new Vector2(20f), Settings.Background, 5f);
-            ui.Border(center - new Vector2(10f), new Vector2(20f), Theme.Text, 1.5f, 5f);
-        }
         else
         {
-            ui.Icon(IconFor(action), center, 18f, pressed || active ? Theme.OnAccent : Theme.Text);
+            DrawActionIcon(ui, _renderer, action, center, pressed || active ? Theme.OnAccent : Theme.Text);
         }
 
         if (action == UiAction.ToggleLibrary && LibraryBadge) ui.Circle(center + new Vector2(11f, -11f), 4f, Theme.Accent);
+    }
+
+    /// <summary>The picture of an action: the current shape or fill style, the background color, or an icon.</summary>
+    public static void DrawActionIcon(UiBatch ui, StrokeRenderer renderer, UiAction action, Vector2 center, Vector4 color)
+    {
+        switch (action)
+        {
+            case UiAction.Shapes:
+                ShapePicker.DrawPreview(ui, renderer.CurrentShape, center, 20f, color);
+                break;
+            case UiAction.Fill:
+                FillPicker.DrawPreview(ui, renderer.FillStyle, center, 18f, color);
+                break;
+            case UiAction.BackgroundColor:
+                ui.Rect(center - new Vector2(10f), new Vector2(20f), Settings.Background, 5f);
+                ui.Border(center - new Vector2(10f), new Vector2(20f), color, 1.5f, 5f);
+                break;
+            default:
+                ui.Icon(IconFor(action), center, 18f, color);
+                break;
+        }
     }
 
     public static string IconFor(UiAction action) => action switch

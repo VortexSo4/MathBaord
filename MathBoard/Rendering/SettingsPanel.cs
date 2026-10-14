@@ -27,7 +27,7 @@ public class SettingsPanel : IDisposable
     private static readonly Dictionary<string, string> LanguageNames = new() { ["EN_US"] = "English", ["RU_RU"] = "Русский" };
     private static readonly string[] ScaleOptions = ["0", "1", "1.25", "1.5", "1.75", "2"];
 
-    private enum SettingType { Numeric, IntNumeric, Enum, Bool, Action }
+    private enum SettingType { Numeric, IntNumeric, Enum, Bool, Action, Section }
 
     private class SettingItem
     {
@@ -38,9 +38,14 @@ public class SettingsPanel : IDisposable
         public Action? OnClick;
         public List<string>? Options;
         public Func<string, string> Label = v => v;
+        public string Section = "";
     }
 
+    // Every setting with its section header; the visible rows are the headers and the settings of the open sections.
+    private readonly List<SettingItem> _all = new();
     private readonly List<SettingItem> _items = new();
+    private readonly HashSet<string> _expanded = ["general"];
+    private string _section = "";
 
     public TextBoxState TextBox { get; } = new() { Accepts = c => char.IsDigit(c) || c is '.' or '-' };
     public bool HasTextInput => _activeFieldIndex >= 0;
@@ -56,10 +61,9 @@ public class SettingsPanel : IDisposable
 
     public Action? OnOpenLog { get; set; }
     public Action? OnCustomizeQuickButtons { get; set; }
+    public Action? OnCustomizeRadialMenu { get; set; }
 
     private readonly Updater _updater;
-    // Resetting the button layout asks for a second tap.
-    private bool _confirmLayoutReset;
 
     public SettingsPanel(StrokeRenderer renderer, Updater updater)
     {
@@ -70,7 +74,6 @@ public class SettingsPanel : IDisposable
     public void Open()
     {
         IsOpen = true;
-        _confirmLayoutReset = false;
         _scrollY = 0;
         _activeFieldIndex = -1;
         _openDropdownIndex = -1;
@@ -108,11 +111,30 @@ public class SettingsPanel : IDisposable
             }
         };
 
-    private void BuildSettingsList()
+    private void Section(string key, string fallback)
+    {
+        _section = key;
+        _all.Add(new SettingItem { Name = Localization.Get("settings_section_" + key, fallback), Type = SettingType.Section, Section = key });
+    }
+
+    private void Add(SettingItem item)
+    {
+        item.Section = _section;
+        _all.Add(item);
+    }
+
+    private void UpdateRows()
     {
         _items.Clear();
+        _items.AddRange(_all.Where(i => i.Type == SettingType.Section || _expanded.Contains(i.Section)));
+    }
 
-        _items.Add(new SettingItem
+    private void BuildSettingsList()
+    {
+        _all.Clear();
+
+        Section("general", "General");
+        Add(new SettingItem
         {
             Name = Localization.Get("settings_language", "Language"),
             Type = SettingType.Enum,
@@ -127,7 +149,7 @@ public class SettingsPanel : IDisposable
             Label = v => LanguageNames.GetValueOrDefault(v, v)
         });
 
-        _items.Add(new SettingItem
+        Add(new SettingItem
         {
             Name = Localization.Get("settings_ui_scale", "Interface scale"),
             Type = SettingType.Enum,
@@ -139,35 +161,7 @@ public class SettingsPanel : IDisposable
                 : (float.Parse(v, Invariant) * 100f).ToString("0", Invariant) + "%"
         });
 
-        _items.Add(new SettingItem
-        {
-            Name = Localization.Get("settings_light_theme", "Light theme"),
-            Type = SettingType.Bool,
-            GetValue = () => Settings.LightTheme.Value.ToString(),
-            OnClick = () => Settings.LightTheme.Value = !Settings.LightTheme.Value
-        });
-
-        _items.Add(new SettingItem
-        {
-            Name = Localization.Get("settings_grid", "Background grid"),
-            Type = SettingType.Enum,
-            GetValue = () => Settings.GridMode.Value,
-            SetValue = v => Settings.GridMode.Value = v,
-            Options = ["None", "Squares", "Axes"],
-            Label = v => Localization.Get("grid_" + v.ToLowerInvariant(), v)
-        });
-
-        _items.Add(new SettingItem
-        {
-            Name = Localization.Get("settings_render_backend", "Renderer (after restart)"),
-            Type = SettingType.Enum,
-            GetValue = () => Settings.RenderBackend.Value,
-            SetValue = v => Settings.RenderBackend.Value = v,
-            Options = [BackendLoader.Auto, ..Settings.AvailableBackends],
-            Label = v => v == BackendLoader.Auto ? Localization.Get("settings_auto", "Auto") : v
-        });
-
-        _items.Add(new SettingItem
+        Add(new SettingItem
         {
             Name = Localization.Get("settings_on_screen_keyboard", "On-screen keyboard"),
             Type = SettingType.Enum,
@@ -177,7 +171,7 @@ public class SettingsPanel : IDisposable
             Label = v => Localization.Get("settings_osk_" + v.ToLowerInvariant(), v)
         });
 
-        _items.Add(new SettingItem
+        Add(new SettingItem
         {
             Name = Localization.Get("settings_quick_buttons", "Customize quick buttons"),
             Type = SettingType.Action,
@@ -189,22 +183,46 @@ public class SettingsPanel : IDisposable
             }
         });
 
-        _items.Add(new SettingItem
+        Add(new SettingItem
         {
-            Name = Localization.Get("settings_reset_layout", "Default button layout"),
+            Name = Localization.Get("settings_radial_menu", "Radial menu"),
             Type = SettingType.Action,
-            GetValue = () => _confirmLayoutReset
-                ? Localization.Get("settings_reset_layout_confirm", "Tap again")
-                : Localization.Get("settings_reset_layout_action", "Restore"),
+            GetValue = () => Localization.Get("settings_quick_buttons_action", "Arrange"),
             OnClick = () =>
             {
-                if (_confirmLayoutReset) Settings.ResetQuickButtons();
-                _confirmLayoutReset = !_confirmLayoutReset;
-                _renderer.SetDirty();
+                Close();
+                OnCustomizeRadialMenu?.Invoke();
             }
         });
 
-        _items.Add(new SettingItem
+        Section("brush", "Brush");
+        Add(Numeric("settings_min_brush_width", "Min Brush Width",
+            () => Settings.MinBrushWidth, v => Settings.MinBrushWidth.Value = Math.Max(1f, v)));
+        Add(Numeric("settings_max_brush_width", "Max Brush Width",
+            () => Settings.MaxBrushWidth, v => Settings.MaxBrushWidth.Value = Math.Max(Settings.MinBrushWidth, v)));
+
+        Section("camera", "Camera");
+        Add(Numeric("settings_camera_zoom_speed", "Camera Zoom Speed",
+            () => Settings.CameraZoomSpeed, v => Settings.CameraZoomSpeed.Value = Math.Max(0.01f, v)));
+        Add(Numeric("settings_camera_min_zoom", "Camera Min Zoom",
+            () => Settings.CameraMinZoom, v => Settings.CameraMinZoom.Value = Math.Max(0.01f, v)));
+        Add(Numeric("settings_camera_max_zoom", "Camera Max Zoom",
+            () => Settings.CameraMaxZoom, v => Settings.CameraMaxZoom.Value = Math.Max(Settings.CameraMinZoom, v)));
+        Add(Numeric("settings_camera_pan_speed", "Camera Pan Speed",
+            () => Settings.CameraPanSpeed, v => Settings.CameraPanSpeed.Value = Math.Max(1f, v)));
+
+        Add(new SettingItem
+        {
+            Name = Localization.Get("settings_grid", "Background grid"),
+            Type = SettingType.Enum,
+            GetValue = () => Settings.GridMode.Value,
+            SetValue = v => Settings.GridMode.Value = v,
+            Options = ["None", "Squares", "Dots", "Axes"],
+            Label = v => Localization.Get("grid_" + v.ToLowerInvariant(), v)
+        });
+
+        Section("menu", "Menu");
+        Add(new SettingItem
         {
             Name = Localization.Get("settings_radialmenu_close_on_tool_select", "RadialMenu Close On Tool Select"),
             Type = SettingType.Bool,
@@ -212,7 +230,33 @@ public class SettingsPanel : IDisposable
             OnClick = () => Settings.RadialMenuCloseOnToolSelect.Value = !Settings.RadialMenuCloseOnToolSelect.Value
         });
 
-        _items.Add(new SettingItem
+        Add(Numeric("settings_radialmenu_long_press", "RadialMenu Long Press",
+            () => Settings.RadialMenuLongPressThreshold, v => Settings.RadialMenuLongPressThreshold.Value = Math.Max(0.1f, v)));
+        Add(Numeric("settings_radialmenu_open_threshold", "RadialMenu Open Threshold",
+            () => Settings.RadialMenuOpenThreshold, v => Settings.RadialMenuOpenThreshold.Value = Math.Max(0.05f, v)));
+        Add(Numeric("settings_radialmenu_escape_time", "RadialMenu Escape Time",
+            () => Settings.RadialMenuEscapeTime, v => Settings.RadialMenuEscapeTime.Value = Math.Max(0.02f, v)));
+        Add(Numeric("settings_radialmenu_escape_distance", "RadialMenu Escape Distance",
+            () => Settings.RadialMenuEscapeDistance, v => Settings.RadialMenuEscapeDistance.Value = Math.Max(1f, v)));
+
+        Section("pen", "Pen");
+        Add(Numeric("settings_hold_tolerance", "Hold tolerance, px",
+            () => Settings.HoldTolerance, v => Settings.HoldTolerance.Value = Math.Clamp(v, 2f, 60f), "0"));
+        Add(Numeric("settings_palm_erase", "Palm erases from, mm (0 = off)",
+            () => Settings.PalmEraseMillimetres, v => Settings.PalmEraseMillimetres.Value = Math.Max(0f, v), "0"));
+
+        Section("system", "System");
+        Add(new SettingItem
+        {
+            Name = Localization.Get("settings_render_backend", "Renderer (after restart)"),
+            Type = SettingType.Enum,
+            GetValue = () => Settings.RenderBackend.Value,
+            SetValue = v => Settings.RenderBackend.Value = v,
+            Options = [BackendLoader.Auto, ..Settings.AvailableBackends],
+            Label = v => v == BackendLoader.Auto ? Localization.Get("settings_auto", "Auto") : v
+        });
+
+        Add(new SettingItem
         {
             Name = Localization.Get("settings_autosave_interval", "AutoSave Interval (min)"),
             Type = SettingType.IntNumeric,
@@ -224,42 +268,7 @@ public class SettingsPanel : IDisposable
             }
         });
 
-        _items.Add(Numeric("settings_hold_tolerance", "Hold tolerance, px",
-            () => Settings.HoldTolerance, v => Settings.HoldTolerance.Value = Math.Clamp(v, 2f, 60f), "0"));
-        _items.Add(Numeric("settings_palm_erase", "Palm erases from, mm (0 = off)",
-            () => Settings.PalmEraseMillimetres, v => Settings.PalmEraseMillimetres.Value = Math.Max(0f, v), "0"));
-        _items.Add(Numeric("settings_radialmenu_long_press", "RadialMenu Long Press",
-            () => Settings.RadialMenuLongPressThreshold, v => Settings.RadialMenuLongPressThreshold.Value = Math.Max(0.1f, v)));
-        _items.Add(Numeric("settings_radialmenu_open_threshold", "RadialMenu Open Threshold",
-            () => Settings.RadialMenuOpenThreshold, v => Settings.RadialMenuOpenThreshold.Value = Math.Max(0.05f, v)));
-        _items.Add(Numeric("settings_radialmenu_escape_time", "RadialMenu Escape Time",
-            () => Settings.RadialMenuEscapeTime, v => Settings.RadialMenuEscapeTime.Value = Math.Max(0.02f, v)));
-        _items.Add(Numeric("settings_radialmenu_escape_distance", "RadialMenu Escape Distance",
-            () => Settings.RadialMenuEscapeDistance, v => Settings.RadialMenuEscapeDistance.Value = Math.Max(1f, v)));
-        _items.Add(Numeric("settings_camera_zoom_speed", "Camera Zoom Speed",
-            () => Settings.CameraZoomSpeed, v => Settings.CameraZoomSpeed.Value = Math.Max(0.01f, v)));
-        _items.Add(Numeric("settings_camera_min_zoom", "Camera Min Zoom",
-            () => Settings.CameraMinZoom, v => Settings.CameraMinZoom.Value = Math.Max(0.01f, v)));
-        _items.Add(Numeric("settings_camera_max_zoom", "Camera Max Zoom",
-            () => Settings.CameraMaxZoom, v => Settings.CameraMaxZoom.Value = Math.Max(Settings.CameraMinZoom, v)));
-        _items.Add(Numeric("settings_camera_pan_speed", "Camera Pan Speed",
-            () => Settings.CameraPanSpeed, v => Settings.CameraPanSpeed.Value = Math.Max(1f, v)));
-        _items.Add(Numeric("settings_default_brush_width", "Default Brush Width",
-            () => Settings.DefaultBrushWidth, v => Settings.DefaultBrushWidth.Value = Math.Clamp(v, Settings.MinBrushWidth, Settings.MaxBrushWidth)));
-        _items.Add(Numeric("settings_default_eraser_size", "Default Eraser Size",
-            () => Settings.DefaultEraserSize, v => Settings.DefaultEraserSize.Value = Math.Clamp(v, 1f, 100f)));
-        _items.Add(Numeric("settings_min_brush_width", "Min Brush Width",
-            () => Settings.MinBrushWidth, v => Settings.MinBrushWidth.Value = Math.Max(1f, v)));
-        _items.Add(Numeric("settings_max_brush_width", "Max Brush Width",
-            () => Settings.MaxBrushWidth, v => Settings.MaxBrushWidth.Value = Math.Max(Settings.MinBrushWidth, v)));
-        _items.Add(Numeric("settings_radialmenu_outer_radius", "RadialMenu Outer Radius",
-            () => Settings.RadialMenuOuterRadius, v => Settings.RadialMenuOuterRadius.Value = Math.Max(50f, v), "0"));
-        _items.Add(Numeric("settings_radialmenu_inner_radius", "RadialMenu Inner Radius",
-            () => Settings.RadialMenuInnerRadius, v => Settings.RadialMenuInnerRadius.Value = Math.Max(10f, v), "0"));
-        _items.Add(Numeric("settings_radialmenu_center_radius", "RadialMenu Center Radius",
-            () => Settings.RadialMenuCenterRadius, v => Settings.RadialMenuCenterRadius.Value = Math.Max(5f, v), "0"));
-
-        _items.Add(new SettingItem
+        Add(new SettingItem
         {
             Name = Localization.Get("settings_check_updates", "Check for updates at startup"),
             Type = SettingType.Bool,
@@ -267,7 +276,7 @@ public class SettingsPanel : IDisposable
             OnClick = () => Settings.CheckUpdates.Value = !Settings.CheckUpdates.Value
         });
 
-        _items.Add(new SettingItem
+        Add(new SettingItem
         {
             Name = Localization.Get("settings_version", "Version") + " " + Updater.CurrentVersion.ToString(3),
             Type = SettingType.Action,
@@ -287,7 +296,7 @@ public class SettingsPanel : IDisposable
             }
         });
 
-        _items.Add(new SettingItem
+        Add(new SettingItem
         {
             Name = Localization.Get("settings_open_latest_log", "Open Latest Log"),
             Type = SettingType.Action,
@@ -298,6 +307,8 @@ public class SettingsPanel : IDisposable
                 OnOpenLog?.Invoke();
             }
         });
+
+        UpdateRows();
     }
 
     private void Apply(Action action)
@@ -518,6 +529,10 @@ public class SettingsPanel : IDisposable
             case SettingType.Action:
                 item.OnClick?.Invoke();
                 break;
+            case SettingType.Section:
+                if (!_expanded.Remove(item.Section)) _expanded.Add(item.Section);
+                UpdateRows();
+                break;
         }
     }
 
@@ -554,6 +569,12 @@ public class SettingsPanel : IDisposable
             bool hover = _openDropdownIndex < 0 && !_isDraggingScrollbar && !_scrollingByDrag && RowAt(_mousePos) == i;
             if (hover) ui.Rect(new Vector2(pos.X + 8f, y + 2f), new Vector2(size.X - 16f - ScrollbarWidth, ItemHeight - 4f), Theme.RowHover, 8f);
 
+            if (item.Type == SettingType.Section)
+            {
+                RenderSectionHeader(ui, item, new Vector2(pos.X + Padding, y), size.X - Padding * 2 - ScrollbarWidth);
+                continue;
+            }
+
             ui.TextInRect(item.Name, new Vector2(pos.X + Padding, y), new Vector2(labelWidth, ItemHeight), Theme.Text, Theme.Body);
             RenderControl(ui, i, item, hover);
         }
@@ -571,6 +592,18 @@ public class SettingsPanel : IDisposable
         ui.TextButton(Localization.Get("dialog_button_save", "Save"), savePos, btnSize, UiBatch.Contains(savePos, btnSize, _mousePos), UiBatch.ButtonKind.Primary);
 
         if (_openDropdownIndex >= 0) RenderDropdownList(ui);
+    }
+
+    /// <summary>The section's name, a rounded line after it and the chevron that opens or closes the section.</summary>
+    private void RenderSectionHeader(UiBatch ui, SettingItem item, Vector2 pos, float width)
+    {
+        float mid = pos.Y + ItemHeight * 0.5f;
+        float nameWidth = MathF.Min(ui.Measure(item.Name, Theme.Label), width - 60f);
+        ui.TextInRect(item.Name, pos, new Vector2(nameWidth + 2f, ItemHeight), Theme.Text, Theme.Label);
+        float lineStart = pos.X + nameWidth + 14f, lineEnd = pos.X + width - 30f;
+        ui.Rect(new Vector2(lineStart, mid - 1.5f), new Vector2(lineEnd - lineStart, 3f), Theme.Surface, 1.5f);
+        ui.Icon(_expanded.Contains(item.Section) ? Icons.ChevronDown : Icons.ChevronRight, new Vector2(pos.X + width - 12f, mid), 12f,
+            Theme.TextSecondary);
     }
 
     private void RenderControl(UiBatch ui, int index, SettingItem item, bool rowHover)

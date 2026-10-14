@@ -157,7 +157,8 @@ public class LibraryPanel : IDisposable
     private static readonly Vector2 ToolbarButtonSize = new(36f);
     private Vector2 CollapseButtonPos => new(Width - 44f, (HeaderHeight - 32f) * 0.5f);
     private Vector2 BottomButtonPos => new(12f, _screenSize.Y - BottomBarHeight + 10f);
-    private Vector2 BottomButtonSize => new(Width - 24f, 36f);
+    private Vector2 BottomButtonSize => new(Width - 24f - 44f, 36f);
+    private Vector2 ThemeButtonPos => new(Width - 12f - 36f, BottomButtonPos.Y);
 
     /// <summary>Target row positions; while dragging, a placeholder is inserted where the item would land.</summary>
     private List<Row> LayoutRows()
@@ -366,6 +367,10 @@ public class LibraryPanel : IDisposable
             ui.Circle(pos + new Vector2(28f, BottomButtonSize.Y * 0.5f - 8f), 4f, Theme.Accent);
         ui.TextInRect(label, pos + new Vector2(40f, 0), new Vector2(BottomButtonSize.X - 48f, BottomButtonSize.Y),
             Theme.Text, Theme.Body);
+
+        // Shows the current theme: the moon in the dark one, the sun in the light one.
+        ui.IconButton(Settings.LightTheme ? Icons.Sun : Icons.Moon, ThemeButtonPos, new Vector2(36f),
+            !IsModalOpen && Hit(ThemeButtonPos, new Vector2(36f)), iconSize: 16f);
     }
 
     private void RenderList(UiBatch ui)
@@ -962,6 +967,14 @@ public class LibraryPanel : IDisposable
         if (Hit(ToolbarButtonPos(2), ToolbarButtonSize)) { RequestNewFile(); return; }
 
         if (Hit(BottomButtonPos, BottomButtonSize)) { OpenSettingsDialog(); return; }
+        if (Hit(ThemeButtonPos, new Vector2(36f)))
+        {
+            Settings.LightTheme.Value = !Settings.LightTheme.Value;
+            Settings.Save();
+            _renderer.SetDirty();
+            return;
+        }
+
         if (pos.Y < ListTop || pos.Y >= ListBottom) return;
 
         if (RowAt(pos) is not { } row) return;
