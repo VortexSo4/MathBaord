@@ -12,7 +12,8 @@ public enum Tool
     Eraser,
     Select,
     Pan,
-    Shape
+    Shape,
+    Fill
 }
 
 /// <summary>
@@ -37,6 +38,7 @@ public sealed partial class StrokeRenderer : IDisposable
     private Prim[] _strokePrims = new Prim[4096];
     // The previous rebuild's primitives: comparing with them tells the backend where the changes really start.
     private Prim[] _previousPrims = new Prim[4096];
+    private Vector4 _fillBackground;
     private int _strokePrimCount;
     private int _strokesDirtyFrom;
     private bool _framePending;
@@ -52,6 +54,8 @@ public sealed partial class StrokeRenderer : IDisposable
     private bool _uiDirty = true;
     private bool _strokesDirty = true;
     private Stroke? _activeStroke;
+    // A stroke that ended before its last points reached the primitives (a tap ends before any frame is drawn).
+    private Stroke? _finishedStroke;
     private int _activeStart = -1;
     private int _activeDirtyFrom = -1;
     private readonly List<Vector2> _rawTail = new(4);
@@ -267,6 +271,7 @@ public sealed partial class StrokeRenderer : IDisposable
             MarkActiveDirty(firstChanged);
         }
 
+        if (_activeDirtyFrom >= 0) _finishedStroke = _activeStroke;
         _activeStroke = null;
         _rawTail.Clear();
         IsQuickShapeApplied = false;
@@ -361,8 +366,8 @@ public sealed partial class StrokeRenderer : IDisposable
         for (int i = _document.Objects.Count - 1; i >= 0; i--)
         {
             var o = _document.Objects[i];
-            // Pictures are only removed through the selection, so ink on them can be erased.
-            if (o.Kind == ShapeKind.Image) continue;
+            // Pictures and fills are only removed through the selection, so ink on them can be erased.
+            if (ObjectGeometry.IsBackdrop(o.Kind)) continue;
             if (o.Kind is not (ShapeKind.Ray or ShapeKind.InfiniteLine) && !Overlaps(ObjectGeometry.Bounds(o), pathMin, pathMax, o.Width)) continue;
             bool hit = false;
             for (int step = 0; step <= steps && !hit; step++)
@@ -375,6 +380,8 @@ public sealed partial class StrokeRenderer : IDisposable
             if (!hit) continue;
             SaveEraseState();
             _document.Objects.RemoveAt(i);
+            RemoveFillsOf(o);
+            i = Math.Min(i, _document.Objects.Count);
             MarkStrokesDirty();
         }
     }
@@ -525,6 +532,13 @@ public sealed partial class StrokeRenderer : IDisposable
     /// <summary>Rebuilds changed geometry and the UI before a frame is handed to the backend.</summary>
     public void PrepareFrame()
     {
+        // Solid fills are tinted towards the background, so they are rebuilt when it changes.
+        if (Settings.Background != _fillBackground)
+        {
+            _fillBackground = Settings.Background;
+            if (_document.Objects.Any(o => o.Kind == ShapeKind.Fill)) _strokesDirty = true;
+        }
+
         if (_strokesDirty)
         {
             (_strokePrims, _previousPrims) = (_previousPrims, _strokePrims);
@@ -557,6 +571,7 @@ public sealed partial class StrokeRenderer : IDisposable
             _strokesDirtyFrom = Math.Min(_strokesDirtyFrom, unchanged);
             _strokesDirty = false;
             _activeDirtyFrom = -1;
+            _finishedStroke = null;
             _liveDirty = _liveObject != null;
             if (!_objectsVersionKey.SequenceEqual(_document.Objects))
             {
@@ -566,17 +581,18 @@ public sealed partial class StrokeRenderer : IDisposable
         }
         else if (_activeDirtyFrom >= 0)
         {
-            if (_activeStroke != null && _activeStart >= 0)
+            if ((_activeStroke ?? _finishedStroke) is { } stroke && _activeStart >= 0)
             {
-                int segments = SegmentCount(_activeStroke);
-                int from = _activeStroke.Points.Count == 1 ? 0 : Math.Min(_activeDirtyFrom, segments - 1);
+                int segments = SegmentCount(stroke);
+                int from = stroke.Points.Count == 1 ? 0 : Math.Min(_activeDirtyFrom, segments - 1);
                 ReserveStrokePrims(_activeStart + segments);
-                WriteStroke(_activeStroke, from, _strokePrims, _activeStart + from);
+                WriteStroke(stroke, from, _strokePrims, _activeStart + from);
                 _strokePrimCount = _activeStart + segments;
                 _strokesDirtyFrom = Math.Min(_strokesDirtyFrom, _activeStart + from);
             }
 
             _activeDirtyFrom = -1;
+            _finishedStroke = null;
         }
 
         if (_liveDirty)

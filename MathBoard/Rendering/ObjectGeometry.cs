@@ -30,6 +30,12 @@ public static partial class ObjectGeometry
             return;
         }
 
+        if (o.Kind == ShapeKind.Fill)
+        {
+            BuildFill(o, prims);
+            return;
+        }
+
         var p = o.Points;
         float r = o.Width * 0.5f;
         var c = o.Color;
@@ -296,6 +302,7 @@ public static partial class ObjectGeometry
             ShapeKind.Circle => CircleBox(o.Points[0], Vector2.Distance(o.Points[0], o.Points[1])),
             ShapeKind.Ellipse => EllipsePoints(o.Points[0], o.Points[1] - o.Points[0], o.Points[2] - o.Points[0], 32),
             var kind when IsSolid(kind) => SolidOutlinePoints(o),
+            ShapeKind.Fill => o.Points.Where(p => !float.IsNaN(p.X)).ToArray(),
             _ => o.Points
         };
         Vector2 min = new(float.MaxValue), max = new(float.MinValue);
@@ -320,6 +327,7 @@ public static partial class ObjectGeometry
     /// <summary>Distance from a world point to the drawn object, 0 inside a plot or an image.</summary>
     public static float Distance(BoardObject o, Vector2 point)
     {
+        if (o.Kind == ShapeKind.Fill) return InsideFill(o, point) ? 0f : float.MaxValue;
         if (o.Kind is ShapeKind.Plot or ShapeKind.Image)
         {
             var u = o.Points[1] - o.Points[0];

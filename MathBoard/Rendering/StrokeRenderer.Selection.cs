@@ -59,6 +59,7 @@ public sealed partial class StrokeRenderer
         var objects = SelectedObjects.ToHashSet(ReferenceEqualityComparer.Instance);
         _document.Strokes.RemoveAll(strokes.Contains);
         _document.Objects.RemoveAll(objects.Contains);
+        foreach (var o in SelectedObjects) RemoveFillsOf(o);
         ClearSelection();
         MarkStrokesDirty();
     }
@@ -139,7 +140,7 @@ public sealed partial class StrokeRenderer
 
     private int HitTestControlPoint(Vector2 screenPos)
     {
-        if (SingleObject is not { } o || o.Kind == ShapeKind.Image) return -1;
+        if (SingleObject is not { } o || ObjectGeometry.IsBackdrop(o.Kind)) return -1;
         for (int i = 0; i < o.Points.Length; i++)
             if (Vector2.Distance(WorldToScreen(o.Points[i]), screenPos) < PointHandleRadius)
                 return i;
@@ -338,7 +339,7 @@ public sealed partial class StrokeRenderer
         // Ink lies on top of objects, so an object only wins if it is clearly closer.
         foreach (var o in _document.Objects)
         {
-            if (o.Kind == ShapeKind.Image) continue;
+            if (ObjectGeometry.IsBackdrop(o.Kind)) continue;
             float d = ObjectGeometry.Distance(o, world);
             if (d < best - 1e-3f)
             {
@@ -350,7 +351,7 @@ public sealed partial class StrokeRenderer
 
         // Pictures lie below everything, so the topmost one under the point is picked only when nothing else is near.
         closestObject ??= closestStroke == null
-            ? _document.Objects.LastOrDefault(o => o.Kind == ShapeKind.Image && ObjectGeometry.Distance(o, world) == 0f)
+            ? _document.Objects.LastOrDefault(o => ObjectGeometry.IsBackdrop(o.Kind) && ObjectGeometry.Distance(o, world) == 0f)
             : null;
 
         if (closestStroke != null) SelectedStrokes.Add(closestStroke);
@@ -368,7 +369,7 @@ public sealed partial class StrokeRenderer
         foreach (var o in _document.Objects)
         {
             var b = ObjectGeometry.Bounds(o);
-            bool hit = o.Kind == ShapeKind.Image
+            bool hit = ObjectGeometry.IsBackdrop(o.Kind)
                 ? b.Min.X >= minW.X && b.Min.Y >= minW.Y && b.Max.X <= maxW.X && b.Max.Y <= maxW.Y
                 : Overlaps(b, minW, maxW);
             if (hit) SelectedObjects.Add(o);
@@ -464,7 +465,7 @@ public sealed partial class StrokeRenderer
             ui.Ring(h, 7f, 2f, accent);
         }
 
-        if (SingleObject is { Kind: not ShapeKind.Image } single)
+        if (SingleObject is { } single && !ObjectGeometry.IsBackdrop(single.Kind))
         {
             // A single shape is edited through its own points; the box handles still scale and rotate it.
             foreach (var p in single.Points)

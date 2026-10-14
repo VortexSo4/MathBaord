@@ -23,6 +23,8 @@ public sealed partial class InputManager : IDisposable
     private readonly PlotEditor _plotEditor;
     private readonly ThicknessPicker _thicknessPicker;
     private readonly ConfirmPopup _confirm;
+    private readonly FillPicker _fillPicker;
+    private readonly RadialEditor _radialEditor;
     private readonly IPopup[] _popups;
     private readonly TouchGestures? _gestures;
 
@@ -41,6 +43,7 @@ public sealed partial class InputManager : IDisposable
     private bool _isPanning;
     private bool _isShaping;
     private bool _editingSelection;
+    private bool _isFilling;
     private IPopup? _capturedPopup;
     private Vector2 _mouseDownPos;
     private DateTime _mouseDownTime;
@@ -74,7 +77,10 @@ public sealed partial class InputManager : IDisposable
         _plotEditor = new PlotEditor(strokeRenderer);
         _thicknessPicker = new ThicknessPicker(strokeRenderer);
         _confirm = new ConfirmPopup(strokeRenderer);
-        _popups = [_colorEditor, _shapePicker, _plotEditor, _thicknessPicker, _confirm, new UpdatePopup(strokeRenderer, updater)];
+        _fillPicker = new FillPicker(strokeRenderer);
+        _radialEditor = new RadialEditor(strokeRenderer);
+        _popups = [_colorEditor, _shapePicker, _plotEditor, _thicknessPicker, _fillPicker, _confirm, _radialEditor,
+            new UpdatePopup(strokeRenderer, updater)];
         foreach (var popup in _popups) strokeRenderer.AddOverlay(popup);
         // The screenshot overlay is drawn by the renderer itself because it hides the rest of the interface.
         _popups = [.._popups, strokeRenderer.Screenshot];
@@ -82,6 +88,9 @@ public sealed partial class InputManager : IDisposable
         _quickBar = new QuickBar(strokeRenderer, ExecuteButton, IsButtonActive, pos => _libraryPanel.IsOpen && pos.X < _libraryPanel.Width,
             EditButtonColor);
         _libraryPanel.SettingsPanel.OnCustomizeQuickButtons = _quickBar.BeginEditing;
+        _libraryPanel.SettingsPanel.OnCustomizeRadialMenu = _radialEditor.Open;
+        _radialMenu.Execute = Execute;
+        _radialMenu.IsActive = IsActive;
 
         (_repeatDelay, _repeatInterval) = ReadKeyboardRepeat();
 
@@ -143,6 +152,12 @@ public sealed partial class InputManager : IDisposable
             {
                 _strokeRenderer.EndStroke();
                 _isDrawing = false;
+            }
+
+            if (_isFilling)
+            {
+                _strokeRenderer.CancelFill();
+                _isFilling = false;
             }
 
             _radialMenu.OpenAt(_mouseDownPos);
@@ -229,6 +244,8 @@ public sealed partial class InputManager : IDisposable
         _isPanning = false;
         _isShaping = false;
         _editingSelection = false;
+        if (_isFilling) _strokeRenderer.CancelFill();
+        _isFilling = false;
         // The eraser circle follows a pointer; between two fingers it would hang where the first one was.
         _strokeRenderer.HoverPosition = null;
     }
@@ -291,6 +308,9 @@ public sealed partial class InputManager : IDisposable
             case UiAction.Thickness:
                 _thicknessPicker.Open(MousePosition);
                 break;
+            case UiAction.Fill:
+                _fillPicker.Open(MousePosition);
+                break;
             case UiAction.ClearBoard:
                 _confirm.Open(Localization.Get("clear_title", "Clear the board?"),
                     Localization.Get("clear_text", "Everything is removed; Undo brings it back."),
@@ -319,7 +339,10 @@ public sealed partial class InputManager : IDisposable
                 _shapePicker.Open(MousePosition);
                 break;
             case UiAction.Grid:
-                Settings.GridMode.Value = Settings.GridMode.Value switch { "None" => "Squares", "Squares" => "Axes", _ => "None" };
+                Settings.GridMode.Value = Settings.GridMode.Value switch
+                {
+                    "None" => "Squares", "Squares" => "Dots", "Dots" => "Axes", _ => "None"
+                };
                 Settings.Save();
                 break;
             case UiAction.Screenshot when _hwnd != 0:
@@ -416,6 +439,7 @@ public sealed partial class InputManager : IDisposable
         UiAction.Select => _strokeRenderer.Tool == Tool.Select,
         UiAction.Pan => _strokeRenderer.Tool == Tool.Pan,
         UiAction.Shapes => _strokeRenderer.Tool == Tool.Shape,
+        UiAction.Fill => _strokeRenderer.Tool == Tool.Fill,
         UiAction.Grid => Settings.GridMode.Value != "None",
         _ => false
     };
@@ -566,6 +590,12 @@ public sealed partial class InputManager : IDisposable
             _strokeRenderer.BeginStroke(pos);
             _isDrawing = true;
         }
+        else if (tool == Tool.Fill)
+        {
+            // The fill shows at once; moving left or right before lifting sets its hatch spacing.
+            _strokeRenderer.BeginFill(pos);
+            _isFilling = true;
+        }
 
         if (_strokeRenderer.Tool == Tool.Shape && _strokeRenderer.IsAnglePending)
         {
@@ -636,6 +666,13 @@ public sealed partial class InputManager : IDisposable
         if (_editingSelection)
         {
             _strokeRenderer.HandleSelectionMove(pos);
+            return;
+        }
+
+        if (_isFilling)
+        {
+            if (Vector2.Distance(_mouseDownPos, pos) > Settings.HoldTolerance) _menuPending = false;
+            _strokeRenderer.UpdateFill(pos);
             return;
         }
 
@@ -735,6 +772,14 @@ public sealed partial class InputManager : IDisposable
             return;
         }
 
+        if (_isFilling)
+        {
+            _strokeRenderer.EndFill();
+            _isFilling = false;
+            _menuPending = false;
+            return;
+        }
+
         var tool = _strokeRenderer.Tool;
         if (_menuPending)
         {
@@ -754,6 +799,7 @@ public sealed partial class InputManager : IDisposable
             {
                 _strokeRenderer.TapShape(pos);
             }
+
         }
         else if (_isShaping)
         {

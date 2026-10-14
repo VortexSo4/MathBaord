@@ -4,17 +4,17 @@ using System.Runtime.InteropServices;
 namespace MathBoard.Core;
 
 /// <summary>
-/// Touch input from WM_POINTER messages, which GLFW does not report: one finger works like the left mouse button,
-/// two fingers pan and pinch-zoom. Touches are not left to Windows' mouse emulation, because it holds back the
-/// button-down of a finger that does not move until the finger lifts, so a long press (the radial menu) never
-/// arrived. Windows' press-and-hold gesture is turned off as well: it turned a long press into a right click
-/// (the eraser here).
+/// Touch and pen input from WM_POINTER messages, which GLFW does not report: one finger or a pen in contact works like
+/// the left mouse button, two fingers pan and pinch-zoom. Contacts are not left to Windows' mouse emulation, because
+/// it holds back the button-down of a finger or pen that does not move until it lifts, so a long press (the radial
+/// menu) never arrived. A hovering pen still goes through it, which moves the cursor. Windows' press-and-hold gesture
+/// is turned off as well: it turned a long press into a right click (the eraser here).
 /// </summary>
 public sealed partial class TouchGestures : IDisposable
 {
     private const uint WM_POINTERUPDATE = 0x0245, WM_POINTERDOWN = 0x0246, WM_POINTERUP = 0x0247;
     private const uint WM_TABLET_QUERYSYSTEMGESTURESTATUS = 0x02CC;
-    private const uint PT_TOUCH = 2;
+    private const uint PT_TOUCH = 2, PT_PEN = 3;
     // TABLET_DISABLE_PRESSANDHOLD | PENTAPFEEDBACK | PENBARRELFEEDBACK | FLICKS
     private const int DisabledTabletGestures = 0x1 | 0x8 | 0x10 | 0x10000;
     private const string TabletProperty = "MicrosoftTabletPenServiceProperty";
@@ -30,18 +30,19 @@ public sealed partial class TouchGestures : IDisposable
     private float _lastDistance;
     private bool _resync = true;
     private uint? _primary;
+    private uint? _pen;
     private bool _primaryCancelled;
     private int _loggedContacts;
 
     public bool IsActive { get; private set; }
 
-    /// <summary>The first finger touched down: position in window pixels and contact size in millimetres (0 if unknown).</summary>
+    /// <summary>The first finger or a pen touched down: position in window pixels and contact size in millimetres (0 if unknown).</summary>
     public event Action<Vector2, float>? Down;
 
-    /// <summary>The first finger moved; not raised while two fingers pan or zoom.</summary>
+    /// <summary>The first finger or the pen moved; not raised while two fingers pan or zoom.</summary>
     public event Action<Vector2, float>? Move;
 
-    /// <summary>The first finger lifted.</summary>
+    /// <summary>The first finger or the pen lifted.</summary>
     public event Action<Vector2>? Up;
 
     /// <summary>A second finger touched down: whatever the first finger started should be cancelled.</summary>
@@ -69,18 +70,40 @@ public sealed partial class TouchGestures : IDisposable
         if (msg is WM_POINTERDOWN or WM_POINTERUPDATE or WM_POINTERUP)
         {
             uint id = (uint)(wParam & 0xFFFF);
-            if (GetPointerType(id, out uint type) && type == PT_TOUCH)
+            GetPointerType(id, out uint type);
+            // A pen only counts while it touches the board: from its down until its up.
+            bool pen = type == PT_PEN && (msg == WM_POINTERDOWN || id == _pen);
+            if (type == PT_TOUCH || pen)
             {
                 var point = new Point { X = (short)(lParam & 0xFFFF), Y = (short)((lParam >> 16) & 0xFFFF) };
                 ScreenToClient(hwnd, ref point);
                 var pos = new Vector2(point.X, point.Y);
-                HandleTouch(msg, id, pos);
-                // Handled here, so Windows generates no mouse messages for this touch.
+                if (pen) HandlePen(msg, id, pos);
+                else HandleTouch(msg, id, pos);
+                // Handled here, so Windows generates no mouse messages for this contact.
                 return 0;
             }
         }
 
         return CallWindowProc(_original, hwnd, msg, wParam, lParam);
+    }
+
+    private void HandlePen(uint msg, uint id, Vector2 pos)
+    {
+        switch (msg)
+        {
+            case WM_POINTERDOWN:
+                _pen = id;
+                Down?.Invoke(pos, 0f);
+                break;
+            case WM_POINTERUPDATE:
+                Move?.Invoke(pos, 0f);
+                break;
+            default:
+                _pen = null;
+                Up?.Invoke(pos);
+                break;
+        }
     }
 
     private void HandleTouch(uint msg, uint id, Vector2 pos)

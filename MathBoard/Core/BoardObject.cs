@@ -21,7 +21,8 @@ public enum ShapeKind
     Pyramid,
     Cylinder,
     Cone,
-    Sphere
+    Sphere,
+    Fill
 }
 
 /// <summary>
@@ -31,12 +32,13 @@ public enum ShapeKind
 /// Angle: vertex and a point on each arm; Plot and Image: origin (top-left) corner, end of the x side, end of the y side;
 /// Box and Prism: front bottom-left corner, then the ends of the width, height and depth edges; Pyramid: the same
 /// with the apex in place of the height; Cylinder and Cone: base center, end of the width radius, top center or apex,
-/// end of the depth radius; Sphere: center, end of the radius, end of the equator's depth radius.
+/// end of the depth radius; Sphere: center, end of the radius, end of the equator's depth radius;
+/// Fill: the region's contours, separated by NaN points.
 /// Objects are immutable: edits replace them, so undo snapshots can share them.
 /// </summary>
 public sealed record BoardObject(ShapeKind Kind, Vector2[] Points, Vector4 Color, float Width)
 {
-    /// <summary>Plot: functions of x separated by ';'. Image: file name in <see cref="ImageStore"/>.</summary>
+    /// <summary>Plot: functions of x separated by ';'. Image: file name in <see cref="ImageStore"/>. Fill: its style.</summary>
     public string Text { get; init; } = "";
 
     /// <summary>Plot only: the x range shown; y uses the same units and is centered on zero.</summary>
