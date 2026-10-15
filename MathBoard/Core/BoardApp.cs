@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using MathBoard.Graphics;
@@ -81,8 +82,12 @@ public sealed partial class BoardApp : IDisposable
         _libraryManager.AutoSaveIfNeeded();
         if (!_strokeRenderer.NeedsRedraw) return false;
 
+        long prepareStart = Stopwatch.GetTimestamp();
         _strokeRenderer.PrepareFrame();
+        long backendStart = Stopwatch.GetTimestamp();
         _renderFailed = !_backend.Render(_strokeRenderer.GetFrame());
+        if (Perf.Enabled)
+            Perf.Frame(Stopwatch.GetElapsedTime(prepareStart, backendStart).TotalMilliseconds, Stopwatch.GetElapsedTime(backendStart).TotalMilliseconds);
         if (_renderFailed) return false;
         _strokeRenderer.OnPresented();
         return true;

@@ -24,10 +24,11 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
     private IWindow? _window;
     private GL? _gl;
     private uint _program;
-    private int _transformLocation, _pixelLocation;
-    private uint _strokeVbo, _uiVbo, _backgroundVbo, _imageVbo, _overlayVbo, _indexBuffer, _atlasTexture;
+    private int _transformLocation, _pixelLocation, _moveLocation, _moveOffsetLocation;
+    private uint _strokeVbo, _movingVbo, _uiVbo, _backgroundVbo, _imageVbo, _overlayVbo, _indexBuffer, _atlasTexture;
     private int _strokeCapacity, _indexCapacity, _atlasSize;
     private int _strokeCount, _uiCount, _backgroundCount;
+    private int _movingVersion = -1;
     private float[] _scratch = [];
     private Prim[] _imageScratch = [];
     private readonly Dictionary<ImageData, uint> _textures = new();
@@ -55,8 +56,11 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         _program = CreateProgram();
         _transformLocation = gl.GetUniformLocation(_program, "uTransform");
         _pixelLocation = gl.GetUniformLocation(_program, "uPixel");
+        _moveLocation = gl.GetUniformLocation(_program, "uMove");
+        _moveOffsetLocation = gl.GetUniformLocation(_program, "uMoveOffset");
 
         _strokeVbo = gl.GenBuffer();
+        _movingVbo = gl.GenBuffer();
         _uiVbo = gl.GenBuffer();
         _backgroundVbo = gl.GenBuffer();
         _imageVbo = gl.GenBuffer();
@@ -79,6 +83,12 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
 
         UploadAtlas(frame);
         UploadStrokes(frame.Strokes, frame.StrokesDirtyFrom);
+        if (frame.MovingVersion != _movingVersion)
+        {
+            Upload(_movingVbo, frame.Moving, 0, frame.Moving.Length, reallocate: true);
+            _movingVersion = frame.MovingVersion;
+        }
+
         _uiCount = frame.Ui.Length;
         Upload(_uiVbo, frame.Ui, 0, frame.Ui.Length, reallocate: true);
         _backgroundCount = frame.Background.Length;
@@ -86,7 +96,7 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         UpdateTextures(frame);
         UploadImages(_imageVbo, frame.Images);
         UploadImages(_overlayVbo, frame.OverlayImages);
-        EnsureIndices(Math.Max(Math.Max(_strokeCount, _uiCount), Math.Max(_backgroundCount, frame.Images.Length)));
+        EnsureIndices(Math.Max(Math.Max(Math.Max(_strokeCount, frame.Moving.Length), _uiCount), Math.Max(_backgroundCount, frame.Images.Length)));
 
         gl.Viewport(0, 0, (uint)size.X, (uint)size.Y);
         gl.ClearColor(frame.ClearColor.X, frame.ClearColor.Y, frame.ClearColor.Z, frame.ClearColor.W);
@@ -108,6 +118,7 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         Draw(_backgroundVbo, _backgroundCount, uiTransform, 1f / scale);
         DrawImages(_imageVbo, frame.Images, strokeTransform, 1f / zoom);
         Draw(_strokeVbo, _strokeCount, strokeTransform, 1f / zoom);
+        Draw(_movingVbo, frame.Moving.Length, strokeTransform, 1f / zoom, move: frame.MovingTransform);
         DrawImages(_overlayVbo, frame.OverlayImages, uiTransform, 1f / scale);
         Draw(_uiVbo, _uiCount, uiTransform, 1f / scale);
 
@@ -164,12 +175,16 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         gl.BindTexture(TextureTarget.Texture2D, _atlasTexture);
     }
 
-    private void Draw(uint vbo, int primCount, Matrix4x4 transform, float pixel, int first = 0)
+    /// <param name="move">Applied to capsule ends before <paramref name="transform"/>: a selection being dragged.</param>
+    private void Draw(uint vbo, int primCount, Matrix4x4 transform, float pixel, int first = 0, Matrix3x2? move = null)
     {
         if (primCount == 0) return;
         var gl = _gl!;
         gl.UniformMatrix4(_transformLocation, 1, false, (float*)&transform);
         gl.Uniform1(_pixelLocation, pixel);
+        var m = move ?? Matrix3x2.Identity;
+        gl.Uniform4(_moveLocation, m.M11, m.M12, m.M21, m.M22);
+        gl.Uniform2(_moveOffsetLocation, m.M31, m.M32);
         gl.BindBuffer(BufferTargetARB.ArrayBuffer, vbo);
 
         uint offset = 0;
@@ -306,6 +321,7 @@ public sealed unsafe class OpenGLBackend : IRenderBackend
         if (_gl == null) return;
         if (_program != 0) _gl.DeleteProgram(_program);
         if (_strokeVbo != 0) _gl.DeleteBuffer(_strokeVbo);
+        if (_movingVbo != 0) _gl.DeleteBuffer(_movingVbo);
         if (_uiVbo != 0) _gl.DeleteBuffer(_uiVbo);
         if (_backgroundVbo != 0) _gl.DeleteBuffer(_backgroundVbo);
         if (_imageVbo != 0) _gl.DeleteBuffer(_imageVbo);

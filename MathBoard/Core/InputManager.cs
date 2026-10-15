@@ -522,6 +522,7 @@ public sealed partial class InputManager : IDisposable
 
         if (button == MouseButton.Left)
         {
+            if (_radialMenu.IsOutside(pos)) _radialMenu.Close();
             if (_radialMenu.IsOpen)
                 Begin(Capture.Radial, button, () => _radialMenu.OnMouseDown(pos));
             else if (_quickBar.Contains(pos))

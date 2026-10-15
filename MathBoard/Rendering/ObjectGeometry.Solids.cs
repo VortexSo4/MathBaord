@@ -195,23 +195,8 @@ public static partial class ObjectGeometry
             return;
         }
 
-        float thin = MathF.Max(r * 0.6f, 0.75f), dash = MathF.Max(r * 5f, 6f), period = dash * 1.8f, walked = 0f;
-        for (int i = 0; i + 1 < points.Count; i++)
-        {
-            var a = points[i];
-            float length = Vector2.Distance(a, points[i + 1]);
-            if (length < 1e-6f) continue;
-            var dir = (points[i + 1] - a) / length;
-            for (float t = 0; t < length;)
-            {
-                float phase = (walked + t) % period;
-                float step = MathF.Min((phase < dash ? dash : period) - phase, length - t);
-                if (phase < dash) prims.Add(Prim.Capsule(a + dir * t, a + dir * (t + step), thin, c));
-                t += step;
-            }
-
-            walked += length;
-        }
+        float dash = MathF.Max(r * 5f, 6f);
+        Dashes(prims, points, MathF.Max(r * 0.6f, 0.75f), c, dash, dash * 1.8f);
     }
 
     /// <summary>Control points of a solid dragged out over a box, which it fills.</summary>

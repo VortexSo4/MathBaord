@@ -805,8 +805,7 @@ public class LibraryPanel : IDisposable
         _settingsPanel.Open();
     }
 
-    private static string LogPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MathBoard", "latest.log");
+    private static string LogPath => AppPaths.Log;
 
     public void OpenLogDialog()
     {

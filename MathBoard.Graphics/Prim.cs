@@ -17,7 +17,8 @@ public enum PrimType
 /// <summary>
 /// One drawing primitive: a quad whose shape is resolved per pixel. Field meaning depends on the type:
 /// RoundRect: A = min.xy max.xy, B = radius, border;
-/// Capsule: A = p0.xy p1.xy, B = radius;
+/// Capsule: A = p0.xy p1.xy, B = radius; dashed when Extra.y (the period) is above zero: dashes Extra.x long, not counting
+/// their round ends, every Extra.y, the pattern shifted by Extra.z at p0, so the dashes of a polyline run on across it;
 /// Glyph: A = min.xy max.xy, Extra = uv rect;
 /// Arc: A = center.xy, r0, r1, B = start angle, end angle;
 /// ColorRing: A = center.xy, r0, r1, B = mode (0 hue, 1 saturation, 2 value), hue — value grows clockwise from the top;
@@ -43,4 +44,9 @@ public struct Prim
         Color = color,
         Clip = NoClip
     };
+
+    public static Prim DashedCapsule(Vector2 p0, Vector2 p1, float radius, Vector4 color, float dash, float period, float phase) =>
+        Capsule(p0, p1, radius, color) with { Extra = new Vector4(dash, period, phase, 0) };
+
+    public bool IsDashed => Extra.Y > 0;
 }

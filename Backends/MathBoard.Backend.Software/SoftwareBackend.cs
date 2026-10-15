@@ -8,7 +8,8 @@ namespace MathBoard.Backend.Software;
 
 /// <summary>
 /// CPU rendering with Skia, presented through GDI. Works without any GPU driver. Finished strokes are cached in a
-/// layer for the current camera; panning shifts the layer and only redraws the uncovered strips.
+/// layer for the current camera; panning shifts the layer and only redraws the uncovered strips. A selection being
+/// dragged is cached in a layer of its own, which is shifted as it moves.
 /// </summary>
 public sealed partial class SoftwareBackend : IRenderBackend
 {
@@ -18,6 +19,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
     private SKBitmap? _frame;
     private SKCanvas? _frameCanvas;
     private SKBitmap? _layer, _spareLayer;
+    private SKBitmap? _movingLayer;
     private SKBitmap? _atlas;
     // Drawing an SKBitmap copies it into a temporary image on every call, which for the 1 MB atlas made each
     // glyph cost a full copy. Images that wrap the pixels are drawn without copying.
@@ -36,6 +38,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
     private readonly SKPaint _fill = new() { IsAntialias = true, Style = SKPaintStyle.Fill };
     private readonly SKPaint _stroke = new() { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeCap = SKStrokeCap.Round, StrokeJoin = SKStrokeJoin.Round };
     private readonly SKPaint _glyph = new();
+    private readonly SKPaint _image = new();
     private Vector4 _canvasClip;
 
     public string Name => "Software";
@@ -64,7 +67,9 @@ public sealed partial class SoftwareBackend : IRenderBackend
             _frameCanvas = new SKCanvas(_frame);
             _layer = new SKBitmap(info);
             _spareLayer = new SKBitmap(info);
+            _movingLayer = new SKBitmap(info);
             _layerValid = false;
+            _movingValid = false;
         }
 
         UpdateAtlas(frame);
@@ -74,6 +79,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
         var canvas = _frameCanvas!;
         canvas.ResetMatrix();
         DrawWrapped(canvas, _layer!, 0, 0);
+        if (frame.Moving.Length > 0) DrawMoving(canvas, frame);
 
         float scale = frame.UiScale;
         canvas.SetMatrix(CameraMatrix(frame.CameraPosition, frame.CameraZoom, scale));
@@ -198,16 +204,22 @@ public sealed partial class SoftwareBackend : IRenderBackend
         if (dirty.IsEmpty && lastInLayer == _paths.Count - 1) return;
 
         using var canvas = new SKCanvas(_layer);
-        if (!dirty.IsEmpty)
+        if (dirty.IsEmpty)
         {
+            canvas.SetMatrix(matrix);
+            foreach (var path in _paths.Where(path => !path.InLayer)) DrawPath(canvas, path);
+        }
+        else
+        {
+            // The redrawn area takes in every new path: drawn on top as well, a path would be drawn twice where it
+            // crosses the area, its anti-aliased edges brighter there.
+            foreach (var path in _paths.Where(path => !path.InLayer)) dirty = Union(dirty, path.Bounds);
             var region = matrix.MapRect(dirty);
             region = SKRect.Intersect(new SKRect(MathF.Floor(region.Left), MathF.Floor(region.Top), MathF.Ceiling(region.Right),
                 MathF.Ceiling(region.Bottom)), new SKRect(0, 0, _layer!.Width, _layer.Height));
             if (!region.IsEmpty) RedrawRegion(canvas, frame, matrix, region);
         }
 
-        canvas.SetMatrix(matrix);
-        foreach (var path in _paths.Where(path => !path.InLayer)) DrawPath(canvas, path);
         foreach (var path in _paths) path.InLayer = true;
     }
 
@@ -238,10 +250,13 @@ public sealed partial class SoftwareBackend : IRenderBackend
         public SKRect Bounds { get; } = bounds;
         public SKColor Color { get; } = color;
         public float Width { get; } = width;
+        /// <summary>The points of a dashed run, cut into dashes as it is drawn, and its pattern (the first capsule's Extra).</summary>
+        public Vector2[]? Dashed;
+        public Vector4 Pattern;
         public int Start, End;
         public bool InLayer;
-        /// <summary>First and last primitive, color and width, and length: what identifies the same run elsewhere.</summary>
-        public (Vector4, Vector4, Vector4, int) Key;
+        /// <summary>First and last primitive, color and width, dash pattern and length: what identifies the same run elsewhere.</summary>
+        public (Vector4, Vector4, Vector4, Vector4, int) Key;
 
         public void Dispose() => Path.Dispose();
     }
@@ -251,7 +266,7 @@ public sealed partial class SoftwareBackend : IRenderBackend
 
     // Paths dropped because primitives before them changed, by their first and last primitive. When the same run comes
     // back at another index (strokes after an erased one shift down), the path and its place in the layer are reused.
-    private readonly Dictionary<(Vector4, Vector4, Vector4, int), StrokePath> _dropped = new();
+    private readonly Dictionary<(Vector4, Vector4, Vector4, Vector4, int), StrokePath> _dropped = new();
 
     /// <summary>Takes the paths that include primitives from <paramref name="prim"/> on out of the list, for reuse.</summary>
     private void DropPathsFrom(int prim)
@@ -306,19 +321,9 @@ public sealed partial class SoftwareBackend : IRenderBackend
         int i = _pathsBuilt;
         while (i < to)
         {
+            int j = RunEnd(prims, i, to);
             var first = prims[i];
-            float radius = first.B.X;
-            var end = new Vector2(first.A.Z, first.A.W);
-            int j = i + 1;
-            while (j < to)
-            {
-                var next = prims[j];
-                if (next.B.X != radius || next.Color != first.Color || next.A.X != end.X || next.A.Y != end.Y) break;
-                end = new Vector2(next.A.Z, next.A.W);
-                j++;
-            }
-
-            var key = (first.A, prims[j - 1].A, new Vector4(first.Color.X, first.Color.Y, first.Color.Z, radius), j - i);
+            var key = (first.A, prims[j - 1].A, new Vector4(first.Color.X, first.Color.Y, first.Color.Z, first.B.X), first.Extra, j - i);
             if (_dropped.Remove(key, out var reused))
             {
                 reused.Start = i;
@@ -328,24 +333,112 @@ public sealed partial class SoftwareBackend : IRenderBackend
                 continue;
             }
 
-            var path = new SKPath();
-            path.MoveTo(first.A.X, first.A.Y);
-            for (int k = i; k < j; k++) path.LineTo(prims[k].A.Z, prims[k].A.W);
-            var bounds = path.Bounds;
-            bounds.Inflate(radius, radius);
-            _paths.Add(new StrokePath(path, bounds, ToColor(first.Color), radius * 2f) { Start = i, End = j, Key = key });
+            var path = MakePath(prims, i, j);
+            path.Start = i;
+            path.End = j;
+            path.Key = key;
+            _paths.Add(path);
             i = j;
         }
 
         _pathsBuilt = Math.Max(_pathsBuilt, to);
     }
 
+    /// <summary>The end of the run of connected capsules from <paramref name="i"/> with the same color, width and dash pattern.</summary>
+    private static int RunEnd(ReadOnlySpan<Prim> prims, int i, int to)
+    {
+        var first = prims[i];
+        var end = new Vector2(first.A.Z, first.A.W);
+        int j = i + 1;
+        while (j < to)
+        {
+            var next = prims[j];
+            if (next.B.X != first.B.X || next.Color != first.Color || next.Extra.X != first.Extra.X || next.Extra.Y != first.Extra.Y ||
+                next.A.X != end.X || next.A.Y != end.Y) break;
+            end = new Vector2(next.A.Z, next.A.W);
+            j++;
+        }
+
+        return j;
+    }
+
+    /// <summary>Capsules [i, j) as one polyline; a dashed one starts its pattern at the first capsule's phase.</summary>
+    private static StrokePath MakePath(ReadOnlySpan<Prim> prims, int i, int j)
+    {
+        var first = prims[i];
+        float radius = first.B.X;
+        var path = new SKPath();
+        path.MoveTo(first.A.X, first.A.Y);
+        for (int k = i; k < j; k++) path.LineTo(prims[k].A.Z, prims[k].A.W);
+        var bounds = path.Bounds;
+        bounds.Inflate(radius, radius);
+        var made = new StrokePath(path, bounds, ToColor(first.Color), radius * 2f);
+        if (first.IsDashed)
+        {
+            made.Dashed = new Vector2[j - i + 1];
+            made.Dashed[0] = new Vector2(first.A.X, first.A.Y);
+            for (int k = i; k < j; k++) made.Dashed[k - i + 1] = new Vector2(prims[k].A.Z, prims[k].A.W);
+            made.Pattern = first.Extra;
+        }
+
+        return made;
+    }
+
     private void DrawPath(SKCanvas canvas, StrokePath p)
     {
-        _stroke.Color = p.Color;
-        _stroke.StrokeWidth = p.Width;
+        var color = p.Color;
+        float radius = Thin(canvas, ref color, p.Width * 0.5f);
+        _stroke.StrokeWidth = radius * 2f;
+        _stroke.Color = color;
         _stroke.Shader = null;
-        canvas.DrawPath(p.Path, _stroke);
+        if (p.Dashed != null) DrawDashes(canvas, p.Dashed, p.Pattern, radius);
+        else canvas.DrawPath(p.Path, _stroke);
+    }
+
+    private readonly List<(Vector2 A, Vector2 B)> _dashes = new();
+
+    /// <summary>
+    /// Draws a dashed polyline with the stroke paint: the dashes in view, or a fainter solid line where the gaps would be
+    /// too fine to see, as the GPU backends blur them.
+    /// </summary>
+    private void DrawDashes(SKCanvas canvas, ReadOnlySpan<Vector2> points, Vector4 pattern, float radius)
+    {
+        using var path = new SKPath();
+        if (pattern.Y * canvas.TotalMatrix.ScaleX < 4f)
+        {
+            var color = _stroke.Color;
+            _stroke.Color = color.WithAlpha((byte)(color.Alpha * MathF.Min((pattern.X + radius * 2f) / pattern.Y, 1f)));
+            path.MoveTo(points[0].X, points[0].Y);
+            foreach (var p in points[1..]) path.LineTo(p.X, p.Y);
+        }
+        else
+        {
+            var clip = canvas.LocalClipBounds;
+            clip.Inflate(radius, radius);
+            _dashes.Clear();
+            Dashing.Visible(points, pattern, new Vector2(clip.Left, clip.Top), new Vector2(clip.Right, clip.Bottom), _dashes);
+            foreach (var (a, b) in _dashes)
+            {
+                path.MoveTo(a.X, a.Y);
+                path.LineTo(b.X, b.Y);
+            }
+        }
+
+        canvas.DrawPath(path, _stroke);
+    }
+
+    /// <summary>
+    /// The radius to draw a line or dot with: one thinner than a pixel is drawn a pixel thick, from half bright for a
+    /// hairline to full from half a pixel up. That is how the GPU backends show it: their anti-aliasing widens a thin line
+    /// by a pixel, and the short pieces of handwriting overlap there; Skia alone would draw it about half as bright.
+    /// </summary>
+    private static float Thin(SKCanvas canvas, ref SKColor color, float radius)
+    {
+        float scale = canvas.TotalMatrix.ScaleX;
+        float r = radius * scale;
+        if (r >= 0.5f || scale <= 0f) return radius;
+        color = color.WithAlpha((byte)(color.Alpha * MathF.Min(0.5f + r * 2f, 1f) + 0.5f));
+        return 0.5f / scale;
     }
 
     /// <summary>Draws cached paths from index <paramref name="from"/> that touch one of the device-space regions.</summary>
@@ -358,6 +451,65 @@ public sealed partial class SoftwareBackend : IRenderBackend
             var p = _paths[i];
             if (world.Any(r => r.IntersectsWith(p.Bounds))) DrawPath(canvas, p);
         }
+    }
+
+    // The dragged selection as polylines, the layer they were last drawn into and the matrix they were drawn with.
+    private readonly List<StrokePath> _movingPaths = new();
+    private SKRect _movingBounds;
+    private int _movingVersion = -1;
+    private bool _movingValid;
+    private SKMatrix _movingDrawn;
+
+    /// <summary>
+    /// Draws the dragged selection. Its layer is drawn again only when the selection changed, when a part of it that the
+    /// layer does not hold comes into view, or when the move is more than a shift (scaling or rotating keeps the lines'
+    /// width, which a stretched picture would not); otherwise the layer is shifted.
+    /// </summary>
+    private void DrawMoving(SKCanvas canvas, in FrameData frame)
+    {
+        if (frame.MovingVersion != _movingVersion)
+        {
+            foreach (var path in _movingPaths) path.Dispose();
+            _movingPaths.Clear();
+            _movingBounds = SKRect.Empty;
+            var prims = frame.Moving;
+            for (int i = 0; i < prims.Length;)
+            {
+                int j = RunEnd(prims, i, prims.Length);
+                var path = MakePath(prims, i, j);
+                _movingPaths.Add(path);
+                _movingBounds = Union(_movingBounds, path.Bounds);
+                i = j;
+            }
+
+            _movingVersion = frame.MovingVersion;
+            _movingValid = false;
+        }
+
+        var m = frame.MovingTransform;
+        var matrix = SKMatrix.Concat(CameraMatrix(frame.CameraPosition, frame.CameraZoom, frame.UiScale),
+            new SKMatrix(m.M11, m.M21, m.M31, m.M12, m.M22, m.M32, 0, 0, 1));
+        var screen = new SKRect(0, 0, _movingLayer!.Width, _movingLayer.Height);
+        var shift = new SKPoint(matrix.TransX - _movingDrawn.TransX, matrix.TransY - _movingDrawn.TransY);
+        bool onlyShifted = matrix.ScaleX == _movingDrawn.ScaleX && matrix.ScaleY == _movingDrawn.ScaleY &&
+                           matrix.SkewX == _movingDrawn.SkewX && matrix.SkewY == _movingDrawn.SkewY;
+        var visible = SKRect.Intersect(matrix.MapRect(_movingBounds), screen);
+        var held = screen;
+        held.Offset(shift);
+        if (!_movingValid || !onlyShifted || !held.Contains(visible))
+        {
+            using var layer = new SKCanvas(_movingLayer);
+            layer.Clear(SKColors.Transparent);
+            layer.SetMatrix(matrix);
+            foreach (var path in _movingPaths) DrawPath(layer, path);
+            _movingDrawn = matrix;
+            _movingValid = true;
+            shift = SKPoint.Empty;
+        }
+
+        canvas.ResetMatrix();
+        using var image = SKImage.FromPixels(_movingLayer.PeekPixels());
+        canvas.DrawImage(image, shift.X, shift.Y, new SKSamplingOptions(SKFilterMode.Linear), _image);
     }
 
     /// <summary>Draws the stroke that is still being drawn; it changes every frame, so it is not cached.</summary>
@@ -397,17 +549,24 @@ public sealed partial class SoftwareBackend : IRenderBackend
                 break;
             }
             case PrimType.Capsule:
+            {
+                float radius = Thin(canvas, ref color, p.B.X);
                 _stroke.Color = color;
-                _stroke.StrokeWidth = p.B.X * 2f;
+                _stroke.StrokeWidth = radius * 2f;
                 _stroke.Shader = null;
                 if (p.A.X == p.A.Z && p.A.Y == p.A.W)
                 {
                     _fill.Color = color;
                     _fill.Shader = null;
-                    canvas.DrawCircle(p.A.X, p.A.Y, p.B.X, _fill);
+                    canvas.DrawCircle(p.A.X, p.A.Y, radius, _fill);
+                }
+                else if (p.IsDashed)
+                {
+                    DrawDashes(canvas, [new Vector2(p.A.X, p.A.Y), new Vector2(p.A.Z, p.A.W)], p.Extra, radius);
                 }
                 else canvas.DrawLine(p.A.X, p.A.Y, p.A.Z, p.A.W, _stroke);
                 break;
+            }
             case PrimType.Glyph when _atlasImage != null:
             {
                 float s = _atlasImage.Width;
@@ -521,6 +680,9 @@ public sealed partial class SoftwareBackend : IRenderBackend
         SetDIBitsToDevice(dc, 0, 0, (uint)frame.Width, (uint)frame.Height, 0, 0, 0, (uint)frame.Height,
             frame.GetPixels(), ref header, 0);
         ReleaseDC(_hwnd, dc);
+        // Waits for the screen's next refresh, as vsync does on the other backends, so animations do not draw hundreds of
+        // frames per second that are never shown.
+        DwmFlush();
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -540,6 +702,9 @@ public sealed partial class SoftwareBackend : IRenderBackend
     [LibraryImport("user32.dll")]
     private static partial int ReleaseDC(nint hwnd, nint dc);
 
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmFlush();
+
     [LibraryImport("gdi32.dll")]
     private static partial int SetDIBitsToDevice(nint dc, int x, int y, uint w, uint h, int srcX, int srcY,
         uint startScan, uint scanLines, nint bits, ref BitmapInfoHeader info, uint usage);
@@ -550,11 +715,13 @@ public sealed partial class SoftwareBackend : IRenderBackend
         _frame?.Dispose();
         _layer?.Dispose();
         _spareLayer?.Dispose();
+        _movingLayer?.Dispose();
     }
 
     public void Dispose()
     {
         ClearPaths();
+        foreach (var path in _movingPaths) path.Dispose();
         DisposeSurfaces();
         _atlasImage?.Dispose();
         _atlas?.Dispose();
@@ -562,5 +729,6 @@ public sealed partial class SoftwareBackend : IRenderBackend
         _fill.Dispose();
         _stroke.Dispose();
         _glyph.Dispose();
+        _image.Dispose();
     }
 }

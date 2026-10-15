@@ -175,7 +175,7 @@ public sealed unsafe class Texture : IDisposable
             SharingMode = SharingMode.Exclusive,
             Samples = SampleCountFlags.Count1Bit
         };
-        _context.Vk.CreateImage(_context.Device, &imageInfo, null, out _image);
+        VulkanContext.Check(_context.Vk.CreateImage(_context.Device, &imageInfo, null, out _image), "CreateImage");
 
         MemoryRequirements memReq;
         _context.Vk.GetImageMemoryRequirements(_context.Device, _image, &memReq);
@@ -185,8 +185,8 @@ public sealed unsafe class Texture : IDisposable
             AllocationSize = memReq.Size,
             MemoryTypeIndex = _context.FindMemoryType(memReq.MemoryTypeBits, MemoryPropertyFlags.DeviceLocalBit)
         };
-        _context.Vk.AllocateMemory(_context.Device, &allocInfo, null, out _imageMemory);
-        _context.Vk.BindImageMemory(_context.Device, _image, _imageMemory, 0);
+        VulkanContext.Check(_context.Vk.AllocateMemory(_context.Device, &allocInfo, null, out _imageMemory), "AllocateMemory");
+        VulkanContext.Check(_context.Vk.BindImageMemory(_context.Device, _image, _imageMemory, 0), "BindImageMemory");
 
         var viewInfo = new ImageViewCreateInfo
         {
@@ -226,7 +226,7 @@ public sealed unsafe class Texture : IDisposable
             Usage = BufferUsageFlags.TransferSrcBit,
             SharingMode = SharingMode.Exclusive
         };
-        _context.Vk.CreateBuffer(_context.Device, &bufferInfo, null, out _staging);
+        VulkanContext.Check(_context.Vk.CreateBuffer(_context.Device, &bufferInfo, null, out _staging), "CreateBuffer");
         MemoryRequirements memReq;
         _context.Vk.GetBufferMemoryRequirements(_context.Device, _staging, &memReq);
         var allocInfo = new MemoryAllocateInfo
@@ -236,10 +236,10 @@ public sealed unsafe class Texture : IDisposable
             MemoryTypeIndex = _context.FindMemoryType(memReq.MemoryTypeBits,
                 MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit)
         };
-        _context.Vk.AllocateMemory(_context.Device, &allocInfo, null, out _stagingMemory);
-        _context.Vk.BindBufferMemory(_context.Device, _staging, _stagingMemory, 0);
+        VulkanContext.Check(_context.Vk.AllocateMemory(_context.Device, &allocInfo, null, out _stagingMemory), "AllocateMemory");
+        VulkanContext.Check(_context.Vk.BindBufferMemory(_context.Device, _staging, _stagingMemory, 0), "BindBufferMemory");
         void* mapped;
-        _context.Vk.MapMemory(_context.Device, _stagingMemory, 0, size, 0, &mapped);
+        VulkanContext.Check(_context.Vk.MapMemory(_context.Device, _stagingMemory, 0, size, 0, &mapped), "MapMemory");
         _stagingData = (byte*)mapped;
     }
 

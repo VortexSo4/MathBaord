@@ -8,8 +8,7 @@ namespace MathBoard.Core;
 
 public static class Settings
 {
-    private static readonly string AppDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MathBoard");
-    private static readonly string SettingPath = Path.Combine(AppDataDir, "MathBoardSettings.json");
+    private static readonly string SettingPath = Path.Combine(AppPaths.Data, "MathBoardSettings.json");
 
     // ====================== ОДИН ИСТОЧНИК ПРАВДЫ ======================
     private static class Defaults
@@ -18,7 +17,7 @@ public static class Settings
 
         public static readonly string DefaultBackgroundColor = "#121212";
 
-        public static readonly string LibraryRootPath = Path.Combine( Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MathBoard", "Lessons");
+        public static readonly string LibraryRootPath = Path.Combine(AppPaths.Data, "Lessons");
         public const int AutoSaveIntervalMinutes = 1;
         public const string RenderBackend = "Auto";
         public const float UiScale = 0f;
@@ -54,7 +53,7 @@ public static class Settings
             new(UiAction.Eraser, 1f, 1f, -34f, -247f),
             new(UiAction.Select, 1f, 1f, -34f, -299f),
             new(UiAction.Pan, 1f, 1f, -34f, -143f),
-            new(UiAction.Color, 0.5f, 1f, -52f, -34f, HexToVector4("#D3D3D3")),
+            new(UiAction.Color, 0.5f, 1f, -52f, -34f, HexToVector4("#B7B7B7")),
             new(UiAction.Color, 0.5f, 1f, 0f, -34f, HexToVector4("#FF8383")),
             new(UiAction.Color, 0.5f, 1f, 52f, -34f, HexToVector4("#3A994C")),
             new(UiAction.Color, 0.5f, 1f, 104f, -34f, HexToVector4("#FFD54F")),
@@ -64,9 +63,11 @@ public static class Settings
             new(UiAction.ZoomIn, 1f, 1f, -34f, -34f),
             new(UiAction.Undo, 1f, 0f, -190f, 34f),
             new(UiAction.Shapes, 1f, 1f, -86f, -143f),
-            new(UiAction.InsertImage, 1f, 1f, -86f, -195f),
-            new(UiAction.Screenshot, 1f, 1f, -86f, -247f),
-            new(UiAction.Export, 1f, 0f, -86f, 34f)
+            new(UiAction.InsertImage, 1f, 1f, -86f, -247f),
+            new(UiAction.Screenshot, 1f, 1f, -86f, -299f),
+            new(UiAction.Export, 1f, 0f, -86f, 34f),
+            new(UiAction.Fill, 1f, 1f, -86f, -195f),
+            new(UiAction.Grid, 1f, 1f, -34f, -403f)
         ];
     }
 
@@ -109,6 +110,12 @@ public static class Settings
 
     /// <summary>A touch at least this wide (a palm or a fist) erases; 0 turns it off.</summary>
     public static Setting<float> PalmEraseMillimetres { get; } = new(30f);
+
+    /// <summary>A selection box smaller than this (logical px) counts as a tap and selects one thing.</summary>
+    public static Setting<float> SelectionTapSize { get; } = new(20f);
+
+    /// <summary>How far (logical px) from a tap the selection looks for the nearest thing.</summary>
+    public static Setting<float> SelectionRadius { get; } = new(20f);
 
     /// <summary>Look for a newer release on GitHub at startup.</summary>
     public static Setting<bool> CheckUpdates { get; } = new(true);

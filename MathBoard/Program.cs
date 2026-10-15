@@ -8,9 +8,8 @@ using Silk.NET.Maths;
 using Silk.NET.Windowing;
 using SkiaSharp;
 
-string logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MathBoard");
-Directory.CreateDirectory(logDir);
-var logFile = new StreamWriter(new FileStream(Path.Combine(logDir, "latest.log"), FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+Directory.CreateDirectory(AppPaths.Data);
+var logFile = new StreamWriter(new FileStream(AppPaths.Log, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
 {
     AutoFlush = true
 };
@@ -18,6 +17,7 @@ Console.SetOut(logFile);
 Console.SetError(logFile);
 AppDomain.CurrentDomain.UnhandledException += (_, e) => Console.WriteLine($"Unhandled exception: {e.ExceptionObject}");
 
+Perf.Stage("main");
 SystemInfo.Log();
 Settings.Load();
 Localization.Load(Settings.Language.Value);
@@ -29,6 +29,8 @@ var baseOptions = WindowOptions.Default with
     // Shown by BoardApp.Show once the first frame is ready.
     IsVisible = false
 };
+
+Perf.Stage("settings");
 
 // Try backends in order and fall back to the next one if the window or the backend cannot start.
 var backends = BackendLoader.Discover();
@@ -67,10 +69,13 @@ if (window == null || backend == null)
     return;
 }
 
+Perf.Stage("backend");
 SetWindowIcon(window);
 var app = new BoardApp(window, backend);
 window.Closing += app.Dispose;
+Perf.Stage("app");
 app.Show();
+Perf.Stage("shown");
 
 var clock = Stopwatch.StartNew();
 double lastFrame = 0;
@@ -97,8 +102,13 @@ window.Run(() =>
     }
 
     inFrame = true;
+    long eventsStart = Stopwatch.GetTimestamp();
     window.DoEvents();
-    if (!window.IsClosing && !app.Render(NextDelta()))
+    double eventsMs = Stopwatch.GetElapsedTime(eventsStart).TotalMilliseconds;
+    long frameStart = Stopwatch.GetTimestamp();
+    bool drew = !window.IsClosing && app.Render(NextDelta());
+    if (Perf.Enabled && (drew || eventsMs > 0.05)) Perf.Loop(eventsMs, Stopwatch.GetElapsedTime(frameStart).TotalMilliseconds, drew);
+    if (!window.IsClosing && !drew)
     {
         double timeout = app.IdleTimeout;
         if (timeout > 0) glfw.WaitEventsTimeout(timeout);

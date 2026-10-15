@@ -48,6 +48,8 @@ public static class BoardExporter
         using var paint = new SKPaint { IsAntialias = true, StrokeCap = SKStrokeCap.Round, StrokeJoin = SKStrokeJoin.Round };
         var labels = new List<ObjectLabel>();
         var prims = new List<Prim>();
+        var dashes = new List<(Vector2 A, Vector2 B)>();
+        var clip = canvas.LocalClipBounds;
 
         // Same order as on the board: pictures, then shapes, then ink.
         foreach (var o in document.Objects.Where(o => o.Kind == ShapeKind.Image))
@@ -62,7 +64,24 @@ public static class BoardExporter
                 paint.Color = ToColor(p.Color);
                 paint.Style = SKPaintStyle.Stroke;
                 paint.StrokeWidth = p.B.X * 2f;
-                canvas.DrawLine(p.A.X, p.A.Y, p.A.Z, p.A.W, paint);
+                if (!p.IsDashed)
+                {
+                    canvas.DrawLine(p.A.X, p.A.Y, p.A.Z, p.A.W, paint);
+                    continue;
+                }
+
+                // Rays and lines are a million units long: only the dashes on the page are drawn.
+                dashes.Clear();
+                Dashing.Visible([new Vector2(p.A.X, p.A.Y), new Vector2(p.A.Z, p.A.W)], p.Extra,
+                    new Vector2(clip.Left - p.B.X, clip.Top - p.B.X), new Vector2(clip.Right + p.B.X, clip.Bottom + p.B.X), dashes);
+                using var path = new SKPath();
+                foreach (var (a, b) in dashes)
+                {
+                    path.MoveTo(a.X, a.Y);
+                    path.LineTo(b.X, b.Y);
+                }
+
+                canvas.DrawPath(path, paint);
             }
         }
 

@@ -1,5 +1,6 @@
 using System.Numerics;
 using MathBoard.Core;
+using MathBoard.Graphics;
 
 namespace MathBoard.Rendering;
 
@@ -15,7 +16,7 @@ public sealed partial class StrokeRenderer
         DraggingPoint
     }
 
-    private enum SelectionAction { Edit, Duplicate, Delete }
+    private enum SelectionAction { Edit, Dash, Duplicate, Delete }
 
     private const float ToolbarButtonSize = 36f;
     private const float PointHandleRadius = 16f;
@@ -40,11 +41,22 @@ public sealed partial class StrokeRenderer
     private List<(int Index, BoardObject Original)> _originalObjects = new();
     private (Vector2 Min, Vector2 Max) _originalBounds;
     private Vector2 _startMouseWorld;
+    // The shape whose point is dragged, as it was.
+    private BoardObject? _dragged;
+
+    // While the selection is dragged (not scaled or rotated) it stays in the document as it was and is drawn from
+    // primitives built once, which the backend moves (FrameData.Moving); it is put in place when the drag ends. Pictures
+    // are not primitives, and fills lie below every shape while the moved layer is drawn on top, so both are moved in the
+    // document.
+    private readonly HashSet<object> _moving = new(ReferenceEqualityComparer.Instance);
+    private Prim[] _movingPrims = [];
+    private readonly List<ObjectLabel> _movingLabels = new();
+    private Matrix3x2 _movingTransform = Matrix3x2.Identity;
+    private int _movingVersion;
 
     public void ClearSelection()
     {
-        // A point being dragged lives outside the document until it is put back.
-        if (CurrentSelectionState == SelectionState.DraggingPoint) CommitLiveObject();
+        FinishEdit();
         SelectedStrokes.Clear();
         SelectedObjects.Clear();
         CurrentSelectionState = SelectionState.None;
@@ -56,10 +68,8 @@ public sealed partial class StrokeRenderer
         if (!HasSelection) return;
         _document.SaveState();
         var strokes = SelectedStrokes.ToHashSet();
-        var objects = SelectedObjects.ToHashSet(ReferenceEqualityComparer.Instance);
         _document.Strokes.RemoveAll(strokes.Contains);
-        _document.Objects.RemoveAll(objects.Contains);
-        foreach (var o in SelectedObjects) RemoveFillsOf(o);
+        RemoveObjects([..SelectedObjects]);
         ClearSelection();
         MarkStrokesDirty();
     }
@@ -78,8 +88,13 @@ public sealed partial class StrokeRenderer
             Points = s.Points.Select(p => Vector2.Transform(p, offset)).ToList()
         }).ToList();
         var objects = SelectedObjects.Select(o => o.Transformed(offset)).ToList();
+        // The fills tied only to the copied shapes are copied with them.
+        var selected = SelectedObjects.ToHashSet<object>(ReferenceEqualityComparer.Instance);
+        var fills = TiesTouching(SelectedObjects).Where(t => AllIn(t, selected)).Select(t => t.Fill.Transformed(offset)).ToList();
         _document.Strokes.AddRange(strokes);
         _document.Objects.AddRange(objects);
+        // The copies' fills go with the other fills, below the shapes.
+        _document.Objects.InsertRange(_document.Objects.TakeWhile(o => o.Kind == ShapeKind.Fill).Count(), fills);
 
         SelectedStrokes.Clear();
         SelectedStrokes.AddRange(strokes);
@@ -107,6 +122,25 @@ public sealed partial class StrokeRenderer
         return true;
     }
 
+    /// <summary>Makes the selected lines and outlines dashed, or solid again when all of them already are, as one undo step.</summary>
+    public void ToggleDashedSelection()
+    {
+        var dashable = SelectedObjects.Where(o => ObjectGeometry.CanDash(o.Kind)).ToList();
+        if (dashable.Count == 0) return;
+        string text = dashable.All(o => o.Dashed) ? "" : BoardObject.DashedStyle;
+        _document.SaveState();
+        for (int i = 0; i < SelectedObjects.Count; i++)
+        {
+            var o = SelectedObjects[i];
+            if (!ObjectGeometry.CanDash(o.Kind)) continue;
+            int index = _document.Objects.FindIndex(x => ReferenceEquals(x, o));
+            SelectedObjects[i] = o with { Text = text };
+            if (index >= 0) _document.Objects[index] = SelectedObjects[i];
+        }
+
+        MarkStrokesDirty();
+    }
+
     /// <summary>Replaces an object (for example after editing a plot's functions) as one undo step.</summary>
     public void ReplaceObject(BoardObject original, BoardObject replacement)
     {
@@ -123,6 +157,7 @@ public sealed partial class StrokeRenderer
     {
         var actions = new List<SelectionAction>();
         if (SingleObject?.Kind == ShapeKind.Plot) actions.Add(SelectionAction.Edit);
+        if (SelectedObjects.Any(o => ObjectGeometry.CanDash(o.Kind))) actions.Add(SelectionAction.Dash);
         actions.Add(SelectionAction.Duplicate);
         actions.Add(SelectionAction.Delete);
         return actions;
@@ -141,8 +176,9 @@ public sealed partial class StrokeRenderer
     private int HitTestControlPoint(Vector2 screenPos)
     {
         if (SingleObject is not { } o || ObjectGeometry.IsBackdrop(o.Kind)) return -1;
-        for (int i = 0; i < o.Points.Length; i++)
-            if (Vector2.Distance(WorldToScreen(o.Points[i]), screenPos) < PointHandleRadius)
+        var handles = ObjectGeometry.ControlHandles(o);
+        for (int i = 0; i < handles.Length; i++)
+            if (Vector2.Distance(WorldToScreen(handles[i]), screenPos) < PointHandleRadius)
                 return i;
         return -1;
     }
@@ -158,6 +194,7 @@ public sealed partial class StrokeRenderer
                 switch (actions[i])
                 {
                     case SelectionAction.Edit: EditPlotRequested?.Invoke(SingleObject!); break;
+                    case SelectionAction.Dash: ToggleDashedSelection(); break;
                     case SelectionAction.Duplicate: DuplicateSelection(); break;
                     default: DeleteSelection(); break;
                 }
@@ -174,6 +211,8 @@ public sealed partial class StrokeRenderer
                 if (index >= 0)
                 {
                     _document.SaveState();
+                    NoteTies([o], rigid: false);
+                    _dragged = o;
                     _document.Objects.RemoveAt(index);
                     BeginLive(o, index);
                     _activeHandle = point;
@@ -183,16 +222,13 @@ public sealed partial class StrokeRenderer
                 }
             }
 
+            // The selection is dragged by its lines or by the fill of a selected shape. A press on the empty inside of an
+            // outline, or on something else, starts a new selection: the circle inside a selected frame is picked.
             int handle = HitTestHandles(screenPos);
-            var bbox = GetSelectedBounds();
-            var minS = WorldToScreen(bbox.Min);
-            var maxS = WorldToScreen(bbox.Max);
-            bool insideBox = screenPos.X >= minS.X && screenPos.X <= maxS.X &&
-                             screenPos.Y >= minS.Y && screenPos.Y <= maxS.Y;
-
-            if (handle != -1 || insideBox)
+            if (handle != -1 || GrabsSelection(ScreenToWorld(screenPos)))
             {
                 _document.SaveState();
+                _originalBounds = GetSelectedBounds();
                 CurrentSelectionState = handle == -1 ? SelectionState.Moving
                     : handle == 8 ? SelectionState.Rotating : SelectionState.Scaling;
                 _activeHandle = handle;
@@ -200,8 +236,9 @@ public sealed partial class StrokeRenderer
                 _originalObjects = SelectedObjects
                     .Select(o => (_document.Objects.FindIndex(x => ReferenceEquals(x, o)), o))
                     .Where(t => t.Item1 >= 0).ToList();
-                _originalBounds = bbox;
+                NoteTies(SelectedObjects, rigid: true);
                 _startMouseWorld = ScreenToWorld(screenPos);
+                if (CurrentSelectionState == SelectionState.Moving) BeginMoving();
                 return;
             }
         }
@@ -223,6 +260,8 @@ public sealed partial class StrokeRenderer
             case SelectionState.DraggingPoint when _liveObject != null:
                 UpdateLive(ObjectGeometry.MoveControlPoint(_liveObject, _activeHandle, ScreenToWorld(screenPos)));
                 SelectedObjects[0] = _liveObject!;
+                _edited[_dragged!] = _liveObject!;
+                if (_fillTies.Count > 0) _refillPending = true;
                 return;
             case SelectionState.None or SelectionState.DraggingPoint:
                 return;
@@ -233,9 +272,26 @@ public sealed partial class StrokeRenderer
 
         if (CurrentSelectionState == SelectionState.Moving)
         {
-            m = Matrix3x2.CreateTranslation(mouseWorld - _startMouseWorld);
+            _movingTransform = Matrix3x2.CreateTranslation(mouseWorld - _startMouseWorld);
+            foreach (var (index, original) in _originalObjects)
+            {
+                if (original.Kind != ShapeKind.Image) continue;
+                _document.Objects[index] = original.Transformed(_movingTransform);
+                MarkStrokesDirty();
+            }
+
+            if (_carriedTies.Count > 0)
+            {
+                CarryFills(_movingTransform);
+                MarkStrokesDirty();
+            }
+
+            if (_fillTies.Count > 0) _refillPending = true;
+            _uiDirty = true;
+            return;
         }
-        else if (CurrentSelectionState == SelectionState.Scaling)
+
+        if (CurrentSelectionState == SelectionState.Scaling)
         {
             Vector2 minB = _originalBounds.Min;
             Vector2 maxB = _originalBounds.Max;
@@ -290,89 +346,214 @@ public sealed partial class StrokeRenderer
         SelectedObjects.Clear();
         foreach (var (index, original) in _originalObjects)
         {
+            _document.Objects[index] = _edited[original] = original.Transformed(m);
+            SelectedObjects.Add(_document.Objects[index]);
+        }
+
+        // Fills follow the shapes that bound them: those tied only to the selection turn with it, the others are made again.
+        CarryFills(m);
+        if (_fillTies.Count > 0) _refillPending = true;
+        MarkStrokesDirty();
+    }
+
+    /// <summary>Moves the fills tied only to the selection with it, as it was moved since the edit started.</summary>
+    private void CarryFills(Matrix3x2 m)
+    {
+        foreach (var tie in _carriedTies)
+        {
+            int at = _document.Objects.FindIndex(o => ReferenceEquals(o, tie.Fill));
+            if (at >= 0) _document.Objects[at] = tie.Fill = tie.Original.Transformed(m);
+        }
+    }
+
+    /// <summary>Starts dragging the selection: its shapes and ink are drawn from primitives built once.</summary>
+    private void BeginMoving()
+    {
+        foreach (var s in SelectedStrokes) _moving.Add(s);
+        foreach (var o in SelectedObjects)
+            if (o.Kind != ShapeKind.Image) _moving.Add(o);
+
+        // In document order, so they lie over each other as before.
+        int count = 0;
+        foreach (var o in _document.Objects)
+            if (_moving.Contains(o)) count += Built(o).Prims.Length;
+        foreach (var s in _document.Strokes)
+            if (_moving.Contains(s)) count += SegmentCount(s);
+
+        _movingPrims = new Prim[count];
+        _movingLabels.Clear();
+        int at = 0;
+        foreach (var o in _document.Objects)
+        {
+            if (!_moving.Contains(o)) continue;
+            var (prims, labels) = Built(o);
+            prims.CopyTo(_movingPrims, at);
+            at += prims.Length;
+            _movingLabels.AddRange(labels);
+        }
+
+        foreach (var s in _document.Strokes)
+            if (_moving.Contains(s)) at = WriteStroke(s, 0, _movingPrims, at);
+
+        _movingTransform = Matrix3x2.Identity;
+        _movingVersion++;
+        MarkStrokesDirty();
+    }
+
+    /// <summary>Puts the dragged selection where it was dragged.</summary>
+    private void PlaceMoved()
+    {
+        var m = _movingTransform;
+        if (m.IsIdentity) return;
+        foreach (var stroke in SelectedStrokes)
+            stroke.Points = _originalPoints[stroke].Select(p => Vector2.Transform(p, m)).ToList();
+
+        SelectedObjects.Clear();
+        foreach (var (index, original) in _originalObjects)
+        {
             _document.Objects[index] = original.Transformed(m);
             SelectedObjects.Add(_document.Objects[index]);
         }
 
+        CarryFills(m);
+    }
+
+    private void EndMoving()
+    {
+        if (_movingPrims.Length == 0 && _moving.Count == 0 && _movingTransform.IsIdentity) return;
+        _moving.Clear();
+        _movingPrims = [];
+        _movingLabels.Clear();
+        _movingTransform = Matrix3x2.Identity;
+        _movingVersion++;
+        MarkStrokesDirty();
+    }
+
+    /// <summary>
+    /// Ends a drag of the selection or of a shape's point: puts the result in place and makes the fills tied to it again
+    /// (fills carried along a scaling too, as a circle stays a circle while its fill would stretch).
+    /// </summary>
+    private void FinishEdit()
+    {
+        var state = CurrentSelectionState;
+        if (state is SelectionState.None or SelectionState.DrawingBox) return;
+        if (state == SelectionState.DraggingPoint) CommitLiveObject();
+        if (state == SelectionState.Moving) PlaceMoved();
+        if (state == SelectionState.Scaling && _carriedTies.Count > 0) Refill(_carriedTies, Edited, final: true);
+        if (_fillTies.Count > 0) Refill(_fillTies, Edited, final: true);
+        _fillTies = [];
+        _carriedTies = [];
+        _edited.Clear();
+        _dragged = null;
+        EndMoving();
+        CurrentSelectionState = SelectionState.None;
         MarkStrokesDirty();
     }
 
     public void HandleSelectionUp(Vector2 screenPos)
     {
-        if (CurrentSelectionState == SelectionState.DraggingPoint)
-        {
-            CommitLiveObject();
-        }
-        else if (CurrentSelectionState == SelectionState.DrawingBox)
+        if (CurrentSelectionState == SelectionState.DrawingBox)
         {
             var minS = Vector2.Min(_selectionStartScreen, screenPos);
             var maxS = Vector2.Max(_selectionStartScreen, screenPos);
-            if ((maxS - minS).LengthSquared() < 25f) SelectClosest(ScreenToWorld(screenPos));
+            var size = maxS - minS;
+            if (MathF.Max(size.X, size.Y) < Settings.SelectionTapSize) SelectClosest(ScreenToWorld((minS + maxS) * 0.5f));
             else SelectInBox(ScreenToWorld(minS), ScreenToWorld(maxS));
         }
 
+        FinishEdit();
         CurrentSelectionState = SelectionState.None;
         _uiDirty = true;
     }
 
+    /// <summary>
+    /// A tap selects one thing: the nearest within <see cref="Settings.SelectionRadius"/>, and of two about as near the upper
+    /// one (ink lies over shapes, later over earlier). The empty inside of an outline is not part of it. Pictures and
+    /// fills lie below everything, so the topmost one under the point is picked only when nothing else is near.
+    /// </summary>
     private void SelectClosest(Vector2 world)
     {
-        float tolerance = 10f / _camera.Zoom;
+        switch (PickAt(world, withBackdrop: true))
+        {
+            case Stroke stroke: SelectedStrokes.Add(stroke); break;
+            // A fill is part of its shape: tapping it selects the shape, and the fill goes along with it.
+            case BoardObject { Kind: ShapeKind.Fill } fill: SelectedObjects.Add(OwnerOf(fill) ?? fill); break;
+            case BoardObject o: SelectedObjects.Add(o); break;
+        }
+    }
+
+    /// <summary>Whether a press at the point takes hold of the selection: on its lines (within the tap radius) or on a selected shape's fill.</summary>
+    private bool GrabsSelection(Vector2 world) => PickAt(world, withBackdrop: true) switch
+    {
+        Stroke s => SelectedStrokes.Contains(s),
+        BoardObject { Kind: ShapeKind.Fill } fill => (OwnerOf(fill) ?? fill) is var owner && SelectedObjects.Any(o => ReferenceEquals(o, owner)),
+        BoardObject o => SelectedObjects.Any(x => ReferenceEquals(x, o)),
+        _ => false
+    };
+
+    /// <summary>What a tap at the point selects (see <see cref="SelectClosest"/>): a stroke, an object or nothing.</summary>
+    private object? PickAt(Vector2 world, bool withBackdrop)
+    {
+        float best = Settings.SelectionRadius / _camera.Zoom;
+        float tie = 1f / _camera.Zoom;
         Stroke? closestStroke = null;
         BoardObject? closestObject = null;
-        float best = tolerance;
 
-        foreach (var s in _document.Strokes)
-        {
-            for (int i = 0; i < Math.Max(1, s.Points.Count - 1) && s.Points.Count > 0; i++)
-            {
-                var b = s.Points[Math.Min(i + 1, s.Points.Count - 1)];
-                float d = PointToSegmentDistance(world, s.Points[i], b) - s.Width * 0.5f;
-                if (d < best)
-                {
-                    best = d;
-                    closestStroke = s;
-                }
-            }
-        }
-
-        // Ink lies on top of objects, so an object only wins if it is clearly closer.
         foreach (var o in _document.Objects)
         {
             if (ObjectGeometry.IsBackdrop(o.Kind)) continue;
             float d = ObjectGeometry.Distance(o, world);
-            if (d < best - 1e-3f)
-            {
-                best = d;
-                closestObject = o;
-                closestStroke = null;
-            }
+            if (d > best + tie) continue;
+            best = MathF.Min(best, d);
+            closestObject = o;
         }
 
-        // Pictures lie below everything, so the topmost one under the point is picked only when nothing else is near.
-        closestObject ??= closestStroke == null
-            ? _document.Objects.LastOrDefault(o => ObjectGeometry.IsBackdrop(o.Kind) && ObjectGeometry.Distance(o, world) == 0f)
-            : null;
+        foreach (var s in _document.Strokes)
+        {
+            float d = float.MaxValue;
+            for (int i = 0; i < s.Points.Count; i++)
+                d = MathF.Min(d, PointToSegmentDistance(world, s.Points[i], s.Points[Math.Min(i + 1, s.Points.Count - 1)]));
+            d = MathF.Max(d - s.Width * 0.5f, 0f);
+            if (d > best + tie) continue;
+            best = MathF.Min(best, d);
+            closestStroke = s;
+        }
 
-        if (closestStroke != null) SelectedStrokes.Add(closestStroke);
-        else if (closestObject != null) SelectedObjects.Add(closestObject);
+        if (closestStroke != null) return closestStroke;
+        if (closestObject != null || !withBackdrop) return closestObject;
+        return _document.Objects.LastOrDefault(o => ObjectGeometry.IsBackdrop(o.Kind) && ObjectGeometry.Distance(o, world) == 0f);
     }
 
+    /// <summary>
+    /// Selects what the box touches: ink and lines that cross it or lie in it, not shapes whose empty inside it only
+    /// covers. A picture or a fill is selected only when the box encloses it, so ink drawn over it can be selected alone.
+    /// </summary>
     private void SelectInBox(Vector2 minW, Vector2 maxW)
     {
         static bool Overlaps((Vector2 Min, Vector2 Max) b, Vector2 min, Vector2 max) =>
             b.Max.X >= min.X && b.Min.X <= max.X && b.Max.Y >= min.Y && b.Min.Y <= max.Y;
 
         foreach (var s in _document.Strokes)
-            if (Overlaps(GetBoundingBox(s.Points), minW, maxW)) SelectedStrokes.Add(s);
-        // A picture is selected only when the box encloses it, so ink drawn over it can be selected alone.
+        {
+            if (!Overlaps(GetBoundingBox(s.Points), minW, maxW)) continue;
+            var r = new Vector2(s.Width * 0.5f);
+            for (int i = 0; i < s.Points.Count; i++)
+            {
+                if (!ObjectGeometry.SegmentTouchesBox(s.Points[i], s.Points[Math.Min(i + 1, s.Points.Count - 1)], minW - r, maxW + r)) continue;
+                SelectedStrokes.Add(s);
+                break;
+            }
+        }
+
+        var boxes = ObjectGeometry.ClosedBounds(_document.Objects);
         foreach (var o in _document.Objects)
         {
             var b = ObjectGeometry.Bounds(o);
             bool hit = ObjectGeometry.IsBackdrop(o.Kind)
                 ? b.Min.X >= minW.X && b.Min.Y >= minW.Y && b.Max.X <= maxW.X && b.Max.Y <= maxW.Y
-                : Overlaps(b, minW, maxW);
-            if (hit) SelectedObjects.Add(o);
+                : Overlaps(b, minW, maxW) && ObjectGeometry.Touches(o, minW, maxW);
+            // Fills come along with their shapes.
+            if (hit && (o.Kind != ShapeKind.Fill || OwnerOf(o, boxes) == null)) SelectedObjects.Add(o);
         }
     }
 
@@ -420,6 +601,9 @@ public sealed partial class StrokeRenderer
     public (Vector2 Min, Vector2 Max) GetSelectedBounds()
     {
         if (!HasSelection) return (Vector2.Zero, Vector2.Zero);
+        // The selection stays where it was while it is dragged.
+        if (CurrentSelectionState == SelectionState.Moving)
+            return (Vector2.Transform(_originalBounds.Min, _movingTransform), Vector2.Transform(_originalBounds.Max, _movingTransform));
         Vector2 min = new(float.MaxValue), max = new(float.MinValue);
         foreach (var s in SelectedStrokes)
         {
@@ -467,12 +651,15 @@ public sealed partial class StrokeRenderer
 
         if (SingleObject is { } single && !ObjectGeometry.IsBackdrop(single.Kind))
         {
-            // A single shape is edited through its own points; the box handles still scale and rotate it.
-            foreach (var p in single.Points)
+            // A single shape is edited through its own points (squares) and the handles that move a whole side (circles);
+            // the box handles still scale and rotate it.
+            var points = ObjectGeometry.ControlHandles(single);
+            for (int i = 0; i < points.Length; i++)
             {
-                var s = WorldToScreen(p);
-                ui.Rect(s - new Vector2(8f), new Vector2(16f), Theme.Accent, 4f);
-                ui.Border(s - new Vector2(8f), new Vector2(16f), Theme.Text, 2f, 4f);
+                var s = WorldToScreen(Vector2.Transform(points[i], _movingTransform));
+                float corner = i < single.Points.Length ? 4f : 8f;
+                ui.Rect(s - new Vector2(8f), new Vector2(16f), Theme.Accent, corner);
+                ui.Border(s - new Vector2(8f), new Vector2(16f), Theme.Text, 2f, corner);
             }
         }
 
@@ -486,8 +673,15 @@ public sealed partial class StrokeRenderer
             bool danger = actions[i] == SelectionAction.Delete;
             ui.Rect(pos, size, hover ? (danger ? Theme.Danger : Theme.SurfaceHover) : Theme.WithAlpha(Theme.Surface, 0.95f), 10f);
             ui.Border(pos, size, Theme.Border, 1f, 10f);
+            var iconColor = danger && !hover ? Theme.Danger : Theme.Text;
+            if (actions[i] == SelectionAction.Dash)
+            {
+                ShapePicker.DrawDashes(ui, pos + size * 0.5f, 18f, iconColor);
+                continue;
+            }
+
             string icon = actions[i] switch { SelectionAction.Edit => Icons.Edit, SelectionAction.Duplicate => Icons.Copy, _ => Icons.Delete };
-            ui.Icon(icon, pos + size * 0.5f, 16f, danger && !hover ? Theme.Danger : Theme.Text);
+            ui.Icon(icon, pos + size * 0.5f, 16f, iconColor);
         }
     }
 }

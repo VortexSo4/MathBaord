@@ -28,6 +28,15 @@ public readonly ref struct FrameData
     public int StrokesStable { get; init; }
 
     /// <summary>
+    /// The selection being moved, scaled or rotated: its primitives in world space as they were before, drawn above the
+    /// strokes with <see cref="MovingTransform"/> applied to their capsule ends (the width stays), so dragging it only
+    /// changes the matrix. <see cref="MovingVersion"/> changes whenever the primitives do, not when only the matrix does.
+    /// </summary>
+    public ReadOnlySpan<Prim> Moving { get; init; }
+    public Matrix3x2 MovingTransform { get; init; }
+    public int MovingVersion { get; init; }
+
+    /// <summary>
     /// Primitives in logical screen space drawn below the strokes (grid, labels). They follow the camera, so a cache
     /// that is shifted with the camera stays valid until <see cref="BackgroundVersion"/> changes.
     /// </summary>

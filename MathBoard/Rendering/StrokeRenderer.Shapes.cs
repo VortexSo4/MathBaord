@@ -8,105 +8,14 @@ public sealed partial class StrokeRenderer
 {
     private enum ShapeMode { None, Creating, AnglePending, SecondArm }
 
-    // Snap the direction of lines to multiples of 45° and angles to multiples of 15° when this close (degrees).
-    private const float DirectionSnapDegrees = 4f;
-    private const float AngleSnapDegrees = 2.5f;
-    // Boxes snap to squares when width and height differ by less than this share.
+    // Rectangles snap to squares and ellipses to circles when width and height differ by less than this share.
     private const float SquareSnap = 0.06f;
 
     public ShapeKind CurrentShape { get; set; } = ShapeKind.Line;
-    public string FillStyle { get; set; } = ObjectGeometry.FillHatch;
 
-    /// <summary>The hatch spacing used last; a new fill starts with it.</summary>
-    public float FillSpacing { get; set; } = ObjectGeometry.DefaultHatchSpacing;
+    /// <summary>New lines and outlines are drawn dashed.</summary>
+    public bool DashedShapes { get; set; }
 
-    // A fill being placed: the one it replaces (put back if cancelled) and where the drag that sets the spacing started.
-    private BoardObject? _fillReplaced;
-    private int _fillReplacedIndex;
-    private float _fillStartX, _fillStartSpacing;
-    private bool _fillDragged;
-
-    /// <summary>
-    /// Starts filling the region under the point with the current color and style; until <see cref="EndFill"/> moving
-    /// left or right changes the hatch spacing. A fill already there is replaced (or removed by the "clear" style).
-    /// </summary>
-    public void BeginFill(Vector2 screenPos)
-    {
-        var world = ScreenToWorld(screenPos);
-        int existing = _document.Objects.FindLastIndex(o => o.Kind == ShapeKind.Fill && ObjectGeometry.Distance(o, world) == 0f);
-        var old = existing >= 0 ? _document.Objects[existing] : null;
-        float spacing = old?.Width > 0 ? old.Width : FillSpacing;
-        var created = FillStyle == ObjectGeometry.FillClear
-            ? null
-            : ObjectGeometry.FillAt(_document.Objects, world, CurrentColor, FillStyle, spacing);
-        if (old == null && created == null) return;
-
-        _document.SaveState();
-        if (old != null) _document.Objects.RemoveAt(existing);
-        (_fillReplaced, _fillReplacedIndex) = (old, existing);
-        (_fillStartX, _fillStartSpacing, _fillDragged) = (screenPos.X, spacing, false);
-        // Fills go first, below the shapes that bound them.
-        if (created != null) BeginLive(created, 0);
-        MarkStrokesDirty();
-    }
-
-    public void UpdateFill(Vector2 screenPos)
-    {
-        if (_liveObject?.Kind != ShapeKind.Fill) return;
-        float dx = screenPos.X - _fillStartX;
-        if (MathF.Abs(dx) < 6f && !_fillDragged) return;
-        _fillDragged = true;
-        float spacing = Math.Clamp(_fillStartSpacing * MathF.Exp(dx / 150f), ObjectGeometry.MinHatchSpacing, ObjectGeometry.MaxHatchSpacing);
-        UpdateLive(_liveObject with { Width = spacing });
-    }
-
-    public void EndFill()
-    {
-        if (_liveObject?.Kind == ShapeKind.Fill)
-        {
-            // A plain tap on a fill of the same color and style takes it away.
-            if (!_fillDragged && _fillReplaced is { } old && old.Text == FillStyle && old.Color == CurrentColor)
-            {
-                _liveObject = null;
-                MarkStrokesDirty();
-            }
-            else
-            {
-                FillSpacing = _liveObject.Width;
-                CommitLiveObject();
-            }
-        }
-
-        _fillReplaced = null;
-    }
-
-    /// <summary>Undoes a fill that is being placed, for example when the press turns into the radial menu.</summary>
-    public void CancelFill()
-    {
-        if (_liveObject?.Kind == ShapeKind.Fill || _fillReplaced != null)
-        {
-            _liveObject = null;
-            if (_fillReplaced != null) _document.Objects.Insert(_fillReplacedIndex, _fillReplaced);
-            _document.DiscardLastState();
-            MarkStrokesDirty();
-        }
-
-        _fillReplaced = null;
-    }
-
-    /// <summary>
-    /// After a shape was removed: the fills inside it go too, the others take the space it no longer cuts off (an Euler
-    /// circle's fill becomes whole again when the other circle is erased).
-    /// </summary>
-    private void RemoveFillsOf(BoardObject shape)
-    {
-        _document.Objects.RemoveAll(o => o.Kind == ShapeKind.Fill && ObjectGeometry.IsFillInside(o, shape));
-        for (int i = 0; i < _document.Objects.Count; i++)
-        {
-            if (_document.Objects[i].Kind == ShapeKind.Fill && ObjectGeometry.Refill(_document.Objects[i], _document.Objects) is { } refilled)
-                _document.Objects[i] = refilled;
-        }
-    }
     public bool IsAnglePending => _shapeMode == ShapeMode.AnglePending;
 
     private ShapeMode _shapeMode;
@@ -131,8 +40,8 @@ public sealed partial class StrokeRenderer
     private readonly UiBatch _background;
     private int _backgroundVersion;
     private (Vector2 Camera, float Zoom, float Scale, Vector2 Screen, string Grid, int Objects, int Resets, Vector4 Clear) _backgroundKey;
-    private int _objectsVersion;
-    private List<BoardObject> _objectsVersionKey = [];
+    private int _labelsVersion;
+    private ObjectLabel[] _labelsKey = [];
     private readonly List<ObjectLabel> _objectLabels = new();
 
     private void BeginLive(BoardObject o, int index)
@@ -189,7 +98,13 @@ public sealed partial class StrokeRenderer
         _document.SaveState();
         _shapeStart = world;
         _shapeMode = ShapeMode.Creating;
-        BeginLive(ObjectGeometry.FromDrag(CurrentShape, world, world, CurrentColor, CurrentBrushWidth), -1);
+        BeginLive(NewShape(world, world), -1);
+    }
+
+    private BoardObject NewShape(Vector2 start, Vector2 end)
+    {
+        var o = ObjectGeometry.FromDrag(CurrentShape, start, end, CurrentColor, CurrentBrushWidth);
+        return DashedShapes && ObjectGeometry.CanDash(o.Kind) ? o with { Text = BoardObject.DashedStyle } : o;
     }
 
     public void UpdateShape(Vector2 screenPos)
@@ -200,19 +115,14 @@ public sealed partial class StrokeRenderer
         if (_shapeMode == ShapeMode.SecondArm && _liveObject != null)
         {
             var p = _liveObject.Points;
-            UpdateLive(_liveObject with { Points = [p[0], p[1], SnapAngleArm(p[0], p[1], world)] });
+            UpdateLive(_liveObject with { Points = [p[0], p[1], world] });
             return;
         }
 
         if (_shapeMode != ShapeMode.Creating) return;
-        var end = CurrentShape switch
-        {
-            ShapeKind.Line or ShapeKind.Arrow or ShapeKind.Ray or ShapeKind.InfiniteLine or ShapeKind.Angle => SnapDirection(_shapeStart, world),
-            ShapeKind.Rectangle or ShapeKind.Ellipse or ShapeKind.Triangle or ShapeKind.Plot => SnapSquare(_shapeStart, world),
-            var kind when ObjectGeometry.IsSolid(kind) => SnapSquare(_shapeStart, world),
-            _ => world
-        };
-        UpdateLive(ObjectGeometry.FromDrag(CurrentShape, _shapeStart, end, CurrentColor, CurrentBrushWidth));
+        // Only rectangles and ellipses snap, to squares and circles; everything else goes exactly where it is drawn.
+        var end = CurrentShape is ShapeKind.Rectangle or ShapeKind.Ellipse ? SnapSquare(_shapeStart, world) : world;
+        UpdateLive(NewShape(_shapeStart, end));
     }
 
     public void EndShape(Vector2 screenPos)
@@ -262,38 +172,6 @@ public sealed partial class StrokeRenderer
         if (CurrentShape != ShapeKind.Point) return;
         BeginShape(screenPos);
         EndShape(screenPos);
-    }
-
-    private Vector2 SnapDirection(Vector2 start, Vector2 end)
-    {
-        var d = end - start;
-        float length = d.Length();
-        if (length < 1e-3f) return end;
-        float angle = MathF.Atan2(d.Y, d.X);
-        float step = MathF.PI / 4f;
-        float snapped = MathF.Round(angle / step) * step;
-        if (MathF.Abs(angle - snapped) * 180f / MathF.PI > DirectionSnapDegrees) return end;
-
-        var dir = new Vector2(MathF.Cos(snapped), MathF.Sin(snapped));
-        SetGuide(start, dir);
-        return start + dir * length;
-    }
-
-    private Vector2 SnapAngleArm(Vector2 vertex, Vector2 first, Vector2 end)
-    {
-        var a = first - vertex;
-        var b = end - vertex;
-        float length = b.Length();
-        if (length < 1e-3f) return end;
-        float a0 = MathF.Atan2(a.Y, a.X);
-        float delta = MathF.Atan2(b.Y, b.X) - a0;
-        float step = MathF.PI / 12f;
-        float snapped = MathF.Round(delta / step) * step;
-        if (MathF.Abs(delta - snapped) * 180f / MathF.PI > AngleSnapDegrees) return end;
-
-        var dir = new Vector2(MathF.Cos(a0 + snapped), MathF.Sin(a0 + snapped));
-        SetGuide(vertex, dir);
-        return vertex + dir * length;
     }
 
     private Vector2 SnapSquare(Vector2 start, Vector2 end)
@@ -390,7 +268,7 @@ public sealed partial class StrokeRenderer
         var shape = _recognized!;
         if (shape.Kind == ShapeKind.Line)
         {
-            UpdateLive(shape with { Points = [shape.Points[0], SnapDirection(shape.Points[0], pointer)] });
+            UpdateLive(shape with { Points = [shape.Points[0], pointer] });
             return;
         }
 
@@ -448,7 +326,7 @@ public sealed partial class StrokeRenderer
     private void BuildBackgroundIfNeeded()
     {
         (Vector2 Camera, float Zoom, float Scale, Vector2 Screen, string Grid, int Objects, int Resets, Vector4 Clear) key =
-            (_camera.Position, _camera.Zoom, UiScale, ScreenSize, Settings.GridMode.Value, _objectsVersion,
+            (_camera.Position, _camera.Zoom, UiScale, ScreenSize, Settings.GridMode.Value, _labelsVersion,
                 _textAtlas.ResetCount, Settings.Background);
         if (key == _backgroundKey) return;
 
@@ -464,11 +342,11 @@ public sealed partial class StrokeRenderer
         if (_textAtlas.NeedsRedraw) _uiDirty = true;
     }
 
-    private void DrawLabels(UiBatch ui, List<ObjectLabel> labels)
+    private void DrawLabels(UiBatch ui, List<ObjectLabel> labels, Matrix3x2? move = null)
     {
         foreach (var label in labels)
         {
-            var center = WorldToScreen(label.World);
+            var center = WorldToScreen(move is { } m ? Vector2.Transform(label.World, m) : label.World);
             if (center.X < -50 || center.Y < -50 || center.X > ScreenSize.X + 50 || center.Y > ScreenSize.Y + 50) continue;
             var size = new Vector2(ui.Measure(label.Text, Theme.Small) + 4f, 18f);
             ui.TextInRect(label.Text, center - size * 0.5f, size, label.Color, Theme.Small, UiBatch.Align.Center);
