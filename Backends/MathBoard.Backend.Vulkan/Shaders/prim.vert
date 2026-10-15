@@ -10,6 +10,9 @@ layout(location = 4) in vec4 inClip;
 layout(push_constant) uniform PushConstants {
     mat4 transform;
     float pixel; // size of one screen pixel in primitive units, used as anti-aliasing margin
+    // Moves capsule ends (a selection being dragged): p' = mat2(move) * p + moveOffset; their width stays.
+    vec4 move;
+    vec2 moveOffset;
 } pc;
 
 layout(location = 0) out vec2 vLocal;
@@ -18,6 +21,7 @@ layout(location = 2) out vec4 vColor;
 layout(location = 3) flat out vec4 vA;
 layout(location = 4) flat out vec4 vB;
 layout(location = 5) flat out vec4 vClip;
+layout(location = 6) flat out vec4 vExtra;
 
 const vec2 corners[6] = vec2[](vec2(0, 0), vec2(1, 0), vec2(1, 1), vec2(0, 0), vec2(1, 1), vec2(0, 1));
 
@@ -27,10 +31,13 @@ void main() {
     float m = pc.pixel;
     vec2 p;
     vUV = vec2(0);
+    vec4 A = inA;
 
     if (type == 1u) {
-        vec2 a = inA.xy;
-        vec2 d = inA.zw - a;
+        mat2 move = mat2(pc.move.xy, pc.move.zw);
+        A = vec4(move * inA.xy + pc.moveOffset, move * inA.zw + pc.moveOffset);
+        vec2 a = A.xy;
+        vec2 d = A.zw - a;
         float len = length(d);
         vec2 dir = len > 1e-6 ? d / len : vec2(1, 0);
         vec2 n = vec2(-dir.y, dir.x);
@@ -50,8 +57,9 @@ void main() {
 
     vLocal = p;
     vColor = inColor;
-    vA = inA;
+    vA = A;
     vB = inB;
     vClip = inClip;
+    vExtra = inExtra;
     gl_Position = pc.transform * vec4(p, 0.0, 1.0);
 }

@@ -17,6 +17,8 @@ public sealed unsafe class VulkanBackend : IRenderBackend
     private readonly Dictionary<ImageData, Texture> _textures = new();
     private PrimitiveRenderer? _primitives;
     private PrimBuffer? _strokes;
+    private PrimBuffer? _moving;
+    private int _movingVersion = -1;
     private PrimBuffer? _ui;
     private PrimBuffer? _background;
     private PrimBuffer? _images;
@@ -76,6 +78,7 @@ public sealed unsafe class VulkanBackend : IRenderBackend
         _atlas = new Texture(_context, _textureLayout, Format.R8Unorm, 1, Filter.Nearest);
         _primitives = new PrimitiveRenderer(_context, _renderPass.RenderPass, _textureLayout);
         _strokes = new PrimBuffer(_context);
+        _moving = new PrimBuffer(_context);
         _ui = new PrimBuffer(_context);
         _background = new PrimBuffer(_context);
         _images = new PrimBuffer(_context);
@@ -125,6 +128,12 @@ public sealed unsafe class VulkanBackend : IRenderBackend
 
         _atlas!.Stage(frame.AtlasPixels, frame.AtlasSize, frame.AtlasSize, frame.AtlasDirtyTop, frame.AtlasDirtyBottom);
         _strokes!.Update(frame.Strokes, frame.StrokesDirtyFrom);
+        if (frame.MovingVersion != _movingVersion)
+        {
+            _moving!.Update(frame.Moving, 0);
+            _movingVersion = frame.MovingVersion;
+        }
+
         _ui!.Update(frame.Ui, 0);
         _background!.Update(frame.Background, 0);
         UpdateTextures(frame);
@@ -263,6 +272,7 @@ public sealed unsafe class VulkanBackend : IRenderBackend
         _primitives.Draw(_cmd, _background!, uiTransform, 1f / scale);
         DrawImages(frame.Images, _images!, strokeTransform, 1f / zoom);
         _primitives.Draw(_cmd, _strokes!, strokeTransform, 1f / zoom);
+        if (frame.Moving.Length > 0) _primitives.Draw(_cmd, _moving!, strokeTransform, 1f / zoom, move: frame.MovingTransform);
         DrawImages(frame.OverlayImages, _overlayImages!, uiTransform, 1f / scale);
         _primitives.Draw(_cmd, _ui!, uiTransform, 1f / scale);
 
@@ -279,6 +289,7 @@ public sealed unsafe class VulkanBackend : IRenderBackend
         {
             vk.DeviceWaitIdle(device);
             _strokes?.Dispose();
+            _moving?.Dispose();
             _ui?.Dispose();
             _background?.Dispose();
             _images?.Dispose();

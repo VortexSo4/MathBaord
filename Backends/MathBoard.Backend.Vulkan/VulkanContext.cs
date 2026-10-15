@@ -301,13 +301,20 @@ public sealed unsafe class VulkanContext : IDisposable
         _vk?.Dispose();
     }
     
-    public uint? TryFindMemoryType(uint typeFilter, MemoryPropertyFlags properties)
+    /// <summary>Throws with the failed call's name, instead of carrying on with a null handle until the driver crashes.</summary>
+    public static void Check(Result result, string call)
+    {
+        if (result != Result.Success) throw new InvalidOperationException($"{call} failed: {result}");
+    }
+
+    public uint? TryFindMemoryType(uint typeFilter, MemoryPropertyFlags properties, MemoryPropertyFlags excluded = 0)
     {
         PhysicalDeviceMemoryProperties memProps;
         _vk.GetPhysicalDeviceMemoryProperties(_physicalDevice, &memProps);
         for (int i = 0; i < memProps.MemoryTypeCount; i++)
         {
-            if ((typeFilter & (1u << i)) != 0 && (memProps.MemoryTypes[i].PropertyFlags & properties) == properties)
+            var flags = memProps.MemoryTypes[i].PropertyFlags;
+            if ((typeFilter & (1u << i)) != 0 && (flags & properties) == properties && (flags & excluded) == 0)
                 return (uint)i;
         }
 

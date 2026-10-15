@@ -125,6 +125,13 @@ public class RadialMenu
         return (r1, r2, r3, r4);
     }
 
+    /// <summary>
+    /// Whether a new press closes the menu and goes on to what is under it, so drawing starts right away: a press outside
+    /// the ring, unless the thickness preview or a color picker is up (there the whole screen belongs to the menu).
+    /// </summary>
+    public bool IsOutside(Vector2 screenPos) => IsOpen && !_isAdjustingThickness && !_isPickingColor && !_isPickingBackground &&
+                                                Vector2.Distance(screenPos, Position) > OuterRadius + 10f;
+
     public void OnMouseDown(Vector2 screenPos)
     {
         if (!IsOpen) return;

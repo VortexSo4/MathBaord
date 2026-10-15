@@ -22,8 +22,9 @@ public sealed unsafe class PrimBuffer(VulkanContext context) : IDisposable
     {
         if (count <= _capacity) return;
 
-        int newCapacity = Math.Max(count + count / 2, 4096);
-        ulong size = (ulong)(newCapacity * sizeof(Prim));
+        int newCapacity = (int)Math.Min(Math.Max(count + (long)count / 2, 4096), int.MaxValue / sizeof(Prim));
+        if (newCapacity < count) throw new InvalidOperationException($"{count} primitives do not fit in one buffer");
+        ulong size = (ulong)newCapacity * (ulong)sizeof(Prim);
 
         var bufferInfo = new BufferCreateInfo
         {
@@ -32,23 +33,32 @@ public sealed unsafe class PrimBuffer(VulkanContext context) : IDisposable
             Usage = BufferUsageFlags.VertexBufferBit,
             SharingMode = SharingMode.Exclusive
         };
-        context.Vk.CreateBuffer(context.Device, &bufferInfo, null, out var buffer);
+        VulkanContext.Check(context.Vk.CreateBuffer(context.Device, &bufferInfo, null, out var buffer), "CreateBuffer");
 
         MemoryRequirements memReq;
         context.Vk.GetBufferMemoryRequirements(context.Device, buffer, &memReq);
         const MemoryPropertyFlags hostFlags = MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit;
-        var allocInfo = new MemoryAllocateInfo
+        // Video memory the CPU can write is fastest to draw from, but its heap is often only 256 MB, so a big board
+        // falls back to system memory instead of failing (on integrated graphics all of it is both).
+        DeviceMemory memory = default;
+        const MemoryPropertyFlags local = MemoryPropertyFlags.DeviceLocalBit;
+        foreach (var (flags, excluded) in new (MemoryPropertyFlags, MemoryPropertyFlags)[] { (hostFlags | local, 0), (hostFlags, local), (hostFlags, 0) })
         {
-            SType = StructureType.MemoryAllocateInfo,
-            AllocationSize = memReq.Size,
-            MemoryTypeIndex = context.TryFindMemoryType(memReq.MemoryTypeBits, hostFlags | MemoryPropertyFlags.DeviceLocalBit)
-                              ?? context.FindMemoryType(memReq.MemoryTypeBits, hostFlags)
-        };
-        context.Vk.AllocateMemory(context.Device, &allocInfo, null, out var memory);
-        context.Vk.BindBufferMemory(context.Device, buffer, memory, 0);
+            if (context.TryFindMemoryType(memReq.MemoryTypeBits, flags, excluded) is not { } type) continue;
+            var allocInfo = new MemoryAllocateInfo { SType = StructureType.MemoryAllocateInfo, AllocationSize = memReq.Size, MemoryTypeIndex = type };
+            if (context.Vk.AllocateMemory(context.Device, &allocInfo, null, out memory) == Result.Success) break;
+            memory = default;
+        }
 
+        if (memory.Handle == 0)
+        {
+            context.Vk.DestroyBuffer(context.Device, buffer, null);
+            throw new OutOfMemoryException($"No memory for {newCapacity} primitives ({size >> 20} MB)");
+        }
+
+        VulkanContext.Check(context.Vk.BindBufferMemory(context.Device, buffer, memory, 0), "BindBufferMemory");
         void* mapped;
-        context.Vk.MapMemory(context.Device, memory, 0, size, 0, &mapped);
+        VulkanContext.Check(context.Vk.MapMemory(context.Device, memory, 0, size, 0, &mapped), "MapMemory");
 
         if (keepContents && Count > 0)
             System.Buffer.MemoryCopy(Data, mapped, (long)size, (long)Count * sizeof(Prim));
@@ -84,11 +94,14 @@ public sealed unsafe class PrimBuffer(VulkanContext context) : IDisposable
 /// <summary>Draws <see cref="Prim"/> instances: shapes are evaluated as signed distance fields, so no MSAA is needed.</summary>
 public sealed unsafe class PrimitiveRenderer : IDisposable
 {
-    [StructLayout(LayoutKind.Sequential)]
+    // Laid out like the push constant block in prim.vert: the vec4 is aligned to 16 bytes, the vec2 to 8.
+    [StructLayout(LayoutKind.Explicit, Size = 104)]
     private struct PushConstants
     {
-        public Matrix4x4 Transform;
-        public float Pixel;
+        [FieldOffset(0)] public Matrix4x4 Transform;
+        [FieldOffset(64)] public float Pixel;
+        [FieldOffset(80)] public Vector4 Move;
+        [FieldOffset(96)] public Vector2 MoveOffset;
     }
 
     private readonly VulkanContext _context;
@@ -117,7 +130,9 @@ public sealed unsafe class PrimitiveRenderer : IDisposable
     public void BindTexture(CommandBuffer cmd, DescriptorSet texture) =>
         _context.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Graphics, _layout, 0, 1, &texture, 0, null);
 
-    public void Draw(CommandBuffer cmd, PrimBuffer buffer, Matrix4x4 transform, float pixel, int first = 0, int count = -1)
+    /// <param name="move">Applied to capsule ends before <paramref name="transform"/>: a selection being dragged.</param>
+    public void Draw(CommandBuffer cmd, PrimBuffer buffer, Matrix4x4 transform, float pixel, int first = 0, int count = -1,
+        Matrix3x2? move = null)
     {
         if (count < 0) count = buffer.Count - first;
         if (count <= 0) return;
@@ -126,7 +141,11 @@ public sealed unsafe class PrimitiveRenderer : IDisposable
         ulong offset = 0;
         _context.Vk.CmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 
-        var pc = new PushConstants { Transform = transform, Pixel = pixel };
+        var m = move ?? Matrix3x2.Identity;
+        var pc = new PushConstants
+        {
+            Transform = transform, Pixel = pixel, Move = new Vector4(m.M11, m.M12, m.M21, m.M22), MoveOffset = new Vector2(m.M31, m.M32)
+        };
         _context.Vk.CmdPushConstants(cmd, _layout, ShaderStageFlags.VertexBit, 0, (uint)sizeof(PushConstants), &pc);
         _context.Vk.CmdDraw(cmd, 6, (uint)count, 0, (uint)first);
     }

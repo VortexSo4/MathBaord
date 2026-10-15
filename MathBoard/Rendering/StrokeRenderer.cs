@@ -43,6 +43,11 @@ public sealed partial class StrokeRenderer : IDisposable
     private int _strokesDirtyFrom;
     private bool _framePending;
     private readonly List<Prim> _scratch = new();
+    private readonly List<ObjectLabel> _labelScratch = new();
+    // Primitives and labels of the objects as last built: objects never change, so a rebuild builds only new ones. The
+    // ones used by this rebuild go to the second dictionary, which then takes the place of the first.
+    private Dictionary<BoardObject, (Prim[] Prims, ObjectLabel[] Labels)> _built = new(ReferenceEqualityComparer.Instance),
+        _builtNow = new(ReferenceEqualityComparer.Instance);
 
     private LibraryPanel? _libraryPanel;
     private readonly List<IOverlay> _overlays = new();
@@ -363,9 +368,9 @@ public sealed partial class StrokeRenderer : IDisposable
         }
 
         int steps = Math.Clamp((int)MathF.Ceiling(Vector2.Distance(from, to) / MathF.Max(size * 0.5f, 1e-3f)), 1, 64);
-        for (int i = _document.Objects.Count - 1; i >= 0; i--)
+        var erased = new List<BoardObject>();
+        foreach (var o in _document.Objects)
         {
-            var o = _document.Objects[i];
             // Pictures and fills are only removed through the selection, so ink on them can be erased.
             if (ObjectGeometry.IsBackdrop(o.Kind)) continue;
             if (o.Kind is not (ShapeKind.Ray or ShapeKind.InfiniteLine) && !Overlaps(ObjectGeometry.Bounds(o), pathMin, pathMax, o.Width)) continue;
@@ -377,13 +382,12 @@ public sealed partial class StrokeRenderer : IDisposable
                 hit = (o.Kind == ShapeKind.Plot ? PlotEdgeDistance(o, point) : ObjectGeometry.Distance(o, point)) <= size;
             }
 
-            if (!hit) continue;
-            SaveEraseState();
-            _document.Objects.RemoveAt(i);
-            RemoveFillsOf(o);
-            i = Math.Min(i, _document.Objects.Count);
-            MarkStrokesDirty();
+            if (hit) erased.Add(o);
         }
+
+        if (erased.Count == 0) return;
+        SaveEraseState();
+        RemoveObjects(erased);
     }
 
     private static bool Overlaps((Vector2 Min, Vector2 Max) b, Vector2 min, Vector2 max, float margin) =>
@@ -481,6 +485,10 @@ public sealed partial class StrokeRenderer : IDisposable
         SelectedStrokes.Clear();
         SelectedObjects.Clear();
         CurrentSelectionState = SelectionState.None;
+        _fillTies = [];
+        _carriedTies = [];
+        _edited.Clear();
+        EndMoving();
         MarkStrokesDirty();
     }
 
@@ -522,21 +530,39 @@ public sealed partial class StrokeRenderer : IDisposable
             Array.Resize(ref _strokePrims, Math.Max(count, _strokePrims.Length * 2));
     }
 
-    private int AppendPrims(List<Prim> prims, int index)
+    private int AppendPrims(ReadOnlySpan<Prim> prims, int index)
     {
-        ReserveStrokePrims(index + prims.Count);
-        prims.CopyTo(_strokePrims, index);
-        return index + prims.Count;
+        ReserveStrokePrims(index + prims.Length);
+        prims.CopyTo(_strokePrims.AsSpan(index));
+        return index + prims.Length;
+    }
+
+    private (Prim[] Prims, ObjectLabel[] Labels) Built(BoardObject o)
+    {
+        if (!_built.TryGetValue(o, out var built) && !_builtNow.TryGetValue(o, out built))
+        {
+            _scratch.Clear();
+            _labelScratch.Clear();
+            ObjectGeometry.Build(o, _scratch, _labelScratch);
+            built = ([.._scratch], [.._labelScratch]);
+        }
+
+        _builtNow[o] = built;
+        return built;
     }
 
     /// <summary>Rebuilds changed geometry and the UI before a frame is handed to the backend.</summary>
     public void PrepareFrame()
     {
-        // Solid fills are tinted towards the background, so they are rebuilt when it changes.
+        if (_refillPending) Refill(_fillTies, Edited, final: false);
+
+        // Solid fills are tinted towards the background (and missing pictures drawn in the theme's gray), so everything
+        // is built again when it changes.
         if (Settings.Background != _fillBackground)
         {
             _fillBackground = Settings.Background;
-            if (_document.Objects.Any(o => o.Kind == ShapeKind.Fill)) _strokesDirty = true;
+            _built.Clear();
+            _strokesDirty = true;
         }
 
         if (_strokesDirty)
@@ -546,19 +572,25 @@ public sealed partial class StrokeRenderer : IDisposable
             int count = 0;
             _objectLabels.Clear();
             _images.Clear();
+            // A selection being dragged is drawn from its own primitives.
             foreach (var o in _document.Objects)
             {
-                _scratch.Clear();
-                if (o.Kind != ShapeKind.Image || !AddImage(o)) ObjectGeometry.Build(o, _scratch, _objectLabels);
-                count = AppendPrims(_scratch, count);
+                if (_moving.Contains(o) || o.Kind == ShapeKind.Image && AddImage(o)) continue;
+                var (prims, labels) = Built(o);
+                count = AppendPrims(prims, count);
+                _objectLabels.AddRange(labels);
             }
 
+            (_built, _builtNow) = (_builtNow, _built);
+            _builtNow.Clear();
             UpdateImagesVersion();
 
             int strokeTotal = 0;
-            foreach (var s in _document.Strokes) strokeTotal += SegmentCount(s);
+            foreach (var s in _document.Strokes)
+                if (!_moving.Contains(s)) strokeTotal += SegmentCount(s);
             ReserveStrokePrims(count + strokeTotal);
-            foreach (var s in _document.Strokes) count = WriteStroke(s, 0, _strokePrims, count);
+            foreach (var s in _document.Strokes)
+                if (!_moving.Contains(s)) count = WriteStroke(s, 0, _strokePrims, count);
 
             _activeStart = _activeStroke != null && _document.Strokes.Count > 0 && _document.Strokes[^1] == _activeStroke
                 ? count - SegmentCount(_activeStroke)
@@ -573,10 +605,10 @@ public sealed partial class StrokeRenderer : IDisposable
             _activeDirtyFrom = -1;
             _finishedStroke = null;
             _liveDirty = _liveObject != null;
-            if (!_objectsVersionKey.SequenceEqual(_document.Objects))
+            if (!_labelsKey.AsSpan().SequenceEqual(CollectionsMarshal.AsSpan(_objectLabels)))
             {
-                _objectsVersionKey = [.._document.Objects];
-                _objectsVersion++;
+                _labelsKey = [.._objectLabels];
+                _labelsVersion++;
             }
         }
         else if (_activeDirtyFrom >= 0)
@@ -601,7 +633,7 @@ public sealed partial class StrokeRenderer : IDisposable
             _liveLabels.Clear();
             _scratch.Clear();
             if (_liveObject != null) ObjectGeometry.Build(_liveObject, _scratch, _liveLabels);
-            _strokePrimCount = AppendPrims(_scratch, _liveStart);
+            _strokePrimCount = AppendPrims(CollectionsMarshal.AsSpan(_scratch), _liveStart);
             _strokesDirtyFrom = Math.Min(_strokesDirtyFrom, _liveStart);
             _liveDirty = false;
             _uiDirty = true;
@@ -631,6 +663,7 @@ public sealed partial class StrokeRenderer : IDisposable
             return;
         }
 
+        DrawLabels(_ui, _movingLabels, _movingTransform);
         DrawLabels(_ui, _liveLabels);
         RenderShapeGuides(_ui);
         if (Tool is Tool.Select or Tool.Shape) RenderSelectionUI(_ui);
@@ -658,6 +691,9 @@ public sealed partial class StrokeRenderer : IDisposable
         StrokesStable = _activeStroke != null && _activeStart >= 0 ? _activeStart
             : _liveObject != null ? _liveStart
             : _strokePrimCount,
+        Moving = _movingPrims,
+        MovingTransform = _movingTransform,
+        MovingVersion = _movingVersion,
         Background = CollectionsMarshal.AsSpan(_background.Prims),
         BackgroundVersion = _backgroundVersion,
         Images = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_images),

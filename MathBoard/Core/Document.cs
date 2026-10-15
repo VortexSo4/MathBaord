@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 
 namespace MathBoard.Core;
@@ -71,6 +72,7 @@ public class Document
 
     public void SaveToFile(string path)
     {
+        long started = Stopwatch.GetTimestamp();
         // Written to a temporary file first so a crash never leaves a half-written lesson.
         string temp = path + ".tmp";
         using (var stream = File.Create(temp))
@@ -112,6 +114,7 @@ public class Document
         }
 
         File.Move(temp, path, overwrite: true);
+        Perf.Time("save", Stopwatch.GetElapsedTime(started).TotalMilliseconds);
     }
 
     private static void WriteColor(BinaryWriter writer, Vector4 c)
@@ -127,6 +130,7 @@ public class Document
 
     public void LoadFromFile(string path)
     {
+        long started = Stopwatch.GetTimestamp();
         using var stream = File.OpenRead(path);
         using var reader = new BinaryReader(stream);
 
@@ -176,5 +180,6 @@ public class Document
         _history.Clear();
         _redoStack.Clear();
         IsDirty = false;
+        Perf.Time("load", Stopwatch.GetElapsedTime(started).TotalMilliseconds);
     }
 }

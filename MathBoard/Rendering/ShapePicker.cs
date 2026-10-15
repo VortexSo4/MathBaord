@@ -4,7 +4,10 @@ using MathBoard.Graphics;
 
 namespace MathBoard.Rendering;
 
-/// <summary>Grid of shape kinds opened from the "Shapes" quick button; picking one switches to the shape tool.</summary>
+/// <summary>
+/// Grid of shape kinds opened from the "Shapes" quick button; picking one switches to the shape tool. Below them a switch
+/// makes new lines and outlines dashed.
+/// </summary>
 public sealed class ShapePicker(StrokeRenderer renderer) : IPopup
 {
     private const float Cell = 56f;
@@ -12,6 +15,7 @@ public sealed class ShapePicker(StrokeRenderer renderer) : IPopup
     private const int Columns = 4;
     private const float Padding = 12f;
     private const float TitleHeight = 34f;
+    private const float SwitchHeight = 40f;
 
     private static readonly ShapeKind[] Kinds = Enum.GetValues<ShapeKind>().Where(k => k is not (ShapeKind.Image or ShapeKind.Fill)).ToArray();
     private Vector2 _pos;
@@ -25,9 +29,12 @@ public sealed class ShapePicker(StrokeRenderer renderer) : IPopup
         {
             int rows = (Kinds.Length + Columns - 1) / Columns;
             return new Vector2(Padding * 2 + Columns * Cell + (Columns - 1) * Gap,
-                TitleHeight + Padding + rows * Cell + (rows - 1) * Gap);
+                TitleHeight + Padding + rows * Cell + rows * Gap + SwitchHeight);
         }
     }
+
+    private Vector2 SwitchPos => _pos + new Vector2(Padding, Size.Y - Padding - SwitchHeight);
+    private static Vector2 SwitchSize => new(Size.X - Padding * 2, SwitchHeight);
 
     public void Open(Vector2 anchor)
     {
@@ -51,6 +58,14 @@ public sealed class ShapePicker(StrokeRenderer renderer) : IPopup
     public void OnMouseDown(Vector2 pos)
     {
         _mouse = pos;
+        if (UiBatch.Contains(SwitchPos, SwitchSize, pos))
+        {
+            // The picker stays open, so a shape can be picked right after.
+            renderer.DashedShapes = !renderer.DashedShapes;
+            renderer.SetDirty();
+            return;
+        }
+
         for (int i = 0; i < Kinds.Length; i++)
         {
             if (!UiBatch.Contains(CellPos(i), new Vector2(Cell), pos)) continue;
@@ -92,7 +107,26 @@ public sealed class ShapePicker(StrokeRenderer renderer) : IPopup
             DrawPreview(ui, Kinds[i], pos + size * 0.5f, 26f, Theme.Text);
         }
 
+        bool on = renderer.DashedShapes;
+        bool switchHover = UiBatch.Contains(SwitchPos, SwitchSize, _mouse);
+        ui.Rect(SwitchPos, SwitchSize, on ? Theme.AccentSoft : switchHover ? Theme.SurfaceHover : Theme.Surface, 10f);
+        if (on) ui.Border(SwitchPos, SwitchSize, Theme.Accent, 1.5f, 10f);
+        DrawDashes(ui, SwitchPos + new Vector2(26f, SwitchHeight * 0.5f), 26f, Theme.Text);
+        ui.TextInRect(Localization.Get("shapes_dashed", "Dashed"), SwitchPos + new Vector2(52f, 0), SwitchSize - new Vector2(60f, 0),
+            Theme.Text, Theme.Body);
+
         if (hovered is { } kind) ui.Tooltip(Localization.Get("shape_" + kind, kind.ToString()), _mouse, screenSize);
+    }
+
+    /// <summary>A short dashed line: three dashes.</summary>
+    public static void DrawDashes(UiBatch ui, Vector2 center, float size, Vector4 color)
+    {
+        float dash = size / 5f;
+        for (int i = -1; i <= 1; i++)
+        {
+            var mid = center + new Vector2(i * dash * 2f, 0);
+            ui.Line(mid - new Vector2(dash * 0.5f, 0), mid + new Vector2(dash * 0.5f, 0), color, 2f);
+        }
     }
 
     /// <summary>Small line drawing of a shape kind, used for the picker and the quick button.</summary>
@@ -120,8 +154,12 @@ public sealed class ShapePicker(StrokeRenderer renderer) : IPopup
                 ui.Line(c + new Vector2(h, -h * 0.6f), c + new Vector2(h * 0.6f, h * 0.05f), color, w);
                 break;
             case ShapeKind.Rectangle:
-                ui.Border(c - new Vector2(h, h * 0.7f), new Vector2(size, size * 0.7f), color, w);
+            {
+                // A parallelogram: the corners and the sides of this quadrilateral can be moved.
+                Vector2[] q = [new(-h * 0.5f, -h * 0.6f), new(h, -h * 0.6f), new(h * 0.5f, h * 0.6f), new(-h, h * 0.6f)];
+                for (int i = 0; i < 4; i++) ui.Line(c + q[i], c + q[(i + 1) % 4], color, w);
                 break;
+            }
             case ShapeKind.Ellipse:
                 ui.Border(c - new Vector2(h, h * 0.62f), new Vector2(size, size * 0.62f), color, w, size * 0.31f);
                 break;

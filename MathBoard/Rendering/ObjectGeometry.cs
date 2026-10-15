@@ -39,20 +39,21 @@ public static partial class ObjectGeometry
         var p = o.Points;
         float r = o.Width * 0.5f;
         var c = o.Color;
+        bool dashed = o.Dashed && CanDash(o.Kind);
         switch (o.Kind)
         {
             case ShapeKind.Line:
-                prims.Add(Prim.Capsule(p[0], p[1], r, c));
+                Path(prims, p, false, r, c, dashed);
                 break;
             case ShapeKind.Arrow:
-                prims.Add(Prim.Capsule(p[0], p[1], r, c));
+                Path(prims, p, false, r, c, dashed);
                 AddArrowHead(prims, p[0], p[1], MathF.Max(o.Width * 3.5f, 14f), r, c);
                 break;
             case ShapeKind.Rectangle or ShapeKind.Triangle:
-                Polyline(prims, p, true, r, c);
+                Path(prims, p, true, r, c, dashed);
                 break;
             case ShapeKind.Ellipse:
-                Polyline(prims, EllipsePoints(p[0], p[1] - p[0], p[2] - p[0], 96), true, r, c);
+                Path(prims, EllipsePoints(p[0], p[1] - p[0], p[2] - p[0], 96), true, r, c, dashed);
                 break;
             case ShapeKind.Point:
                 prims.Add(Prim.Capsule(p[0], p[0], MathF.Max(o.Width * 0.9f, 4f), c));
@@ -60,20 +61,33 @@ public static partial class ObjectGeometry
             case ShapeKind.Ray:
             {
                 var dir = Direction(p[0], p[1]);
-                prims.Add(Prim.Capsule(p[0], p[0] + dir * Far, r, c));
+                Path(prims, [p[0], p[0] + dir * Far], false, r, c, dashed);
                 prims.Add(Prim.Capsule(p[0], p[0], MathF.Max(o.Width * 0.9f, 4f), c));
                 break;
             }
             case ShapeKind.InfiniteLine:
             {
                 var dir = Direction(p[0], p[1]);
-                prims.Add(Prim.Capsule(p[0] - dir * Far, p[0] + dir * Far, r, c));
+                if (dashed)
+                {
+                    // Two halves from the point: dashes are placed along each capsule from its start, and far from it a
+                    // float can no longer place them exactly, so they start where the line is looked at. The second
+                    // half starts a dash's length into the pattern, so it runs on through the point without a seam.
+                    var (dash, period) = DashPattern(r);
+                    prims.Add(Prim.DashedCapsule(p[0], p[0] + dir * Far, r, c, dash, period, 0f));
+                    prims.Add(Prim.DashedCapsule(p[0], p[0] - dir * Far, r, c, dash, period, dash));
+                }
+                else
+                {
+                    prims.Add(Prim.Capsule(p[0] - dir * Far, p[0] + dir * Far, r, c));
+                }
+
                 break;
             }
             case ShapeKind.Circle:
             {
                 float radius = Vector2.Distance(p[0], p[1]);
-                Polyline(prims, EllipsePoints(p[0], new Vector2(radius, 0), new Vector2(0, radius), 128), true, r, c);
+                Path(prims, EllipsePoints(p[0], new Vector2(radius, 0), new Vector2(0, radius), 128), true, r, c, dashed);
                 prims.Add(Prim.Capsule(p[0], p[0], MathF.Max(o.Width * 0.7f, 2.5f), c));
                 break;
             }
@@ -105,6 +119,45 @@ public static partial class ObjectGeometry
         if (closed && pts.Count > 2) prims.Add(Prim.Capsule(pts[^1], pts[0], r, c));
     }
 
+    /// <summary>Lines and the outlines of flat shapes, which can be drawn dashed.</summary>
+    public static bool CanDash(ShapeKind kind) => kind is ShapeKind.Line or ShapeKind.Arrow or ShapeKind.Ray or ShapeKind.InfiniteLine
+        or ShapeKind.Rectangle or ShapeKind.Triangle or ShapeKind.Ellipse or ShapeKind.Circle or ShapeKind.Angle;
+
+    /// <summary>A polyline, solid or dashed: dashes three times as long as the line is wide, gaps twice.</summary>
+    private static void Path(List<Prim> prims, IReadOnlyList<Vector2> pts, bool closed, float r, Vector4 c, bool dashed)
+    {
+        if (!dashed)
+        {
+            Polyline(prims, pts, closed, r, c);
+            return;
+        }
+
+        var (dash, period) = DashPattern(r);
+        Dashes(prims, closed ? [..pts, pts[0]] : pts, r, c, dash, period);
+    }
+
+    /// <summary>Dash and period of a dashed line: round ends add r on both sides of every dash, so the gap is that much longer.</summary>
+    private static (float Dash, float Period) DashPattern(float r)
+    {
+        float dash = MathF.Max(r * 4f, 6f);
+        return (dash, dash + r * 2f + MathF.Max(r * 4f, 6f));
+    }
+
+    /// <summary>
+    /// A dashed polyline: one capsule per segment, which the backend cuts into dashes as it draws (see
+    /// <see cref="Prim.DashedCapsule"/>); each segment carries where the pattern stands at its start, so it runs on around
+    /// corners instead of starting again at each one.
+    /// </summary>
+    private static void Dashes(List<Prim> prims, IReadOnlyList<Vector2> points, float r, Vector4 c, float dash, float period)
+    {
+        float walked = 0f;
+        for (int i = 0; i + 1 < points.Count; i++)
+        {
+            prims.Add(Prim.DashedCapsule(points[i], points[i + 1], r, c, dash, period, walked));
+            walked = (walked + Vector2.Distance(points[i], points[i + 1])) % period;
+        }
+    }
+
     private static Vector2[] EllipsePoints(Vector2 center, Vector2 u, Vector2 v, int segments)
     {
         var pts = new Vector2[segments];
@@ -129,8 +182,8 @@ public static partial class ObjectGeometry
     {
         var p = o.Points;
         float r = o.Width * 0.5f;
-        prims.Add(Prim.Capsule(p[0], p[1], r, o.Color));
-        prims.Add(Prim.Capsule(p[0], p[2], r, o.Color));
+        Path(prims, [p[0], p[1]], false, r, o.Color, o.Dashed);
+        Path(prims, [p[0], p[2]], false, r, o.Color, o.Dashed);
 
         var ua = Direction(p[0], p[1]);
         var ub = Direction(p[0], p[2]);
@@ -138,11 +191,12 @@ public static partial class ObjectGeometry
         float delta = MathF.Atan2(ub.Y, ub.X) - a0;
         if (delta > MathF.PI) delta -= MathF.PI * 2f;
         if (delta < -MathF.PI) delta += MathF.PI * 2f;
-        float degrees = MathF.Abs(delta) * 180f / MathF.PI;
+        // Whole degrees, as measured with a protractor at school.
+        float degrees = MathF.Round(MathF.Abs(delta) * 180f / MathF.PI);
 
         float radius = Math.Clamp(MathF.Min(Vector2.Distance(p[0], p[1]), Vector2.Distance(p[0], p[2])) * 0.3f, 12f, 80f);
         float arcWidth = MathF.Max(r * 0.6f, 1f);
-        if (MathF.Abs(degrees - 90f) < 0.5f)
+        if (degrees == 90f)
         {
             // A right angle is marked with a square, as in textbooks.
             float s = radius * 0.7f;
@@ -164,7 +218,7 @@ public static partial class ObjectGeometry
 
         var bisector = Direction(Vector2.Zero, ua + ub);
         if ((ua + ub).LengthSquared() < 1e-6f) bisector = new Vector2(-ua.Y, ua.X);
-        labels?.Add(new ObjectLabel(p[0] + bisector * (radius + 16f), Number(degrees, 1) + "°", o.Color));
+        labels?.Add(new ObjectLabel(p[0] + bisector * (radius + 16f), Number(degrees, 0) + "°", o.Color));
     }
 
     /// <summary>Plot coordinates of the frame: the x range is set by the user, y keeps the same units around zero.</summary>
@@ -353,7 +407,53 @@ public static partial class ObjectGeometry
         return MathF.Max(best, 0f);
     }
 
-    /// <summary>Moves one control point while keeping the object what it is: a rectangle stays a rectangle, etc.</summary>
+    /// <summary>Whether the drawn lines of the object cross or lie in the box; the empty inside of an outline does not count.</summary>
+    public static bool Touches(BoardObject o, Vector2 min, Vector2 max)
+    {
+        // A plot's frame is covered by its grid, so it counts as drawn all over.
+        if (o.Kind == ShapeKind.Plot) return true;
+        var prims = new List<Prim>();
+        Build(o, prims, null);
+        foreach (var prim in prims)
+        {
+            var r = new Vector2(prim.B.X);
+            if (SegmentTouchesBox(new Vector2(prim.A.X, prim.A.Y), new Vector2(prim.A.Z, prim.A.W), min - r, max + r)) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Whether the segment crosses or lies in the box (Liang–Barsky clipping).</summary>
+    public static bool SegmentTouchesBox(Vector2 a, Vector2 b, Vector2 min, Vector2 max)
+    {
+        var d = b - a;
+        float t0 = 0f, t1 = 1f;
+        foreach (var (p, q) in new[] { (-d.X, a.X - min.X), (d.X, max.X - a.X), (-d.Y, a.Y - min.Y), (d.Y, max.Y - a.Y) })
+        {
+            if (p == 0f)
+            {
+                if (q < 0f) return false;
+                continue;
+            }
+
+            float t = q / p;
+            if (p < 0f) t0 = MathF.Max(t0, t);
+            else t1 = MathF.Min(t1, t);
+            if (t0 > t1) return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Where a single selected object is dragged to change it: its control points, and for a quadrilateral also the
+    /// middles of its top and bottom sides (indices 4 and 5), which move the whole side.
+    /// </summary>
+    public static Vector2[] ControlHandles(BoardObject o) => o.Kind == ShapeKind.Rectangle
+        ? [..o.Points, (o.Points[0] + o.Points[1]) * 0.5f, (o.Points[2] + o.Points[3]) * 0.5f]
+        : o.Points;
+
+    /// <summary>Moves one control handle (see <see cref="ControlHandles"/>); circles, plots and solids keep their kind of shape.</summary>
     public static BoardObject MoveControlPoint(BoardObject o, int index, Vector2 target)
     {
         var p = (Vector2[])o.Points.Clone();
@@ -363,17 +463,13 @@ public static partial class ObjectGeometry
             var delta = target - p[0];
             for (int i = 0; i < p.Length; i++) p[i] += delta;
         }
-        else if (o.Kind == ShapeKind.Rectangle)
+        else if (o.Kind == ShapeKind.Rectangle && index >= 4)
         {
-            // The opposite corner stays, the neighbours slide along the rectangle's own sides.
-            var opposite = p[(index + 2) % 4];
-            foreach (int j in new[] { (index + 1) % 4, (index + 3) % 4 })
-            {
-                var side = Direction(opposite, p[j]);
-                p[j] = opposite + side * Vector2.Dot(target - opposite, side);
-            }
-
-            p[index] = target;
+            // Moving a whole side leans a rectangle into a parallelogram or a trapezoid.
+            int a = index == 4 ? 0 : 2;
+            var delta = target - (p[a] + p[a + 1]) * 0.5f;
+            p[a] += delta;
+            p[a + 1] += delta;
         }
         else if (o.Kind == ShapeKind.Plot)
         {

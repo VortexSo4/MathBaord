@@ -73,7 +73,6 @@ public static class Icons
     public const string ZoomIn = "\uE8A3";
     public const string ZoomOut = "\uE71F";
     public const string FitView = "\uE9A6";
-    public const string Pan = "\uE7C2";
     public const string Gripper = "\uE76F";
     public const string Pen = "\uEC87";
     public const string Eraser = "\uE75C";
@@ -86,7 +85,6 @@ public static class Icons
     public const string Log = "\uE9F9";
     public const string Keyboard = "\uE765";
     public const string Copy = "\uE8C8";
-    public const string Shapes = "\uE71A";
     public const string Grid = "\uE80A";
     public const string Screenshot = "\uF406";
     public const string Picture = "\uEB9F";

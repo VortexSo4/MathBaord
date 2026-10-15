@@ -440,7 +440,21 @@ public class QuickBar
         switch (action)
         {
             case UiAction.Shapes:
-                ShapePicker.DrawPreview(ui, renderer.CurrentShape, center, 20f, color);
+                // A hexagon reads as "shapes" better than the shape the tool happens to draw.
+                for (int i = 0; i < 6; i++)
+                    ui.Line(center + Corner(i), center + Corner(i + 1), color, 1.8f);
+                break;
+            case UiAction.Pan:
+                // Drawn rather than taken from the icon font, which on some Windows versions has no glyph for it.
+                foreach (var d in new[] { Vector2.UnitX, -Vector2.UnitX, Vector2.UnitY, -Vector2.UnitY })
+                {
+                    var tip = center + d * 9f;
+                    var side = new Vector2(-d.Y, d.X) * 3.2f;
+                    ui.Line(center, tip, color, 1.6f);
+                    ui.Line(tip, tip - d * 3.2f + side, color, 1.6f);
+                    ui.Line(tip, tip - d * 3.2f - side, color, 1.6f);
+                }
+
                 break;
             case UiAction.Fill:
                 FillPicker.DrawPreview(ui, renderer.FillStyle, center, 18f, color);
@@ -455,7 +469,9 @@ public class QuickBar
         }
     }
 
-    public static string IconFor(UiAction action) => action switch
+    private static Vector2 Corner(int i) => new Vector2(MathF.Cos(i * MathF.PI / 3f), MathF.Sin(i * MathF.PI / 3f)) * 9f;
+
+    private static string IconFor(UiAction action) => action switch
     {
         UiAction.ToggleLibrary => Icons.Menu,
         UiAction.Undo => Icons.Undo,
@@ -467,12 +483,10 @@ public class QuickBar
         UiAction.Brush => Icons.Pen,
         UiAction.Eraser => Icons.Eraser,
         UiAction.Select => Icons.Select,
-        UiAction.Pan => Icons.Pan,
         UiAction.ZoomIn => Icons.ZoomIn,
         UiAction.ZoomOut => Icons.ZoomOut,
         UiAction.FitView => Icons.FitView,
         UiAction.Keyboard => Icons.Keyboard,
-        UiAction.Shapes => Icons.Shapes,
         UiAction.Grid => Icons.Grid,
         UiAction.Screenshot => Icons.Screenshot,
         UiAction.InsertImage => Icons.Picture,

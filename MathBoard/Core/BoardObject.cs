@@ -27,7 +27,7 @@ public enum ShapeKind
 
 /// <summary>
 /// An editable shape on the board, defined by control points in world space so any transform stays exact:
-/// Line/Arrow/Ray/InfiniteLine: two points; Rectangle: four corners; Triangle: three vertices;
+/// Line/Arrow/Ray/InfiniteLine: two points; Rectangle: four corners of any quadrilateral; Triangle: three vertices;
 /// Ellipse: center and the ends of both semi-axes; Point: one point; Circle: center and a point on it;
 /// Angle: vertex and a point on each arm; Plot and Image: origin (top-left) corner, end of the x side, end of the y side;
 /// Box and Prism: front bottom-left corner, then the ends of the width, height and depth edges; Pyramid: the same
@@ -38,8 +38,14 @@ public enum ShapeKind
 /// </summary>
 public sealed record BoardObject(ShapeKind Kind, Vector2[] Points, Vector4 Color, float Width)
 {
-    /// <summary>Plot: functions of x separated by ';'. Image: file name in <see cref="ImageStore"/>. Fill: its style.</summary>
+    /// <summary>
+    /// Plot: functions of x separated by ';'. Image: file name in <see cref="ImageStore"/>. Fill: its style.
+    /// Lines and outlines: <see cref="DashedStyle"/> when dashed (older versions read the file and draw them solid).
+    /// </summary>
     public string Text { get; init; } = "";
+
+    public const string DashedStyle = "dashed";
+    public bool Dashed => Text == DashedStyle;
 
     /// <summary>Plot only: the x range shown; y uses the same units and is centered on zero.</summary>
     public float XMin { get; init; } = -5f;
