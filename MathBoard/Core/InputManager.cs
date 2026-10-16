@@ -24,6 +24,8 @@ public sealed partial class InputManager : IDisposable
     private readonly ThicknessPicker _thicknessPicker;
     private readonly ConfirmPopup _confirm;
     private readonly FillPicker _fillPicker;
+    private readonly Minimap _minimap;
+    private readonly DimensionEditor _dimensionEditor;
     private readonly RadialEditor _radialEditor;
     private readonly IPopup[] _popups;
     private readonly TouchGestures? _gestures;
@@ -78,13 +80,21 @@ public sealed partial class InputManager : IDisposable
         _thicknessPicker = new ThicknessPicker(strokeRenderer);
         _confirm = new ConfirmPopup(strokeRenderer);
         _fillPicker = new FillPicker(strokeRenderer);
+        _minimap = new Minimap(strokeRenderer);
+        _dimensionEditor = new DimensionEditor(strokeRenderer);
         _radialEditor = new RadialEditor(strokeRenderer);
-        _popups = [_colorEditor, _shapePicker, _plotEditor, _thicknessPicker, _fillPicker, _confirm, _radialEditor,
+        _popups = [_colorEditor, _shapePicker, _plotEditor, _thicknessPicker, _fillPicker, _minimap, _dimensionEditor, _confirm, _radialEditor,
             new UpdatePopup(strokeRenderer, updater)];
         foreach (var popup in _popups) strokeRenderer.AddOverlay(popup);
         // The screenshot overlay is drawn by the renderer itself because it hides the rest of the interface.
         _popups = [.._popups, strokeRenderer.Screenshot];
         strokeRenderer.EditPlotRequested += plot => _plotEditor.Open(plot, edited => _strokeRenderer.ReplaceObject(plot, edited));
+        strokeRenderer.DimensionEditRequested += (dimension, at) =>
+        {
+            // The press that opened it must not turn into the radial menu.
+            _menuPending = false;
+            _dimensionEditor.Open(dimension, at, value => _strokeRenderer.ApplyDimension(dimension, value));
+        };
         _quickBar = new QuickBar(strokeRenderer, ExecuteButton, IsButtonActive, pos => _libraryPanel.IsOpen && pos.X < _libraryPanel.Width,
             EditButtonColor);
         _libraryPanel.SettingsPanel.OnCustomizeQuickButtons = _quickBar.BeginEditing;
@@ -137,7 +147,7 @@ public sealed partial class InputManager : IDisposable
         ActiveTextBox != null || _repeatKey != null;
 
     /// <summary>The text field that receives keyboard input: a popup's field first, then the library panel's.</summary>
-    private TextBoxState? ActiveTextBox => _plotEditor.ActiveTextBox ?? _libraryPanel.ActiveTextBox;
+    private TextBoxState? ActiveTextBox => _plotEditor.ActiveTextBox ?? _dimensionEditor.ActiveTextBox ?? _libraryPanel.ActiveTextBox;
 
     public void Update(float dt)
     {
@@ -334,6 +344,12 @@ public sealed partial class InputManager : IDisposable
                 break;
             case UiAction.FitView:
                 _strokeRenderer.FitToContent();
+                break;
+            case UiAction.ZoomLevel:
+                _strokeRenderer.ZoomAt(CanvasCenter, 1f / _camera.Zoom);
+                break;
+            case UiAction.Minimap:
+                _minimap.Open(MousePosition);
                 break;
             case UiAction.Keyboard:
                 TouchKeyboard.Toggle();
@@ -871,6 +887,14 @@ public sealed partial class InputManager : IDisposable
             return;
         }
 
+        if (_dimensionEditor.IsOpen)
+        {
+            if (key is Key.Enter or Key.KeypadEnter) _dimensionEditor.Confirm();
+            else if (key == Key.Escape) _dimensionEditor.Close();
+            else HandleTextKey(_dimensionEditor.ActiveTextBox!, key, ctrl, shift, keyboard);
+            return;
+        }
+
         if (_popups.LastOrDefault(p => p.IsOpen) is { } popup)
         {
             if (key is Key.Escape or Key.Enter) popup.Close();
@@ -927,7 +951,7 @@ public sealed partial class InputManager : IDisposable
 
     private void OnKeyChar(IKeyboard keyboard, char c)
     {
-        if (_plotEditor.ActiveTextBox is { } box)
+        if ((_plotEditor.ActiveTextBox ?? _dimensionEditor.ActiveTextBox) is { } box)
         {
             box.Insert(c);
             _strokeRenderer.SetDirty();

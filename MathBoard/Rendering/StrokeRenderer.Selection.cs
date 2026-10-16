@@ -31,6 +31,9 @@ public sealed partial class StrokeRenderer
     /// <summary>Raised when the user asks to edit a plot's functions.</summary>
     public event Action<BoardObject>? EditPlotRequested;
 
+    /// <summary>Raised when a measure's label of the selected shape is tapped, with where the label is on screen.</summary>
+    public event Action<Dimension, Vector2>? DimensionEditRequested;
+
     private bool HasSelection => SelectedStrokes.Count > 0 || SelectedObjects.Count > 0;
     private BoardObject? SingleObject => SelectedStrokes.Count == 0 && SelectedObjects.Count == 1 ? SelectedObjects[0] : null;
 
@@ -141,6 +144,53 @@ public sealed partial class StrokeRenderer
         MarkStrokesDirty();
     }
 
+    /// <summary>Sets a measure of the selected shape (world units or degrees) as one undo step; its fills follow.</summary>
+    public void ApplyDimension(Dimension dimension, float value)
+    {
+        if (SingleObject is not { } o || CurrentSelectionState != SelectionState.None) return;
+        int index = _document.Objects.FindIndex(x => ReferenceEquals(x, o));
+        if (index < 0) return;
+        var edited = ObjectGeometry.WithDimension(o, dimension, value);
+        _document.SaveState();
+        NoteTies([o], rigid: false);
+        _edited[o] = edited;
+        _document.Objects[index] = edited;
+        SelectedObjects[0] = edited;
+        if (_fillTies.Count > 0) Refill(_fillTies, Edited, final: true);
+        _fillTies = [];
+        _edited.Clear();
+        _document.IsDirty = true;
+        MarkStrokesDirty();
+    }
+
+    /// <summary>
+    /// The labels of the selected shape's measures on screen: sides and segments, radii, angles. A label that would
+    /// cover one already placed (on a small shape) is left out.
+    /// </summary>
+    private List<(Dimension Dimension, string Text, Vector2 Pos, Vector2 Size)> DimensionLabels()
+    {
+        var labels = new List<(Dimension, string, Vector2, Vector2)>();
+        if (SingleObject is not { } o || CurrentSelectionState == SelectionState.DrawingBox) return labels;
+        foreach (var d in ObjectGeometry.Dimensions(o))
+        {
+            string text = DimensionEditor.Format(d);
+            var size = new Vector2(_ui.Measure(text, Theme.Small) + 12f, 22f);
+            var pos = WorldToScreen(Vector2.Transform(d.At, _movingTransform)) + d.Away * d.Offset - size * 0.5f;
+            if (labels.Any(l => pos.X < l.Item3.X + l.Item4.X && l.Item3.X < pos.X + size.X && pos.Y < l.Item3.Y + l.Item4.Y && l.Item3.Y < pos.Y + size.Y))
+                continue;
+            labels.Add((d, text, pos, size));
+        }
+
+        return labels;
+    }
+
+    private (Dimension Dimension, Vector2 Pos, Vector2 Size)? DimensionAt(Vector2 screenPos)
+    {
+        foreach (var (d, _, pos, size) in DimensionLabels())
+            if (UiBatch.Contains(pos - new Vector2(4f), size + new Vector2(8f), screenPos)) return (d, pos, size);
+        return null;
+    }
+
     /// <summary>Replaces an object (for example after editing a plot's functions) as one undo step.</summary>
     public void ReplaceObject(BoardObject original, BoardObject replacement)
     {
@@ -151,6 +201,24 @@ public sealed partial class StrokeRenderer
         int selected = SelectedObjects.FindIndex(o => ReferenceEquals(o, original));
         if (selected >= 0) SelectedObjects[selected] = replacement;
         MarkStrokesDirty();
+    }
+
+    /// <summary>The measures of a single selected shape, as labels to tap; radii and semi-axes are drawn as lines.</summary>
+    private void RenderDimensions(UiBatch ui)
+    {
+        if (SingleObject is not { } o) return;
+        foreach (var d in ObjectGeometry.Dimensions(o))
+            if (d.HasGuide)
+                ui.Line(WorldToScreen(Vector2.Transform(d.GuideFrom, _movingTransform)), WorldToScreen(Vector2.Transform(d.GuideTo, _movingTransform)),
+                    Theme.WithAlpha(Theme.Accent, 0.7f), 1.5f);
+
+        foreach (var (_, text, pos, size) in DimensionLabels())
+        {
+            bool hover = HoverPosition is { } p && UiBatch.Contains(pos, size, p);
+            ui.Rect(pos, size, hover ? Theme.SurfaceHover : Theme.WithAlpha(Theme.Surface, 0.92f), 11f);
+            ui.Border(pos, size, Theme.Accent, 1f, 11f);
+            ui.TextInRect(text, pos, size, Theme.Text, Theme.Small, UiBatch.Align.Center);
+        }
     }
 
     private List<SelectionAction> ToolbarActions()
@@ -220,6 +288,12 @@ public sealed partial class StrokeRenderer
                     MarkStrokesDirty();
                     return;
                 }
+            }
+
+            if (DimensionAt(screenPos) is var (dimension, labelPos, labelSize))
+            {
+                DimensionEditRequested?.Invoke(dimension, labelPos + labelSize * 0.5f);
+                return;
             }
 
             // The selection is dragged by its lines or by the fill of a selected shape. A press on the empty inside of an
@@ -564,7 +638,7 @@ public sealed partial class StrokeRenderer
         var actions = ToolbarActions();
         for (int i = 0; i < actions.Count; i++)
             if (UiBatch.Contains(ToolbarButtonPos(i, actions.Count), new Vector2(ToolbarButtonSize), screenPos)) return true;
-        return HitTestControlPoint(screenPos) >= 0 || HitTestHandles(screenPos) >= 0;
+        return HitTestControlPoint(screenPos) >= 0 || HitTestHandles(screenPos) >= 0 || DimensionAt(screenPos) != null;
     }
 
     private (Vector2 Min, Vector2 Max) HandleFrame()
@@ -663,6 +737,7 @@ public sealed partial class StrokeRenderer
             }
         }
 
+        RenderDimensions(ui);
         if (CurrentSelectionState != SelectionState.None) return;
         var actions = ToolbarActions();
         for (int i = 0; i < actions.Count; i++)

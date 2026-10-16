@@ -29,8 +29,9 @@ public enum UiAction
     Export,
     Fill,
     FormatPainter,
-    // Shows the zoom in percent; pressing it does nothing (quick bar only).
+    // Shows the zoom in percent; pressing it sets 100 %.
     ZoomLevel,
+    Minimap,
     // An empty sector of the radial menu, to even out the ring.
     Spacer
 }

@@ -33,7 +33,7 @@ public static class Dashing
     }
 
     /// <summary>The part [t0, t1] of the segment from a to b inside the rectangle; false if there is none.</summary>
-    private static bool Clip(Vector2 a, Vector2 b, Vector2 min, Vector2 max, out float t0, out float t1)
+    public static bool Clip(Vector2 a, Vector2 b, Vector2 min, Vector2 max, out float t0, out float t1)
     {
         t0 = 0f;
         t1 = 1f;

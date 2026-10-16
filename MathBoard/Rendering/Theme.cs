@@ -92,4 +92,5 @@ public static class Icons
     public const string Export = "\uE72D";
     public const string Sun = "\uE706";
     public const string Moon = "\uE708";
+    public const string Backspace = "\uE750";
 }

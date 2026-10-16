@@ -58,6 +58,7 @@ public static class Settings
             new(UiAction.Color, 0.5f, 1f, 52f, -34f, HexToVector4("#3A994C")),
             new(UiAction.Color, 0.5f, 1f, 104f, -34f, HexToVector4("#FFD54F")),
             new(UiAction.Color, 0.5f, 1f, -104f, -34f, HexToVector4("#5B9BFF")),
+            new(UiAction.Minimap, 1f, 1f, -242f, -34f),
             new(UiAction.ZoomLevel, 1f, 1f, -190f, -34f),
             new(UiAction.ZoomOut, 1f, 1f, -138f, -34f),
             new(UiAction.FitView, 1f, 1f, -86f, -34f),

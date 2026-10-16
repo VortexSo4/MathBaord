@@ -215,6 +215,13 @@ public sealed partial class StrokeRenderer : IDisposable
         return min.X > max.X ? null : (min, max);
     }
 
+    public (Vector2 Min, Vector2 Max)? ContentBounds() => ContentBounds(_document);
+
+    /// <summary>The board as last built: shapes, fills and ink as capsules in world space.</summary>
+    public ReadOnlySpan<Prim> WorldPrims => _strokePrims.AsSpan(0, _strokePrimCount);
+
+    public ReadOnlySpan<ImageDraw> FrameImages => CollectionsMarshal.AsSpan(_images);
+
     public void FitToContent()
     {
         var screen = ScreenSize;
