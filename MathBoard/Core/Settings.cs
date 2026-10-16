@@ -126,6 +126,12 @@ public static class Settings
     /// <summary>Look for a newer release on GitHub at startup.</summary>
     public static Setting<bool> CheckUpdates { get; } = new(true);
 
+    // Working together: the stroke being drawn is sent as it grows (or once finished), changes go out every so many
+    // milliseconds, cut into packets of up to this many bytes.
+    public static Setting<bool> NetLiveStrokes { get; } = new(true);
+    public static Setting<float> NetSendIntervalMs { get; } = new(50f);
+    public static Setting<float> NetPacketBytes { get; } = new(1100f);
+
     /// <summary>Background grid: "None", "Squares" or "Axes". It is not part of the document.</summary>
     public static Setting<string> GridMode { get; } = new(Defaults.GridMode);
 

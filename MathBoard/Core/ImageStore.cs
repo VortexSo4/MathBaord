@@ -52,6 +52,36 @@ public static class ImageStore
         return data;
     }
 
+    /// <summary>Whether the name is one this store gives (a hash and ".png"); names from the network must be, so they cannot point elsewhere.</summary>
+    private static bool IsStoreName(string name) =>
+        name.Length == 24 && name.EndsWith(".png", StringComparison.Ordinal) && name[..20].All(char.IsAsciiHexDigitLower);
+
+    public static bool HasFile(string name) => IsStoreName(name) && File.Exists(Path.Combine(Folder, name));
+
+    /// <summary>The stored PNG file of a picture, to send to another computer; null if it is missing.</summary>
+    public static byte[]? ReadFile(string name)
+    {
+        if (!IsStoreName(name)) return null;
+        try
+        {
+            return File.ReadAllBytes(Path.Combine(Folder, name));
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Stores a picture received from another computer under its name (the hash of its contents).</summary>
+    public static void StoreFile(string name, byte[] png)
+    {
+        if (!IsStoreName(name)) return;
+        var folder = Directory.CreateDirectory(Folder);
+        folder.Attributes |= FileAttributes.Hidden;
+        File.WriteAllBytes(Path.Combine(Folder, name), png);
+        Cache.Remove(name);
+    }
+
     /// <summary>Forgets the pixels of pictures not listed; they are loaded from their files again when needed.</summary>
     public static void Retain(IEnumerable<string> names)
     {

@@ -90,10 +90,10 @@ public sealed partial class StrokeRenderer
             Color = s.Color,
             Points = s.Points.Select(p => Vector2.Transform(p, offset)).ToList()
         }).ToList();
-        var objects = SelectedObjects.Select(o => o.Transformed(offset)).ToList();
+        var objects = SelectedObjects.Select(o => o.Transformed(offset) with { Id = BoardObject.NewId() }).ToList();
         // The fills tied only to the copied shapes are copied with them.
         var selected = SelectedObjects.ToHashSet<object>(ReferenceEqualityComparer.Instance);
-        var fills = TiesTouching(SelectedObjects).Where(t => AllIn(t, selected)).Select(t => t.Fill.Transformed(offset)).ToList();
+        var fills = TiesTouching(SelectedObjects).Where(t => AllIn(t, selected)).Select(t => t.Fill.Transformed(offset) with { Id = BoardObject.NewId() }).ToList();
         _document.Strokes.AddRange(strokes);
         _document.Objects.AddRange(objects);
         // The copies' fills go with the other fills, below the shapes.

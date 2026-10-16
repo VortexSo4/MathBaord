@@ -25,7 +25,7 @@ public class Document
     private readonly List<State> _redoStack = new();
 
     private State Snapshot() => new(
-        [..Strokes.Select(s => new Stroke { Width = s.Width, Color = s.Color, Points = s.Points })],
+        [..Strokes.Select(s => new Stroke { Id = s.Id, Width = s.Width, Color = s.Color, Points = s.Points })],
         [..Objects]);
 
     public void SaveState()
@@ -59,6 +59,22 @@ public class Document
         Objects.AddRange(state.Objects);
         IsDirty = true;
         return true;
+    }
+
+    /// <summary>
+    /// Runs a change made on another computer on every undo and redo state too, so undoing here takes back only what
+    /// was done here.
+    /// </summary>
+    public void ForEachHistoryState(Action<List<Stroke>, List<BoardObject>> change)
+    {
+        foreach (var state in _history) change(state.Strokes, state.Objects);
+        foreach (var state in _redoStack) change(state.Strokes, state.Objects);
+    }
+
+    public void ClearHistory()
+    {
+        _history.Clear();
+        _redoStack.Clear();
     }
 
     public void Clear()

@@ -44,6 +44,14 @@ public sealed record BoardObject(ShapeKind Kind, Vector2[] Points, Vector4 Color
     /// </summary>
     public string Text { get; init; } = "";
 
+    /// <summary>
+    /// The same object on every board of a shared lesson; an edit (a <c>with</c> copy) keeps it, a new object or a copy
+    /// next to the original gets a new one. Not saved in files.
+    /// </summary>
+    public long Id { get; init; } = NewId();
+
+    public static long NewId() => Random.Shared.NextInt64(1, long.MaxValue);
+
     public const string DashedStyle = "dashed";
     public bool Dashed => Text == DashedStyle;
 

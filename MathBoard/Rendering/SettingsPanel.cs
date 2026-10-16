@@ -60,6 +60,11 @@ public class SettingsPanel : IDisposable
     private bool _isDraggingScrollbar;
 
     public Action? OnOpenLog { get; set; }
+    public Action? OnOpenCollab { get; set; }
+    /// <summary>The state of working together, shown next to the entry that opens it.</summary>
+    public Func<string>? CollabStatus { get; set; }
+
+    private string? _networkResult;
     public Action? OnCustomizeQuickButtons { get; set; }
     public Action? OnCustomizeRadialMenu { get; set; }
 
@@ -251,6 +256,42 @@ public class SettingsPanel : IDisposable
         Add(Numeric("settings_selection_radius", "Tap selects the nearest within, px",
             () => Settings.SelectionRadius, v => Settings.SelectionRadius.Value = Math.Clamp(v, 1f, 200f), "0"));
 
+        Section("network", "Network");
+        Add(new SettingItem
+        {
+            Name = Localization.Get("settings_collab", "Work together"),
+            Type = SettingType.Action,
+            GetValue = () => CollabStatus?.Invoke() ?? "",
+            OnClick = () =>
+            {
+                Close();
+                OnOpenCollab?.Invoke();
+            }
+        });
+
+        Add(new SettingItem
+        {
+            Name = Localization.Get("settings_net_strokes", "Strokes are sent"),
+            Type = SettingType.Enum,
+            GetValue = () => Settings.NetLiveStrokes.Value ? "Live" : "Finished",
+            SetValue = v => Settings.NetLiveStrokes.Value = v == "Live",
+            Options = ["Live", "Finished"],
+            Label = v => Localization.Get("settings_net_strokes_" + v.ToLowerInvariant(), v)
+        });
+
+        Add(Numeric("settings_net_interval", "Send changes every, ms",
+            () => Settings.NetSendIntervalMs, v => Settings.NetSendIntervalMs.Value = Math.Clamp(v, 10f, 1000f), "0"));
+        Add(Numeric("settings_net_packet", "Packet size, bytes (200-1100)",
+            () => Settings.NetPacketBytes, v => Settings.NetPacketBytes.Value = Math.Clamp(v, 200f, 1100f), "0"));
+
+        Add(new SettingItem
+        {
+            Name = Localization.Get("settings_net_check", "Does this network suit working together?"),
+            Type = SettingType.Action,
+            GetValue = () => _networkResult ?? Localization.Get("settings_net_check_action", "Check"),
+            OnClick = CheckNetwork
+        });
+
         Section("system", "System");
         Add(new SettingItem
         {
@@ -315,6 +356,22 @@ public class SettingsPanel : IDisposable
         });
 
         UpdateRows();
+    }
+
+    /// <summary>Asks STUN servers how this network treats direct connections and shows the verdict in the row.</summary>
+    private void CheckNetwork()
+    {
+        if (_networkResult == Localization.Get("settings_net_checking", "Checking...")) return;
+        _networkResult = Localization.Get("settings_net_checking", "Checking...");
+        _ = Task.Run(async () =>
+        {
+            var report = await MathBoard.Net.NetworkCheck.RunAsync();
+            _networkResult = Localization.Get("settings_net_" + report.Kind.ToString().ToLowerInvariant(), report.Kind.ToString()) +
+                             (report.HasIPv6 ? ", IPv6" : "");
+            Console.WriteLine($"Network check: {report.Kind}, public {report.Public}, IPv6 {report.HasIPv6}");
+            _renderer.SetDirty();
+            AppLoop.Wake();
+        });
     }
 
     private void Apply(Action action)

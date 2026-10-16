@@ -511,6 +511,30 @@ public sealed partial class StrokeRenderer : IDisposable
         MarkStrokesDirty();
     }
 
+    /// <summary>The stroke being drawn, if any.</summary>
+    public Stroke? ActiveStroke => _activeStroke;
+
+    /// <summary>
+    /// True when no edit is under way that keeps places in the document (a stroke, a shape or a fill being made, a
+    /// selection being dragged): changes from other computers are taken in only then.
+    /// </summary>
+    public bool IsIdleForSync => _activeStroke == null && _recognized == null && _liveObject == null && _fillPlaced < 0 &&
+                                 _fillReplaced.Count == 0 && CurrentSelectionState is SelectionState.None or SelectionState.DrawingBox;
+
+    /// <summary>Call after changes from another computer: the selection follows its items by id, removed ones drop out.</summary>
+    public void OnRemoteChange()
+    {
+        var strokes = _document.Strokes.GroupBy(s => s.Id).ToDictionary(g => g.Key, g => g.First());
+        var objects = _document.Objects.GroupBy(o => o.Id).ToDictionary(g => g.Key, g => g.First());
+        var selectedStrokes = SelectedStrokes.Select(s => strokes.GetValueOrDefault(s.Id)).OfType<Stroke>().ToList();
+        var selectedObjects = SelectedObjects.Select(o => objects.GetValueOrDefault(o.Id)).OfType<BoardObject>().ToList();
+        SelectedStrokes.Clear();
+        SelectedStrokes.AddRange(selectedStrokes);
+        SelectedObjects.Clear();
+        SelectedObjects.AddRange(selectedObjects);
+        MarkStrokesDirty();
+    }
+
     public void Undo()
     {
         EndStroke();

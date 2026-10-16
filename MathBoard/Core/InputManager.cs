@@ -1,5 +1,6 @@
 ﻿using System.Numerics;
 using System.Runtime.InteropServices;
+using MathBoard.Collab;
 using MathBoard.Rendering;
 using Silk.NET.Input;
 using Silk.NET.Windowing;
@@ -26,6 +27,7 @@ public sealed partial class InputManager : IDisposable
     private readonly FillPicker _fillPicker;
     private readonly Minimap _minimap;
     private readonly DimensionEditor _dimensionEditor;
+    private readonly CollabDialog _collabDialog;
     private readonly RadialEditor _radialEditor;
     private readonly IPopup[] _popups;
     private readonly TouchGestures? _gestures;
@@ -66,7 +68,7 @@ public sealed partial class InputManager : IDisposable
     public QuickBar QuickBar => _quickBar;
 
     public InputManager(IWindow window, StrokeRenderer strokeRenderer, Camera camera, Document document,
-        RadialMenu radialMenu, LibraryManager libraryManager, LibraryPanel libraryPanel, Updater updater)
+        RadialMenu radialMenu, LibraryManager libraryManager, LibraryPanel libraryPanel, Updater updater, CollabSession collab)
     {
         _strokeRenderer = strokeRenderer;
         _camera = camera;
@@ -82,8 +84,12 @@ public sealed partial class InputManager : IDisposable
         _fillPicker = new FillPicker(strokeRenderer);
         _minimap = new Minimap(strokeRenderer);
         _dimensionEditor = new DimensionEditor(strokeRenderer);
+        _collabDialog = new CollabDialog(strokeRenderer, collab, () => _keyboard?.ClipboardText, text =>
+        {
+            if (_keyboard != null) _keyboard.ClipboardText = text;
+        });
         _radialEditor = new RadialEditor(strokeRenderer);
-        _popups = [_colorEditor, _shapePicker, _plotEditor, _thicknessPicker, _fillPicker, _minimap, _dimensionEditor, _confirm, _radialEditor,
+        _popups = [_colorEditor, _shapePicker, _plotEditor, _thicknessPicker, _fillPicker, _minimap, _dimensionEditor, _collabDialog, _confirm, _radialEditor,
             new UpdatePopup(strokeRenderer, updater)];
         foreach (var popup in _popups) strokeRenderer.AddOverlay(popup);
         // The screenshot overlay is drawn by the renderer itself because it hides the rest of the interface.
@@ -99,6 +105,14 @@ public sealed partial class InputManager : IDisposable
             EditButtonColor);
         _libraryPanel.SettingsPanel.OnCustomizeQuickButtons = _quickBar.BeginEditing;
         _libraryPanel.SettingsPanel.OnCustomizeRadialMenu = _radialEditor.Open;
+        _libraryPanel.SettingsPanel.OnOpenCollab = _collabDialog.Open;
+        _libraryPanel.SettingsPanel.CollabStatus = () => collab.CurrentRole switch
+        {
+            CollabSession.Role.Host => string.Format(Localization.Get("settings_collab_hosting", "Host, connected: {0}"), collab.ConnectedCount),
+            CollabSession.Role.Participant when collab.ConnectedCount > 0 => Localization.Get("settings_collab_joined", "Connected"),
+            CollabSession.Role.Participant => Localization.Get("settings_collab_connecting", "Connecting..."),
+            _ => Localization.Get("settings_collab_open", "Connect")
+        };
         _radialMenu.Execute = Execute;
         _radialMenu.IsActive = IsActive;
 
@@ -147,7 +161,8 @@ public sealed partial class InputManager : IDisposable
         ActiveTextBox != null || _repeatKey != null;
 
     /// <summary>The text field that receives keyboard input: a popup's field first, then the library panel's.</summary>
-    private TextBoxState? ActiveTextBox => _plotEditor.ActiveTextBox ?? _dimensionEditor.ActiveTextBox ?? _libraryPanel.ActiveTextBox;
+    private TextBoxState? ActiveTextBox =>
+        _plotEditor.ActiveTextBox ?? _dimensionEditor.ActiveTextBox ?? _collabDialog.ActiveTextBox ?? _libraryPanel.ActiveTextBox;
 
     public void Update(float dt)
     {
@@ -900,6 +915,14 @@ public sealed partial class InputManager : IDisposable
             return;
         }
 
+        if (_collabDialog.IsOpen)
+        {
+            if (key is Key.Enter or Key.KeypadEnter) _collabDialog.Confirm();
+            else if (key == Key.Escape) _collabDialog.Close();
+            else if (_collabDialog.ActiveTextBox is { } box) HandleTextKey(box, key, ctrl, shift, keyboard);
+            return;
+        }
+
         if (_popups.LastOrDefault(p => p.IsOpen) is { } popup)
         {
             if (key is Key.Escape or Key.Enter) popup.Close();
@@ -956,7 +979,7 @@ public sealed partial class InputManager : IDisposable
 
     private void OnKeyChar(IKeyboard keyboard, char c)
     {
-        if ((_plotEditor.ActiveTextBox ?? _dimensionEditor.ActiveTextBox) is { } box)
+        if ((_plotEditor.ActiveTextBox ?? _dimensionEditor.ActiveTextBox ?? _collabDialog.ActiveTextBox) is { } box)
         {
             box.Insert(c);
             _strokeRenderer.SetDirty();

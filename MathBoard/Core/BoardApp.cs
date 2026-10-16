@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using MathBoard.Collab;
 using MathBoard.Graphics;
 using MathBoard.Rendering;
 using Silk.NET.GLFW;
@@ -19,6 +20,7 @@ public sealed partial class BoardApp : IDisposable
     private readonly LibraryManager _libraryManager;
     private readonly InputManager _inputManager;
     private readonly Updater _updater = new();
+    private readonly CollabSession _collab;
     private bool _renderFailed;
 
     public BoardApp(IWindow window, IRenderBackend backend)
@@ -35,7 +37,21 @@ public sealed partial class BoardApp : IDisposable
         _libraryManager = new LibraryManager(_document, _strokeRenderer);
         var libraryPanel = new LibraryPanel(_strokeRenderer, _libraryManager, _updater);
         _strokeRenderer.SetLibraryPanel(libraryPanel);
-        _inputManager = new InputManager(window, _strokeRenderer, _camera, _document, radialMenu, _libraryManager, libraryPanel, _updater);
+        _collab = new CollabSession(_document);
+        // Someone joining gets the host's lesson as a new lesson of their own; the board they had is saved first.
+        _collab.PrepareBoard = () =>
+        {
+            _libraryManager.SaveOnExit();
+            _libraryManager.CreateFile(Settings.LibraryRootPath,
+                Localization.Get("collab_lesson_name", "Shared lesson") + " " + DateTime.Now.ToString("yyyy-MM-dd HH-mm"));
+            libraryPanel.RefreshTree();
+        };
+        _collab.Changed += () =>
+        {
+            _strokeRenderer.SetDirty();
+            AppLoop.Wake();
+        };
+        _inputManager = new InputManager(window, _strokeRenderer, _camera, _document, radialMenu, _libraryManager, libraryPanel, _updater, _collab);
         _strokeRenderer.SetQuickBar(_inputManager.QuickBar);
 
         window.FramebufferResize += _ => _strokeRenderer.SetDirty();
@@ -60,7 +76,9 @@ public sealed partial class BoardApp : IDisposable
             if (size.X == 0 || size.Y == 0) return 0.5;
             if (_renderFailed) return 1.0 / 60.0;
             if (_strokeRenderer.NeedsRedraw) return 0;
-            return _inputManager.NeedsFrequentUpdates ? 1.0 / 60.0 : 0.5;
+            if (_inputManager.NeedsFrequentUpdates) return 1.0 / 60.0;
+            // While working together, changes made here are sent on time even when nothing else happens.
+            return _collab.CurrentRole != CollabSession.Role.None ? Settings.NetSendIntervalMs / 1000.0 : 0.5;
         }
     }
 
@@ -79,6 +97,7 @@ public sealed partial class BoardApp : IDisposable
 
         UpdateViewport();
         _inputManager.Update(dt);
+        if (_collab.Pump(_strokeRenderer.IsIdleForSync, _strokeRenderer.ActiveStroke)) _strokeRenderer.OnRemoteChange();
         _libraryManager.AutoSaveIfNeeded();
         if (!_strokeRenderer.NeedsRedraw) return false;
 
@@ -130,6 +149,7 @@ public sealed partial class BoardApp : IDisposable
 
     public void Dispose()
     {
+        _collab.Dispose();
         _libraryManager.SaveOnExit();
         _inputManager.Dispose();
         _backend.Dispose();

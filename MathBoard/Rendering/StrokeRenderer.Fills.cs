@@ -60,7 +60,7 @@ public sealed partial class StrokeRenderer
         {
             if (objects[i].Text != ObjectGeometry.FillCross || !InRegion(objects[i])) continue;
             objects[i] = objects[i] with { Text = ObjectGeometry.FillHatch };
-            objects.Insert(i + 1, objects[i] with { Text = ObjectGeometry.FillBackHatch });
+            objects.Insert(i + 1, objects[i] with { Text = ObjectGeometry.FillBackHatch, Id = BoardObject.NewId() });
         }
 
         bool clear = FillStyle == ObjectGeometry.FillClear;
@@ -125,7 +125,7 @@ public sealed partial class StrokeRenderer
                 if (styles.Length == 2)
                 {
                     objects[_fillPlaced] = placed with { Text = styles[0] };
-                    objects.Insert(_fillPlaced + 1, placed with { Text = styles[1] });
+                    objects.Insert(_fillPlaced + 1, placed with { Text = styles[1], Id = BoardObject.NewId() });
                 }
             }
 
