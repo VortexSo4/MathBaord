@@ -200,6 +200,9 @@ public class QuickBar
         _renderer.SetDirty();
     }
 
+    // The zoom display only shows the zoom: a tap does nothing, but a long press still rearranges the buttons.
+    private static bool IsDisplay(QuickButtonConfig b) => b.Action == UiAction.ZoomLevel;
+
     public void OnMouseMove(Vector2 pos)
     {
         _mouse = pos;
@@ -221,7 +224,7 @@ public class QuickBar
         {
             if (_dragging) Drop(button, pos);
         }
-        else if (ReferenceEquals(ButtonAt(pos), button))
+        else if (ReferenceEquals(ButtonAt(pos), button) && !IsDisplay(button))
         {
             _execute(button);
             bool doubleTap = ReferenceEquals(_lastTap, button) && (DateTime.Now - _lastTapTime).TotalSeconds < DoubleTapSeconds;
@@ -410,7 +413,7 @@ public class QuickBar
     {
         var pos = center - new Vector2(Size * 0.5f);
         var size = new Vector2(Size);
-        bool hovered = !IsEditing && UiBatch.Contains(pos, size, _mouse);
+        bool hovered = !IsEditing && !IsDisplay(button) && UiBatch.Contains(pos, size, _mouse);
         bool pressed = !IsEditing && ReferenceEquals(_pressed, button) && hovered;
         bool active = _isActive(button);
         var action = button.Action;
@@ -425,6 +428,12 @@ public class QuickBar
         {
             ui.Circle(center, 12f, color);
             if (active) ui.Ring(center, 17f, 2f, Theme.Text);
+        }
+        else if (IsDisplay(button))
+        {
+            // In the tray it shows 100 %, so it reads as a zoom display rather than a number that happens to be there.
+            float zoom = IsEditing && _working.All(b => !ReferenceEquals(b, button)) ? 1f : _renderer.Camera.Zoom;
+            ui.TextInRect($"{MathF.Round(zoom * 100f):0}%", pos, size, Theme.Text, Theme.Small, UiBatch.Align.Center);
         }
         else
         {
@@ -458,6 +467,13 @@ public class QuickBar
                 break;
             case UiAction.Fill:
                 FillPicker.DrawPreview(ui, renderer.FillStyle, center, 18f, color);
+                break;
+            case UiAction.FormatPainter:
+                // An eyedropper, drawn: the icon fonts of older Windows versions have none.
+                ui.Line(center + new Vector2(-7f, 7f), center + new Vector2(3f, -3f), color, 3.4f);
+                ui.Line(center + new Vector2(-7f, 7f), center + new Vector2(-9f, 9f), color, 1.6f);
+                ui.Line(center + new Vector2(1f, -7f), center + new Vector2(7f, -1f), color, 2.2f);
+                ui.Circle(center + new Vector2(6f, -6f), 3.6f, color);
                 break;
             case UiAction.BackgroundColor:
                 ui.Rect(center - new Vector2(10f), new Vector2(20f), Settings.Background, 5f);

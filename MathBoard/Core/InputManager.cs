@@ -305,6 +305,9 @@ public sealed partial class InputManager : IDisposable
             case UiAction.Pan:
                 _strokeRenderer.SetTool(Tool.Pan);
                 break;
+            case UiAction.FormatPainter:
+                _strokeRenderer.ToggleFormatPainter();
+                break;
             case UiAction.Thickness:
                 _thicknessPicker.Open(MousePosition);
                 break;
@@ -440,6 +443,7 @@ public sealed partial class InputManager : IDisposable
         UiAction.Pan => _strokeRenderer.Tool == Tool.Pan,
         UiAction.Shapes => _strokeRenderer.Tool == Tool.Shape,
         UiAction.Fill => _strokeRenderer.Tool == Tool.Fill,
+        UiAction.FormatPainter => _strokeRenderer.Tool == Tool.FormatPainter,
         UiAction.Grid => Settings.GridMode.Value != "None",
         _ => false
     };
@@ -799,6 +803,10 @@ public sealed partial class InputManager : IDisposable
             else if (tool == Tool.Shape)
             {
                 _strokeRenderer.TapShape(pos);
+            }
+            else if (tool == Tool.FormatPainter)
+            {
+                _strokeRenderer.PaintFormatFrom(pos);
             }
 
         }

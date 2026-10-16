@@ -102,7 +102,7 @@ public sealed class RadialEditor(StrokeRenderer renderer) : IPopup
     private Vector2 ResetPos => DonePos - new Vector2(ButtonSize.X + 8f, 0);
 
     // The empty sector can be added any number of times.
-    private List<UiAction> TrayItems() => Enum.GetValues<UiAction>().Where(a => a == UiAction.Spacer || !_items.Contains(a)).ToList();
+    private List<UiAction> TrayItems() => Enum.GetValues<UiAction>().Where(a => a == UiAction.Spacer || a != UiAction.ZoomLevel && !_items.Contains(a)).ToList();
 
     private int TrayColumns(int count) => Math.Clamp((int)((Screen.X - 64f + Gap) / (Cell + Gap)), 1, Math.Max(count, 1));
 

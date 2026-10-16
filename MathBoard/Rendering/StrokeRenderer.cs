@@ -13,7 +13,9 @@ public enum Tool
     Select,
     Pan,
     Shape,
-    Fill
+    Fill,
+    // A tap takes the color and width of the ink or shape under it for drawing.
+    FormatPainter
 }
 
 /// <summary>
@@ -133,6 +135,48 @@ public sealed partial class StrokeRenderer : IDisposable
         CancelShape();
         Tool = tool;
         ClearSelection();
+    }
+
+    // The tool the format painter goes back to once it took a color and width.
+    private Tool _toolBeforePainter = Tool.Brush;
+
+    /// <summary>Switches the format painter on, or off again back to the tool it was started from.</summary>
+    public void ToggleFormatPainter()
+    {
+        if (Tool == Tool.FormatPainter)
+        {
+            SetTool(_toolBeforePainter);
+            return;
+        }
+
+        _toolBeforePainter = Tool == Tool.Shape ? Tool.Shape : Tool.Brush;
+        SetTool(Tool.FormatPainter);
+    }
+
+    /// <summary>
+    /// Takes the color and width of the ink or shape at the point (only the color of a fill) and goes back to drawing;
+    /// nothing happens on an empty spot or a picture.
+    /// </summary>
+    public void PaintFormatFrom(Vector2 screenPos)
+    {
+        switch (PickAt(ScreenToWorld(screenPos), withBackdrop: true))
+        {
+            case Stroke s:
+                CurrentBrushWidth = s.Width;
+                SetColor(s.Color);
+                break;
+            case BoardObject { Kind: ShapeKind.Fill } fill:
+                SetColor(fill.Color with { W = 1f });
+                break;
+            case BoardObject { Kind: not ShapeKind.Image } o:
+                CurrentBrushWidth = o.Width;
+                SetColor(o.Color);
+                break;
+            default:
+                return;
+        }
+
+        SetTool(_toolBeforePainter);
     }
 
     public void SetColor(Vector4 color)

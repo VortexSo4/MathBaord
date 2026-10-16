@@ -58,6 +58,7 @@ public static class Settings
             new(UiAction.Color, 0.5f, 1f, 52f, -34f, HexToVector4("#3A994C")),
             new(UiAction.Color, 0.5f, 1f, 104f, -34f, HexToVector4("#FFD54F")),
             new(UiAction.Color, 0.5f, 1f, -104f, -34f, HexToVector4("#5B9BFF")),
+            new(UiAction.ZoomLevel, 1f, 1f, -190f, -34f),
             new(UiAction.ZoomOut, 1f, 1f, -138f, -34f),
             new(UiAction.FitView, 1f, 1f, -86f, -34f),
             new(UiAction.ZoomIn, 1f, 1f, -34f, -34f),
@@ -67,6 +68,7 @@ public static class Settings
             new(UiAction.Screenshot, 1f, 1f, -86f, -299f),
             new(UiAction.Export, 1f, 0f, -86f, 34f),
             new(UiAction.Fill, 1f, 1f, -86f, -195f),
+            new(UiAction.FormatPainter, 1f, 1f, -34f, -351f),
             new(UiAction.Grid, 1f, 1f, -34f, -403f)
         ];
     }

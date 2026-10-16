@@ -28,6 +28,9 @@ public enum UiAction
     BackgroundColor,
     Export,
     Fill,
+    FormatPainter,
+    // Shows the zoom in percent; pressing it does nothing (quick bar only).
+    ZoomLevel,
     // An empty sector of the radial menu, to even out the ring.
     Spacer
 }
