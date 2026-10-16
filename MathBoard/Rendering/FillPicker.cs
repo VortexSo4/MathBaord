@@ -84,9 +84,10 @@ public sealed class FillPicker(StrokeRenderer renderer) : IPopup
     {
         float h = size * 0.5f;
         if (style == ObjectGeometry.FillSolid) ui.Rect(center - new Vector2(h), new Vector2(size), Theme.WithAlpha(color, 0.6f), 4f);
-        if (style == ObjectGeometry.FillClear) ui.Line(center + new Vector2(-h, h), center + new Vector2(h, -h), Theme.Danger, 2f);
-        if (style is ObjectGeometry.FillHatch or ObjectGeometry.FillCross) Hatch(ui, center, h, -1f, color);
-        if (style is ObjectGeometry.FillBackHatch or ObjectGeometry.FillCross) Hatch(ui, center, h, 1f, color);
+        if (style == ObjectGeometry.FillClear) ui.Line(center + new Vector2(2f - h, h - 2f), center + new Vector2(h - 2f, 2f - h), Theme.Danger, 2f);
+        // The lines end under the border, so their round ends do not stick out past it or its rounded corners.
+        if (style is ObjectGeometry.FillHatch or ObjectGeometry.FillCross) Hatch(ui, center, h - 1.5f, -1f, color);
+        if (style is ObjectGeometry.FillBackHatch or ObjectGeometry.FillCross) Hatch(ui, center, h - 1.5f, 1f, color);
         ui.Border(center - new Vector2(h), new Vector2(size), color, 1.5f, 4f);
     }
 

@@ -47,30 +47,31 @@ public static class Settings
         public static readonly QuickButtonConfig[] QuickButtons =
         [
             new(UiAction.ToggleLibrary, 0f, 0f, 34f, 34f),
-            new(UiAction.Redo, 1f, 0f, -138f, 34f),
+            new(UiAction.Redo, 1f, 1f, -34f, -398f),
             new(UiAction.Save, 1f, 0f, -34f, 34f),
-            new(UiAction.Brush, 1f, 1f, -34f, -195f),
-            new(UiAction.Eraser, 1f, 1f, -34f, -247f),
-            new(UiAction.Select, 1f, 1f, -34f, -299f),
-            new(UiAction.Pan, 1f, 1f, -34f, -143f),
+            new(UiAction.Brush, 1f, 1f, -138f, -190f),
+            new(UiAction.Eraser, 1f, 1f, -86f, -190f),
+            new(UiAction.Select, 1f, 1f, -34f, -242f),
+            new(UiAction.Pan, 1f, 1f, -34f, -190f),
             new(UiAction.Color, 0.5f, 1f, -52f, -34f, HexToVector4("#B7B7B7")),
             new(UiAction.Color, 0.5f, 1f, 0f, -34f, HexToVector4("#FF8383")),
             new(UiAction.Color, 0.5f, 1f, 52f, -34f, HexToVector4("#3A994C")),
             new(UiAction.Color, 0.5f, 1f, 104f, -34f, HexToVector4("#FFD54F")),
             new(UiAction.Color, 0.5f, 1f, -104f, -34f, HexToVector4("#5B9BFF")),
-            new(UiAction.Minimap, 1f, 1f, -242f, -34f),
-            new(UiAction.ZoomLevel, 1f, 1f, -190f, -34f),
-            new(UiAction.ZoomOut, 1f, 1f, -138f, -34f),
-            new(UiAction.FitView, 1f, 1f, -86f, -34f),
-            new(UiAction.ZoomIn, 1f, 1f, -34f, -34f),
-            new(UiAction.Undo, 1f, 0f, -190f, 34f),
-            new(UiAction.Shapes, 1f, 1f, -86f, -143f),
-            new(UiAction.InsertImage, 1f, 1f, -86f, -247f),
-            new(UiAction.Screenshot, 1f, 1f, -86f, -299f),
+            new(UiAction.ZoomOut, 1f, 1f, -138f, -86f),
+            new(UiAction.FitView, 1f, 1f, -34f, -34f),
+            new(UiAction.ZoomIn, 1f, 1f, -34f, -86f),
+            new(UiAction.Undo, 1f, 1f, -86f, -398f),
+            new(UiAction.Shapes, 1f, 1f, -86f, -242f),
+            new(UiAction.InsertImage, 1f, 1f, -86f, -294f),
+            new(UiAction.Screenshot, 1f, 1f, -34f, -294f),
             new(UiAction.Export, 1f, 0f, -86f, 34f),
-            new(UiAction.Fill, 1f, 1f, -86f, -195f),
-            new(UiAction.FormatPainter, 1f, 1f, -34f, -351f),
-            new(UiAction.Grid, 1f, 1f, -34f, -403f)
+            new(UiAction.Grid, 1f, 1f, -138f, -34f),
+            new(UiAction.Fill, 1f, 1f, -138f, -242f),
+            new(UiAction.ZoomLevel, 1f, 1f, -86f, -86f),
+            new(UiAction.Minimap, 1f, 1f, -86f, -34f),
+            new(UiAction.ClearBoard, 1f, 0f, -138f, 34f),
+            new(UiAction.FormatPainter, 1f, 1f, -138f, -294f)
         ];
     }
 
@@ -113,6 +114,8 @@ public static class Settings
 
     /// <summary>A touch at least this wide (a palm or a fist) erases; 0 turns it off.</summary>
     public static Setting<float> PalmEraseMillimetres { get; } = new(30f);
+    // Off until the board's stylus ends are measured: see the "Touch down" lines in the log.
+    public static Setting<float> StylusEraseMillimetres { get; } = new(0f);
 
     /// <summary>A selection box smaller than this (logical px) counts as a tap and selects one thing.</summary>
     public static Setting<float> SelectionTapSize { get; } = new(20f);

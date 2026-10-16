@@ -110,7 +110,7 @@ public sealed partial class InputManager : IDisposable
             _gestures = new TouchGestures(win32.Hwnd);
             _gestures.Started += OnGestureStarted;
             _gestures.Changed += OnGestureChanged;
-            _gestures.Down += (pos, contact) => TouchDown(ToLogical(pos), contact);
+            _gestures.Down += (pos, contact, eraser) => TouchDown(ToLogical(pos), contact, eraser);
             _gestures.Move += (pos, contact) => TouchMove(ToLogical(pos), contact);
             _gestures.Up += pos =>
             {
@@ -485,13 +485,18 @@ public sealed partial class InputManager : IDisposable
     private bool IsPalm(float contactMillimetres) =>
         Settings.PalmEraseMillimetres > 0 && contactMillimetres >= Settings.PalmEraseMillimetres;
 
-    private void TouchDown(Vector2 pos, float contact)
+    /// <summary>The thick end of a stylus: a contact from its size on, smaller than a palm.</summary>
+    private static bool IsStylusBack(float contactMillimetres) =>
+        Settings.StylusEraseMillimetres > 0 && contactMillimetres >= Settings.StylusEraseMillimetres;
+
+    private void TouchDown(Vector2 pos, float contact, bool penEraser)
     {
-        if (IsPalm(contact) && _capture == Capture.None && !_popups.Any(p => p.IsOpen) && !_libraryPanel.IsModalOpen &&
-            !_libraryPanel.Contains(pos) && !_quickBar.Contains(pos))
-            StartPalmErase(pos, contact);
-        else
-            PointerDown(pos, MouseButton.Left);
+        bool onCanvas = _capture == Capture.None && !_popups.Any(p => p.IsOpen) && !_libraryPanel.IsModalOpen &&
+                        !_libraryPanel.Contains(pos) && !_quickBar.Contains(pos);
+        if (onCanvas && IsPalm(contact)) StartPalmErase(pos, contact);
+        // The other end of the stylus erases like the eraser tool, at its size.
+        else if (onCanvas && (penEraser || IsStylusBack(contact))) StartPalmErase(pos, null);
+        else PointerDown(pos, MouseButton.Left);
     }
 
     private void TouchMove(Vector2 pos, float contact)
@@ -501,8 +506,8 @@ public sealed partial class InputManager : IDisposable
         else PointerMove(pos);
     }
 
-    /// <summary>Erases under a palm or fist laid on the board, as wide as the contact.</summary>
-    private void StartPalmErase(Vector2 pos, float contactMillimetres)
+    /// <summary>Erases under a palm or fist laid on the board, as wide as the contact, or as wide as the eraser if null.</summary>
+    private void StartPalmErase(Vector2 pos, float? contactMillimetres)
     {
         if (_capture == Capture.Canvas)
         {

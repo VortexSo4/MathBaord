@@ -150,6 +150,7 @@ clear_title=Очистить доску?
 clear_text=Всё будет удалено; вернуть можно кнопкой «Отменить».
 clear_confirm=Очистить
 settings_palm_erase=Ладонь стирает от, мм (0 — выкл.)
+settings_stylus_erase=Толстый конец стилуса стирает от, мм (0 — выкл.)
 shape_Box=Куб / параллелепипед
 shape_Prism=Треугольная призма
 shape_Pyramid=Пирамида

@@ -150,6 +150,7 @@ clear_title=Clear the board?
 clear_text=Everything is removed; Undo brings it back.
 clear_confirm=Clear
 settings_palm_erase=Palm erases from, mm (0 = off)
+settings_stylus_erase=Thick stylus end erases from, mm (0 = off)
 shape_Box=Cube / cuboid
 shape_Prism=Triangular prism
 shape_Pyramid=Pyramid

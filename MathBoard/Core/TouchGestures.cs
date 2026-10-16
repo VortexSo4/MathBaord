@@ -19,6 +19,8 @@ public sealed partial class TouchGestures : IDisposable
     private const int DisabledTabletGestures = 0x1 | 0x8 | 0x10 | 0x10000;
     private const string TabletProperty = "MicrosoftTabletPenServiceProperty";
     private const int LoggedContacts = 20;
+    // PEN_FLAG_INVERTED | PEN_FLAG_ERASER: a pen held the other way round, or touching with its eraser end.
+    private const uint PenEraserFlags = 0x2 | 0x4;
 
     private delegate nint WndProc(nint hwnd, uint msg, nint wParam, nint lParam);
 
@@ -36,8 +38,11 @@ public sealed partial class TouchGestures : IDisposable
 
     public bool IsActive { get; private set; }
 
-    /// <summary>The first finger or a pen touched down: position in window pixels and contact size in millimetres (0 if unknown).</summary>
-    public event Action<Vector2, float>? Down;
+    /// <summary>
+    /// The first finger or a pen touched down: position in window pixels, contact size in millimetres (0 if unknown) and
+    /// whether it is a pen's eraser end.
+    /// </summary>
+    public event Action<Vector2, float, bool>? Down;
 
     /// <summary>The first finger or the pen moved; not raised while two fingers pan or zoom.</summary>
     public event Action<Vector2, float>? Move;
@@ -94,7 +99,9 @@ public sealed partial class TouchGestures : IDisposable
         {
             case WM_POINTERDOWN:
                 _pen = id;
-                Down?.Invoke(pos, 0f);
+                bool eraser = GetPointerPenInfo(id, out var info) && (info.PenFlags & PenEraserFlags) != 0;
+                Log($"Pen down: flags 0x{info.PenFlags:X}, pressure {info.Pressure}{(eraser ? ", eraser end" : "")}");
+                Down?.Invoke(pos, 0f, eraser);
                 break;
             case WM_POINTERUPDATE:
                 Move?.Invoke(pos, 0f);
@@ -112,11 +119,11 @@ public sealed partial class TouchGestures : IDisposable
         {
             _primary = id;
             _primaryCancelled = false;
-            Down?.Invoke(pos, ContactMillimetres(id));
+            Down?.Invoke(pos, ContactMillimetres(id, log: true), false);
         }
         else if (msg == WM_POINTERUPDATE && id == _primary && !_primaryCancelled && !IsActive)
         {
-            Move?.Invoke(pos, ContactMillimetres(id));
+            Move?.Invoke(pos, ContactMillimetres(id, log: false));
         }
         else if (msg == WM_POINTERUP && id == _primary)
         {
@@ -129,23 +136,31 @@ public sealed partial class TouchGestures : IDisposable
         Track();
     }
 
-    /// <summary>The larger side of the touch's contact area; boards report a palm as a large contact.</summary>
-    private float ContactMillimetres(uint id)
+    /// <summary>
+    /// The larger side of the touch's contact area: boards report a palm as a large contact, and some tell the thin and
+    /// the thick end of a stylus apart this way.
+    /// </summary>
+    private float ContactMillimetres(uint id, bool log)
     {
-        if (!GetPointerTouchInfo(id, out var info)) return 0f;
-        int w = info.ContactRight - info.ContactLeft, h = info.ContactBottom - info.ContactTop;
-        uint dpi = GetDpiForWindow(_hwnd);
-        if (w <= 0 || h <= 0 || dpi == 0) return 0f;
-
-        float mm = Math.Max(w, h) * 25.4f / dpi;
-        // Logged for the first touches so the palm threshold can be tuned on a real board.
-        if (_loggedContacts < LoggedContacts && (info.PointerFlags & 0x10000) != 0)
+        if (!GetPointerTouchInfo(id, out var info))
         {
-            _loggedContacts++;
-            Console.WriteLine($"Touch contact: {w}x{h} px, {mm:0} mm");
+            if (log) Log("Touch down: no touch info");
+            return 0f;
         }
 
+        int w = info.ContactRight - info.ContactLeft, h = info.ContactBottom - info.ContactTop;
+        uint dpi = GetDpiForWindow(_hwnd);
+        float mm = w > 0 && h > 0 && dpi > 0 ? Math.Max(w, h) * 25.4f / dpi : 0f;
+        if (log) Log(mm > 0 ? $"Touch down: contact {w}x{h} px, {mm:0.0} mm" : $"Touch down: contact size not reported ({w}x{h})");
         return mm;
+    }
+
+    /// <summary>The first touches are written to the log, so the palm and stylus thresholds can be tuned on a real board.</summary>
+    private void Log(string line)
+    {
+        if (_loggedContacts >= LoggedContacts) return;
+        _loggedContacts++;
+        Console.WriteLine(line);
     }
 
     private void Track()
@@ -196,7 +211,7 @@ public sealed partial class TouchGestures : IDisposable
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct PointerTouchInfo
+    private struct PointerInfo
     {
         public uint PointerType, PointerId, FrameId, PointerFlags;
         public nint SourceDevice, HwndTarget;
@@ -206,8 +221,20 @@ public sealed partial class TouchGestures : IDisposable
         public uint KeyStates;
         public ulong PerformanceCount;
         public int ButtonChangeType;
-        // POINTER_INFO ends padded to 8 bytes.
-        private int _padding;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PointerPenInfo
+    {
+        public PointerInfo Pointer;
+        public uint PenFlags, PenMask, Pressure, Rotation;
+        public int TiltX, TiltY;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PointerTouchInfo
+    {
+        public PointerInfo Pointer;
         public uint TouchFlags, TouchMask;
         public int ContactLeft, ContactTop, ContactRight, ContactBottom;
         public int RawLeft, RawTop, RawRight, RawBottom;
@@ -237,6 +264,10 @@ public sealed partial class TouchGestures : IDisposable
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetPointerTouchInfo(uint pointerId, out PointerTouchInfo info);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetPointerPenInfo(uint pointerId, out PointerPenInfo info);
 
     [LibraryImport("user32.dll")]
     private static partial uint GetDpiForWindow(nint hwnd);

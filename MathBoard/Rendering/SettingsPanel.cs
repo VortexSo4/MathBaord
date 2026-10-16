@@ -244,6 +244,8 @@ public class SettingsPanel : IDisposable
             () => Settings.HoldTolerance, v => Settings.HoldTolerance.Value = Math.Clamp(v, 2f, 60f), "0"));
         Add(Numeric("settings_palm_erase", "Palm erases from, mm (0 = off)",
             () => Settings.PalmEraseMillimetres, v => Settings.PalmEraseMillimetres.Value = Math.Max(0f, v), "0"));
+        Add(Numeric("settings_stylus_erase", "Thick stylus end erases from, mm (0 = off)",
+            () => Settings.StylusEraseMillimetres, v => Settings.StylusEraseMillimetres.Value = Math.Max(0f, v), "0.0"));
         Add(Numeric("settings_selection_tap_size", "Selection box smaller than this is a tap, px",
             () => Settings.SelectionTapSize, v => Settings.SelectionTapSize.Value = Math.Clamp(v, 0f, 200f), "0"));
         Add(Numeric("settings_selection_radius", "Tap selects the nearest within, px",
