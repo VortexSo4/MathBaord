@@ -1,25 +1,30 @@
 using System.Numerics;
 using MathBoard.Collab;
 using MathBoard.Core;
+using QRCoder;
 
 namespace MathBoard.Rendering;
 
 /// <summary>
 /// The two-code exchange for working together. The host makes an invite code, sends it through a chat and enters the
 /// answer code that comes back; the one joining enters the invite and sends back the answer it gets. Codes can be
-/// copied and pasted with buttons, as a board often has no keyboard.
+/// copied and pasted with buttons, as a board often has no keyboard, and are shown as a QR code too, for people in the
+/// same room: any phone camera turns it back into the text.
 /// </summary>
 public sealed class CollabDialog(StrokeRenderer renderer, CollabSession session, Func<string?> readClipboard, Action<string> writeClipboard) : IPopup
 {
     private enum Page { Start, Invite, Join, Answer }
 
-    private const float Padding = 20f;
-    private static readonly Vector2 Size = new(560f, 390f);
+    private const float Padding = 20f, Column = 560f, QrSide = 230f;
     private static readonly Vector2 ButtonSize = new(150f, 38f);
+    // Dark modules on a light card whatever the theme: not every phone camera reads a light code on a dark ground.
+    private static readonly Vector4 QrLight = Theme.Rgb(0xF4, 0xF5, 0xF8), QrDark = Theme.Rgb(0x1C, 0x1E, 0x26);
 
     private readonly TextBoxState _field = new() { Accepts = c => char.IsAsciiLetterOrDigit(c) || c is '-' or ' ' };
     private Page _page;
     private string? _code;
+    private QRCodeData? _qr;
+    private string? _qrFor;
     private string? _error;
     private bool _busy;
     private Vector2 _mouse;
@@ -27,6 +32,8 @@ public sealed class CollabDialog(StrokeRenderer renderer, CollabSession session,
     public bool IsOpen { get; private set; }
     public TextBoxState? ActiveTextBox => IsOpen && _page is Page.Invite or Page.Join ? _field : null;
 
+    // A page that shows a code has the QR code to the right of it.
+    private Vector2 Size => _page is Page.Invite or Page.Answer ? new Vector2(Column + QrSide + Padding, 390f) : new Vector2(Column, 390f);
     private Vector2 Pos => (renderer.ScreenSize - Size) * 0.5f;
 
     public void Open()
@@ -112,7 +119,7 @@ public sealed class CollabDialog(StrokeRenderer renderer, CollabSession session,
     // ------------------------------------------------------------- layout
 
     private Vector2 Row(int i) => Pos + new Vector2(Padding, 68f + i * 62f);
-    private Vector2 FieldSize => new(Size.X - Padding * 3 - ButtonSize.X, 40f);
+    private Vector2 FieldSize => new(Column - Padding * 3 - ButtonSize.X, 40f);
     private Vector2 SideButton(int row) => Row(row) + new Vector2(FieldSize.X + Padding, 1f);
     private Vector2 BottomButton(int fromRight) => Pos + Size - new Vector2(Padding + ButtonSize.X * (fromRight + 1) + 10f * fromRight, Padding + ButtonSize.Y);
 
@@ -216,7 +223,7 @@ public sealed class CollabDialog(StrokeRenderer renderer, CollabSession session,
         ui.Rect(Vector2.Zero, screenSize, Theme.Overlay);
         ui.Rect(p, Size, Theme.PopupBg, Theme.PopupRadius);
         ui.Border(p, Size, Theme.Border, 1f, Theme.PopupRadius);
-        var line = new Vector2(Size.X - Padding * 2, 26f);
+        var line = new Vector2(Column - Padding * 2, 26f);
         ui.TextInRect(L("collab_title", "Working together"), p + new Vector2(Padding, 16f), line, Theme.Text, Theme.Title);
 
         switch (_page)
@@ -227,6 +234,7 @@ public sealed class CollabDialog(StrokeRenderer renderer, CollabSession session,
             case Page.Invite:
                 ui.TextInRect(L("collab_send_invite", "1. Send this code to the one joining:"), Row(0) - new Vector2(0, 24f), line, Theme.TextSecondary, Theme.Small);
                 CodeBox(ui, 0);
+                QrCode(ui);
                 ui.TextInRect(L("collab_enter_answer", "2. Paste the code they send back:"), Row(2) - new Vector2(0, 24f), line, Theme.TextSecondary, Theme.Small);
                 ui.TextField(_field, Row(2), FieldSize, true, Theme.Body, Theme.Text);
                 break;
@@ -237,6 +245,7 @@ public sealed class CollabDialog(StrokeRenderer renderer, CollabSession session,
             case Page.Answer:
                 ui.TextInRect(L("collab_send_answer", "Send this code back to the host:"), Row(0) - new Vector2(0, 24f), line, Theme.TextSecondary, Theme.Small);
                 CodeBox(ui, 0);
+                QrCode(ui);
                 break;
         }
 
@@ -250,9 +259,77 @@ public sealed class CollabDialog(StrokeRenderer renderer, CollabSession session,
     /// <summary>A code to send, across the whole popup: about 45 characters.</summary>
     private void CodeBox(UiBatch ui, int row)
     {
-        var size = new Vector2(Size.X - Padding * 2, 40f);
+        var size = new Vector2(Column - Padding * 2, 40f);
         ui.Rect(Row(row), size, Theme.Field, 6f);
         ui.Border(Row(row), size, Theme.Border, 1f, 6f);
         ui.TextInRect(_code ?? "...", Row(row) + new Vector2(10f, 0), size - new Vector2(20f, 0), Theme.Text, Theme.Body);
+    }
+
+    /// <summary>
+    /// The code as a QR code, right of it: the same text, which QR stores compactly (upper-case letters, digits and
+    /// dashes). Drawn "liquid": modules sit on whole screen pixels, so neighbours join without seams and straight edges
+    /// stay sharp; a corner sticking out is rounded (a lone module is a dot), and a corner where three dark modules meet
+    /// around a light one gets a rounded fill. The three corner squares are rounded frames.
+    /// </summary>
+    private void QrCode(UiBatch ui)
+    {
+        var pos = new Vector2(Pos.X + Column, Row(0).Y - 24f);
+        ui.Rect(pos, new Vector2(QrSide), QrLight, 14f);
+        if (_code == null) return;
+        if (_qrFor != _code)
+        {
+            using var generator = new QRCodeGenerator();
+            _qr = generator.CreateQrCode(_code, QRCodeGenerator.ECCLevel.Q);
+            _qrFor = _code;
+        }
+
+        var matrix = _qr!.ModuleMatrix;
+        int n = matrix.Count, quiet = (n - (17 + 4 * _qr.Version)) / 2, side = n - quiet * 2;
+        // An even number of screen pixels per module, so its quarters end on pixels too.
+        float scale = renderer.UiScale;
+        float m = MathF.Floor(QrSide * scale / n / 2f) * 2f / scale, h = m / 2f;
+        var origin = (pos + new Vector2((QrSide - m * n) * 0.5f)) * scale;
+        origin = new Vector2(MathF.Round(origin.X), MathF.Round(origin.Y)) / scale;
+        (int X, int Y)[] finders = [(quiet, quiet), (quiet + side - 7, quiet), (quiet, quiet + side - 7)];
+        bool InFinder(int x, int y) => finders.Any(f => x >= f.X && x < f.X + 7 && y >= f.Y && y < f.Y + 7);
+        bool Dark(int x, int y) => x >= 0 && y >= 0 && x < n && y < n && matrix[y][x] && !InFinder(x, y);
+
+        for (int y = 0; y < n; y++)
+        for (int x = 0; x < n; x++)
+        {
+            var cell = origin + new Vector2(x, y) * m;
+            bool dark = Dark(x, y);
+            foreach (var (dx, dy) in new[] { (-1, -1), (1, -1), (-1, 1), (1, 1) })
+            {
+                var quarter = cell + new Vector2(dx > 0 ? h : 0, dy > 0 ? h : 0);
+                bool side1 = Dark(x + dx, y), side2 = Dark(x, y + dy);
+                if (dark)
+                {
+                    // A corner with no dark neighbour on either side is rounded off; otherwise the quarter stays square.
+                    if (side1 || side2) ui.Rect(quarter, new Vector2(h), QrDark);
+                    else
+                    {
+                        ui.PushClip(quarter, new Vector2(h));
+                        ui.Rect(cell, new Vector2(m), QrDark, h);
+                        ui.PopClip();
+                    }
+                }
+                else if (side1 && side2 && Dark(x + dx, y + dy))
+                {
+                    // Three dark modules around this light corner: a rounded fill between them.
+                    ui.PushClip(quarter, new Vector2(h));
+                    ui.Rect(quarter, new Vector2(h), QrDark);
+                    ui.Circle(cell + new Vector2(h), h, QrLight);
+                    ui.PopClip();
+                }
+            }
+        }
+
+        foreach (var (fx, fy) in finders)
+        {
+            var corner = origin + new Vector2(fx, fy) * m;
+            ui.Border(corner, new Vector2(7 * m), QrDark, m, m * 2f);
+            ui.Rect(corner + new Vector2(2 * m), new Vector2(3 * m), QrDark, m);
+        }
     }
 }

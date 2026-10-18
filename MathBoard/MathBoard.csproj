@@ -9,10 +9,11 @@
         <Nullable>enable</Nullable>
         <ApplicationIcon>resources\icon.ico</ApplicationIcon>
         <!-- Shown in the log and compared with GitHub releases by the updater. -->
-        <Version>1.2.0</Version>
+        <Version>1.2.1</Version>
     </PropertyGroup>
 
     <ItemGroup>
+      <PackageReference Include="QRCoder" Version="1.8.1" />
       <PackageReference Include="Silk.NET.Input" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Maths" Version="2.23.0" />
       <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
@@ -21,8 +22,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <None Include="resources\**\**\*.*"
-              CopyToOutputDirectory="PreserveNewest" />
+        <None Include="resources\**\**\*.*" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
     <!--
@@ -39,8 +39,7 @@
     </Target>
 
     <Target Name="CopyBackendsAfterPublish" AfterTargets="Publish">
-        <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="PublishBackends"
-                 Properties="Configuration=$(Configuration);BackendsAppDir=$(PublishDir)" />
+        <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="PublishBackends" Properties="Configuration=$(Configuration);BackendsAppDir=$(PublishDir)" />
     </Target>
 
     <!-- Files the app already ships are shared with plugins at run time, so the plugins' copies are removed. -->
@@ -48,8 +47,7 @@
         <PropertyGroup>
             <BackendsAppDir Condition="'$(BackendsAppDir)' == ''">$([System.IO.Path]::Combine($(MSBuildProjectDirectory), $(OutDir)))</BackendsAppDir>
         </PropertyGroup>
-        <MSBuild Projects="%(BackendProject.Identity)" Targets="Publish" RemoveProperties="RuntimeIdentifier;SelfContained"
-                 Properties="Configuration=$(Configuration);PublishDir=$(BackendsAppDir)backends\%(BackendProject.Filename)\" />
+        <MSBuild Projects="%(BackendProject.Identity)" Targets="Publish" RemoveProperties="RuntimeIdentifier;SelfContained" Properties="Configuration=$(Configuration);PublishDir=$(BackendsAppDir)backends\%(BackendProject.Filename)\" />
         <ItemGroup>
             <BackendFile Include="$(BackendsAppDir)backends\*\*.dll" />
             <SharedBackendFile Include="@(BackendFile)" Condition="Exists('$(BackendsAppDir)%(Filename)%(Extension)')" />
