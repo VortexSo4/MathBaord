@@ -333,6 +333,9 @@ public sealed partial class InputManager : IDisposable
             case UiAction.FormatPainter:
                 _strokeRenderer.ToggleFormatPainter();
                 break;
+            case UiAction.TurnSolids:
+                _strokeRenderer.SetTool(_strokeRenderer.Tool == Tool.Turn ? Tool.Select : Tool.Turn);
+                break;
             case UiAction.Thickness:
                 _thicknessPicker.Open(MousePosition);
                 break;
@@ -475,6 +478,7 @@ public sealed partial class InputManager : IDisposable
         UiAction.Shapes => _strokeRenderer.Tool == Tool.Shape,
         UiAction.Fill => _strokeRenderer.Tool == Tool.Fill,
         UiAction.FormatPainter => _strokeRenderer.Tool == Tool.FormatPainter,
+        UiAction.TurnSolids => _strokeRenderer.Tool == Tool.Turn,
         UiAction.Grid => Settings.GridMode.Value != "None",
         _ => false
     };
@@ -614,6 +618,9 @@ public sealed partial class InputManager : IDisposable
             if (_strokeRenderer.HitsSelectionControls(pos)) _editingSelection = true;
             else _strokeRenderer.ClearSelection();
         }
+
+        // Turning: a press on a solid turns it; the solid is selected only while it turns.
+        if (tool == Tool.Turn && _strokeRenderer.SelectSolidToTurn(pos)) _editingSelection = true;
 
         if (tool == Tool.Select || _editingSelection)
         {
@@ -810,6 +817,7 @@ public sealed partial class InputManager : IDisposable
         {
             _strokeRenderer.HandleSelectionUp(pos);
             _editingSelection = false;
+            if (_strokeRenderer.Tool == Tool.Turn) _strokeRenderer.ClearSelection();
             return;
         }
 

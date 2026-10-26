@@ -579,6 +579,9 @@ public static partial class ObjectGeometry
         return FaceAt(o, view, mesh, board);
     }
 
+    /// <summary>Whether the board point is on a solid in space as it is seen (on any of its faces, not only its lines).</summary>
+    public static bool OnBody(BoardObject o, Vector2 board) => o.Solid != null && FaceAt(o, ViewOf(o), BodyOf(o), board) != null;
+
     /// <summary>The point of the solid's surface turned to the viewer under the board point; null if there is none.</summary>
     public static Vector3? FaceAt(BoardObject o, SolidView view, SolidMesh? mesh, Vector2 board)
     {

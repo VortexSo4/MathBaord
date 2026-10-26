@@ -19,7 +19,7 @@ public sealed partial class StrokeRenderer
         SolidGesture
     }
 
-    private enum SelectionAction { Edit, Dash, Turn, Section, Cut, Flip, Lines, Clear, Duplicate, Delete }
+    private enum SelectionAction { Edit, Dash, Section, Cut, Flip, Lines, Clear, Duplicate, Delete }
 
     private const float ToolbarButtonSize = 36f;
     private const float PointHandleRadius = 16f;
@@ -256,7 +256,7 @@ public sealed partial class StrokeRenderer
         if (SelectedObjects.Any(o => ObjectGeometry.CanDash(o.Kind))) actions.Add(SelectionAction.Dash);
         if (SelectedSolid is { } solid)
         {
-            actions.AddRange([SelectionAction.Turn, SelectionAction.Section]);
+            actions.Add(SelectionAction.Section);
             if (solid.Solid?.Section != null) actions.Add(SelectionAction.Cut);
             if (solid.Solid?.Section?.Cut is 1 or -1) actions.Add(SelectionAction.Flip);
             actions.Add(SelectionAction.Lines);
@@ -272,7 +272,6 @@ public sealed partial class StrokeRenderer
     {
         SelectionAction.Edit => Localization.Get("selection_edit", "Edit"),
         SelectionAction.Dash => Localization.Get("selection_dash", "Dashed"),
-        SelectionAction.Turn => Localization.Get("selection_turn", "Turn"),
         SelectionAction.Section => Localization.Get("selection_section", "Section"),
         SelectionAction.Cut => Localization.Get("selection_cut", "Cut off"),
         SelectionAction.Flip => Localization.Get("selection_flip", "Other part"),
@@ -326,7 +325,6 @@ public sealed partial class StrokeRenderer
                 {
                     case SelectionAction.Edit: EditPlotRequested?.Invoke(SingleObject!); break;
                     case SelectionAction.Dash: ToggleDashedSelection(); break;
-                    case SelectionAction.Turn: ToggleSolidMode(SolidMode.Turn); break;
                     case SelectionAction.Section: ToggleSolidMode(SolidMode.Section); break;
                     case SelectionAction.Cut: ToggleCut(); break;
                     case SelectionAction.Flip: ChangeSolid(s => s with { Section = s.Section! with { Cut = -s.Section.Cut } }); break;
@@ -339,13 +337,21 @@ public sealed partial class StrokeRenderer
                 return;
             }
 
+            int point = HitTestControlPoint(screenPos);
+            // The middle of a solid in space turns it, in any mode; the solid is moved by any of its faces.
+            if (point == 0 && SingleObject is { Solid: not null })
+            {
+                _sectionHandle = -1;
+                BeginTurn(screenPos);
+                return;
+            }
+
             if (OnSolid(screenPos))
             {
                 BeginSolidGesture(screenPos);
                 return;
             }
 
-            int point = HitTestControlPoint(screenPos);
             if (point >= 0)
             {
                 // The object is edited as the live object, so only it is redrawn while dragging.
@@ -636,7 +642,7 @@ public sealed partial class StrokeRenderer
     }
 
     /// <summary>Whether a press at the point takes hold of the selection: on its lines (within the tap radius) or on a selected shape's fill.</summary>
-    private bool GrabsSelection(Vector2 world) => PickAt(world, withBackdrop: true) switch
+    private bool GrabsSelection(Vector2 world) => SelectedObjects.Any(o => ObjectGeometry.OnBody(o, world)) || PickAt(world, withBackdrop: true) switch
     {
         Stroke s => SelectedStrokes.Contains(s),
         BoardObject { Kind: ShapeKind.Fill } fill => (OwnerOf(fill) ?? fill) is var owner && SelectedObjects.Any(o => ReferenceEquals(o, owner)),
@@ -716,7 +722,8 @@ public sealed partial class StrokeRenderer
         if (!HasSelection) return false;
         if (_clearMenu != null) return true;
         if (ToolbarRects(ToolbarActions()).Any(r => UiBatch.Contains(r.Pos, r.Size, screenPos))) return true;
-        return HitTestControlPoint(screenPos) >= 0 || HitTestHandles(screenPos) >= 0 || DimensionAt(screenPos) != null || OnSolid(screenPos);
+        return HitTestControlPoint(screenPos) >= 0 || HitTestHandles(screenPos) >= 0 || DimensionAt(screenPos) != null || OnSolid(screenPos) ||
+               SelectedObjects.Any(o => ObjectGeometry.OnBody(o, ScreenToWorld(screenPos)));
     }
 
     private (Vector2 Min, Vector2 Max) HandleFrame()
@@ -811,8 +818,11 @@ public sealed partial class StrokeRenderer
                 var s = WorldToScreen(Vector2.Transform(points[i], _movingTransform));
                 // Squares are points of the shape, circles move or size a whole side (of a solid in space: all but its middle).
                 float corner = single.Solid != null ? (i == 0 ? 4f : 8f) : i < single.Points.Length ? 4f : 8f;
-                ui.Rect(s - new Vector2(8f), new Vector2(16f), Theme.Accent, corner);
-                ui.Border(s - new Vector2(8f), new Vector2(16f), Theme.Text, 2f, corner);
+                // The middle of a solid in space turns it: a bigger handle with the turning arrow.
+                float half = single.Solid != null && i == 0 ? 12f : 8f;
+                ui.Rect(s - new Vector2(half), new Vector2(half * 2f), Theme.Accent, corner);
+                ui.Border(s - new Vector2(half), new Vector2(half * 2f), Theme.Text, 2f, corner);
+                if (half > 8f) ui.Icon(Icons.Rotate, s, 13f, Theme.OnAccent);
             }
         }
 
@@ -828,7 +838,6 @@ public sealed partial class StrokeRenderer
             bool danger = actions[i] == SelectionAction.Delete;
             bool active = actions[i] switch
             {
-                SelectionAction.Turn => _solidMode == SolidMode.Turn,
                 SelectionAction.Section => _solidMode == SolidMode.Section,
                 SelectionAction.Lines => _solidMode == SolidMode.Lines,
                 SelectionAction.Cut => SelectedSolid?.Solid?.Section?.Cut is 1 or -1,
@@ -842,9 +851,6 @@ public sealed partial class StrokeRenderer
             {
                 case SelectionAction.Dash:
                     ShapePicker.DrawDashes(ui, center, 18f, iconColor);
-                    continue;
-                case SelectionAction.Turn:
-                    ui.Icon(Icons.Rotate, center, 16f, iconColor);
                     continue;
                 case SelectionAction.Cut:
                     ui.Icon(Icons.Cut, center, 16f, iconColor);

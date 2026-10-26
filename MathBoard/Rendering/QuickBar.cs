@@ -498,6 +498,7 @@ public class QuickBar
         UiAction.Brush => Icons.Pen,
         UiAction.Eraser => Icons.Eraser,
         UiAction.Select => Icons.Select,
+        UiAction.TurnSolids => Icons.Rotate,
         UiAction.ZoomIn => Icons.ZoomIn,
         UiAction.ZoomOut => Icons.ZoomOut,
         UiAction.FitView => Icons.FitView,

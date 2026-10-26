@@ -15,7 +15,9 @@ public enum Tool
     Shape,
     Fill,
     // A tap takes the color and width of the ink or shape under it for drawing.
-    FormatPainter
+    FormatPainter,
+    // A drag over a solid turns it in space.
+    Turn
 }
 
 /// <summary>

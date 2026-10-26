@@ -29,6 +29,8 @@ public enum UiAction
     Export,
     Fill,
     FormatPainter,
+    // Turning solids in space by dragging over them.
+    TurnSolids,
     // Shows the zoom in percent; pressing it sets 100 %.
     ZoomLevel,
     Minimap,

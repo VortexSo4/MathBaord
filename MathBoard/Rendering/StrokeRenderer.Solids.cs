@@ -45,6 +45,9 @@ public sealed partial class StrokeRenderer
         if (_solidMode == mode)
         {
             ResetSolidMode();
+            // The turning tool goes back to turning.
+            if (Tool == Tool.Turn) _solidMode = SolidMode.Turn;
+            _uiDirty = true;
             return;
         }
 
@@ -128,9 +131,32 @@ public sealed partial class StrokeRenderer
         return UiBatch.Contains(WorldToScreen(min) - margin, (max - min) * _camera.Zoom + margin * 2f, screenPos);
     }
 
+    /// <summary>
+    /// For the turning tool: selects the topmost solid under the press, so the press goes on to turn it (one in the older
+    /// projection becomes a body in space first). False if there is none.
+    /// </summary>
+    public bool SelectSolidToTurn(Vector2 screenPos)
+    {
+        var world = ScreenToWorld(screenPos);
+        var o = _document.Objects.LastOrDefault(x => ObjectGeometry.IsSolid(x.Kind) &&
+            (x.Solid != null ? ObjectGeometry.OnBody(x, world) : ObjectGeometry.Distance(x, world) <= Settings.SelectionRadius / _camera.Zoom));
+        if (o == null) return false;
+        ClearSelection();
+        if (o.Solid == null)
+        {
+            var body = ObjectGeometry.AsSolid3D(o);
+            ReplaceObject(o, body);
+            o = body;
+        }
+
+        SelectedObjects.Add(o);
+        _solidMode = SolidMode.Turn;
+        _uiDirty = true;
+        return true;
+    }
+
     private void BeginSolidGesture(Vector2 screenPos)
     {
-        var o = SelectedSolid!;
         _solidPress = screenPos;
         _solidMoved = false;
         _solidStroke = null;
@@ -141,6 +167,14 @@ public sealed partial class StrokeRenderer
             return;
         }
 
+        BeginTurn(screenPos);
+    }
+
+    /// <summary>Starts turning the selected solid (or moving its section's point) as the live object.</summary>
+    private void BeginTurn(Vector2 screenPos)
+    {
+        var o = SelectedSolid!;
+        _solidPress = screenPos;
         int index = _document.Objects.FindIndex(x => ReferenceEquals(x, o));
         if (index < 0) return;
         // Turned as the live object, so only it is drawn again while dragging.

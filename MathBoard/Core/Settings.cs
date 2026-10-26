@@ -71,7 +71,8 @@ public static class Settings
             new(UiAction.ZoomLevel, 1f, 1f, -86f, -86f),
             new(UiAction.Minimap, 1f, 1f, -86f, -34f),
             new(UiAction.ClearBoard, 1f, 0f, -138f, 34f),
-            new(UiAction.FormatPainter, 1f, 1f, -138f, -294f)
+            new(UiAction.FormatPainter, 1f, 1f, -138f, -294f),
+            new(UiAction.TurnSolids, 1f, 1f, -34f, -346f)
         ];
     }
 
