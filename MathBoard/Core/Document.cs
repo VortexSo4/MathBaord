@@ -7,7 +7,7 @@ public class Document
 {
     private const int MaxHistory = 50;
     private const int Signature = 0x4D544842; // 'MTHB'
-    private const byte Version = 2;
+    private const byte Version = 3;
 
     public List<Stroke> Strokes { get; } = [];
 
@@ -126,6 +126,8 @@ public class Document
                 writer.Write(o.Text);
                 writer.Write(o.XMin);
                 writer.Write(o.XMax);
+                writer.Write(o.Solid != null);
+                o.Solid?.Write(writer);
             }
         }
 
@@ -179,12 +181,14 @@ public class Document
                 var points = new Vector2[reader.ReadInt32()];
                 for (int j = 0; j < points.Length; j++)
                     points[j] = new Vector2(reader.ReadSingle(), reader.ReadSingle());
-                objects.Add(new BoardObject(kind, points, color, width)
+                var o = new BoardObject(kind, points, color, width)
                 {
                     Text = reader.ReadString(),
                     XMin = reader.ReadSingle(),
                     XMax = reader.ReadSingle()
-                });
+                };
+                if (version >= 3 && reader.ReadBoolean()) o = o with { Solid = Solid3D.Read(reader) };
+                objects.Add(o);
             }
         }
 

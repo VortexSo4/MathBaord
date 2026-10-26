@@ -21,6 +21,9 @@ public sealed partial class StrokeRenderer
     private int _fillPlaced = -1;
     private float _fillStartX, _fillStartSpacing;
     private bool _fillDragged;
+    // A solid whose section the fill tool is styling, and the solid as it was before.
+    private int _sectionFill = -1;
+    private BoardObject? _sectionBefore;
 
     /// <summary>
     /// What a fill is made of: the shapes it lies in (its owner, the smallest, first, then shapes that only partly overlap
@@ -53,6 +56,12 @@ public sealed partial class StrokeRenderer
     {
         var world = ScreenToWorld(screenPos);
         var objects = _document.Objects;
+        if (objects.FindLastIndex(o => ObjectGeometry.OnSection(o, world)) is var solid and >= 0)
+        {
+            BeginSectionFill(solid, screenPos);
+            return;
+        }
+
         bool InRegion(BoardObject o) => o.Kind == ShapeKind.Fill && ObjectGeometry.Distance(o, world) == 0f;
 
         // Cross-hatching from older versions is one object; as two layers, one direction can be replaced alone.
@@ -95,19 +104,64 @@ public sealed partial class StrokeRenderer
     private static string[] LayerStyles(string style) =>
         style == ObjectGeometry.FillCross ? [ObjectGeometry.FillHatch, ObjectGeometry.FillBackHatch] : [style];
 
+    /// <summary>
+    /// The fill tool on a solid's section sets how the section is filled, as for a region: a tap with the same colour and
+    /// style takes the fill away, "clear" too, and moving left or right sets the hatch spacing.
+    /// </summary>
+    private void BeginSectionFill(int index, Vector2 screenPos)
+    {
+        var o = _document.Objects[index];
+        var section = o.Solid!.Section!;
+        if (FillStyle == ObjectGeometry.FillClear && section.Style == "") return;
+        _document.SaveState();
+        (_sectionFill, _sectionBefore) = (index, o);
+        (_fillStartX, _fillStartSpacing, _fillDragged) = (screenPos.X, section.Spacing, false);
+        string style = FillStyle == ObjectGeometry.FillClear ? "" : FillStyle;
+        SetSection(section with { Style = style, Color = style == "" ? section.Color : CurrentColor });
+    }
+
+    private void SetSection(SolidSection section)
+    {
+        var o = _document.Objects[_sectionFill];
+        var changed = o with { Solid = o.Solid! with { Section = section } };
+        _document.Objects[_sectionFill] = changed;
+        int selected = SelectedObjects.FindIndex(x => ReferenceEquals(x, o));
+        if (selected >= 0) SelectedObjects[selected] = changed;
+        MarkStrokesDirty();
+    }
+
+    private float FillSpacingAt(Vector2 screenPos) =>
+        Math.Clamp(_fillStartSpacing * MathF.Exp((screenPos.X - _fillStartX) / 150f), ObjectGeometry.MinHatchSpacing, ObjectGeometry.MaxHatchSpacing);
+
     public void UpdateFill(Vector2 screenPos)
     {
-        if (_fillPlaced < 0) return;
-        float dx = screenPos.X - _fillStartX;
-        if (MathF.Abs(dx) < 6f && !_fillDragged) return;
+        if (_fillPlaced < 0 && _sectionFill < 0) return;
+        if (MathF.Abs(screenPos.X - _fillStartX) < 6f && !_fillDragged) return;
         _fillDragged = true;
-        float spacing = Math.Clamp(_fillStartSpacing * MathF.Exp(dx / 150f), ObjectGeometry.MinHatchSpacing, ObjectGeometry.MaxHatchSpacing);
-        _document.Objects[_fillPlaced] = _document.Objects[_fillPlaced] with { Width = spacing };
+        if (_sectionFill >= 0)
+        {
+            var section = _document.Objects[_sectionFill].Solid!.Section!;
+            if (section.Style != "") SetSection(section with { Spacing = FillSpacingAt(screenPos) });
+            return;
+        }
+
+        _document.Objects[_fillPlaced] = _document.Objects[_fillPlaced] with { Width = FillSpacingAt(screenPos) };
         MarkStrokesDirty();
     }
 
     public void EndFill()
     {
+        if (_sectionFill >= 0)
+        {
+            var before = _sectionBefore!.Solid!.Section!;
+            var section = _document.Objects[_sectionFill].Solid!.Section!;
+            if (!_fillDragged && section.Style != "" && section.Style == before.Style && section.Color == before.Color) SetSection(section with { Style = "" });
+            else if (section.Style != "") FillSpacing = section.Spacing;
+            _document.IsDirty = true;
+            (_sectionFill, _sectionBefore) = (-1, null);
+            return;
+        }
+
         if (_fillPlaced >= 0)
         {
             var objects = _document.Objects;
@@ -141,6 +195,14 @@ public sealed partial class StrokeRenderer
     /// <summary>Undoes a fill that is being placed, for example when the press turns into the radial menu.</summary>
     public void CancelFill()
     {
+        if (_sectionFill >= 0)
+        {
+            SetSection(_sectionBefore!.Solid!.Section!);
+            _document.DiscardLastState();
+            (_sectionFill, _sectionBefore) = (-1, null);
+            return;
+        }
+
         if (_fillPlaced >= 0 || _fillReplaced.Count > 0)
         {
             if (_fillPlaced >= 0) _document.Objects.RemoveAt(_fillPlaced);

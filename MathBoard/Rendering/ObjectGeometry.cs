@@ -26,7 +26,8 @@ public static partial class ObjectGeometry
     {
         if (IsSolid(o.Kind))
         {
-            BuildSolid(o, prims);
+            if (o.Solid != null) BuildSolid3D(o, prims);
+            else BuildSolid(o, prims);
             return;
         }
 
@@ -355,7 +356,7 @@ public static partial class ObjectGeometry
             ShapeKind.Plot or ShapeKind.Image => [..o.Points, o.Points[1] + o.Points[2] - o.Points[0]],
             ShapeKind.Circle => CircleBox(o.Points[0], Vector2.Distance(o.Points[0], o.Points[1])),
             ShapeKind.Ellipse => EllipsePoints(o.Points[0], o.Points[1] - o.Points[0], o.Points[2] - o.Points[0], 32),
-            var kind when IsSolid(kind) => SolidOutlinePoints(o),
+            var kind when IsSolid(kind) => o.Solid != null ? Solid3DOutlinePoints(o) : SolidOutlinePoints(o),
             ShapeKind.Fill => o.Points.Where(p => !float.IsNaN(p.X)).ToArray(),
             _ => o.Points
         };
@@ -451,11 +452,12 @@ public static partial class ObjectGeometry
     /// </summary>
     public static Vector2[] ControlHandles(BoardObject o) => o.Kind == ShapeKind.Rectangle
         ? [..o.Points, (o.Points[0] + o.Points[1]) * 0.5f, (o.Points[2] + o.Points[3]) * 0.5f]
-        : o.Points;
+        : o.Solid != null ? Solid3DHandles(o) : o.Points;
 
     /// <summary>Moves one control handle (see <see cref="ControlHandles"/>); circles, plots and solids keep their kind of shape.</summary>
     public static BoardObject MoveControlPoint(BoardObject o, int index, Vector2 target)
     {
+        if (o.Solid != null && index > 0) return ResizeSolid3D(o, index, target);
         var p = (Vector2[])o.Points.Clone();
         bool translateAll = index == 0 && (o.Kind is ShapeKind.Ellipse or ShapeKind.Circle or ShapeKind.Angle or ShapeKind.Plot || IsSolid(o.Kind));
         if (translateAll)
@@ -491,6 +493,7 @@ public static partial class ObjectGeometry
         var min = Vector2.Min(start, end);
         var max = Vector2.Max(start, end);
         var center = (min + max) * 0.5f;
+        if (IsSolid(kind)) return Solid3DFromDrag(kind, min, max, color, width);
         Vector2[] points = kind switch
         {
             ShapeKind.Rectangle => [new(min.X, min.Y), new(max.X, min.Y), new(max.X, max.Y), new(min.X, max.Y)],
@@ -499,7 +502,6 @@ public static partial class ObjectGeometry
             ShapeKind.Point => [end],
             ShapeKind.Angle => [start, end, start + Vector2.Transform(end - start, Matrix3x2.CreateRotation(-MathF.PI / 3f))],
             ShapeKind.Plot => [new(min.X, max.Y), new(max.X, max.Y), new(min.X, min.Y)],
-            _ when IsSolid(kind) => SolidFromDrag(kind, min, max),
             _ => [start, end]
         };
 

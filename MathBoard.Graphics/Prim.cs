@@ -21,9 +21,9 @@ public enum PrimType
 /// their round ends, every Extra.y, the pattern shifted by Extra.z at p0, so the dashes of a polyline run on across it;
 /// Glyph: A = min.xy max.xy, Extra = uv rect;
 /// Arc: A = center.xy, r0, r1, B = start angle, end angle;
-/// ColorRing: A = center.xy, r0, r1, B = mode (0 hue, 1 saturation, 2 value), hue — value grows clockwise from the top;
-/// ColorBar: A = min.xy max.xy, B = mode, hue, corner radius — value grows from bottom to top;
-/// Image: A = origin.xy U.xy, Extra = V.xy — samples the texture bound for it, see <see cref="ImageDraw"/>.
+/// ColorRing: A = center.xy, r0, r1, B = mode (0 hue, 1 saturation, 2 value), hue - value grows clockwise from the top;
+/// ColorBar: A = min.xy max.xy, B = mode, hue, corner radius - value grows from bottom to top;
+/// Image: A = origin.xy U.xy, Extra = V.xy - samples the texture bound for it, see <see cref="ImageDraw"/>.
 /// B.w always holds the type. Clip is a rect in the same space as the primitive (min.xy max.xy).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]

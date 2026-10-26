@@ -52,6 +52,13 @@ public sealed record BoardObject(ShapeKind Kind, Vector2[] Points, Vector4 Color
 
     public static long NewId() => Random.Shared.NextInt64(1, long.MaxValue);
 
+    /// <summary>
+    /// A solid that is a body in space (it can be turned, cut and drawn on); its points are then its middle on the board
+    /// and the end of an arrow 100 units long along the solid's own x as drawn, which set its place, scale and tilt.
+    /// Null for solids in the older textbook projection and for everything else.
+    /// </summary>
+    public Solid3D? Solid { get; init; }
+
     public const string DashedStyle = "dashed";
     public bool Dashed => Text == DashedStyle;
 

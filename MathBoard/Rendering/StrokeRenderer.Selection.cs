@@ -13,10 +13,13 @@ public sealed partial class StrokeRenderer
         Moving,
         Scaling,
         Rotating,
-        DraggingPoint
+        DraggingPoint,
+        // A solid being turned or its section moved, and a tap or drag that builds on a solid (see StrokeRenderer.Solids).
+        ChangingSolid,
+        SolidGesture
     }
 
-    private enum SelectionAction { Edit, Dash, Duplicate, Delete }
+    private enum SelectionAction { Edit, Dash, Turn, Section, Cut, Flip, Lines, Clear, Duplicate, Delete }
 
     private const float ToolbarButtonSize = 36f;
     private const float PointHandleRadius = 16f;
@@ -60,6 +63,8 @@ public sealed partial class StrokeRenderer
     public void ClearSelection()
     {
         FinishEdit();
+        ResetSolidMode();
+        _clearMenu = null;
         SelectedStrokes.Clear();
         SelectedObjects.Clear();
         CurrentSelectionState = SelectionState.None;
@@ -221,24 +226,71 @@ public sealed partial class StrokeRenderer
         }
     }
 
+    /// <summary>A plane seen at an angle, hatched: a section.</summary>
+    private static void DrawSectionIcon(UiBatch ui, Vector2 c, Vector4 color)
+    {
+        Vector2[] corners = [c + new Vector2(-9f, 6f), c + new Vector2(5f, 6f), c + new Vector2(9f, -6f), c + new Vector2(-5f, -6f)];
+        for (int i = 0; i < 4; i++) ui.Line(corners[i], corners[(i + 1) % 4], color, 1.6f);
+        ui.Line(c + new Vector2(-4f, 6f), c + new Vector2(1f, -6f), color, 1.2f);
+        ui.Line(c + new Vector2(1f, 6f), c + new Vector2(6f, -6f), color, 1.2f);
+    }
+
+    /// <summary>A cube with a diagonal drawn in it: lines on and in a solid.</summary>
+    private static void DrawCubeIcon(UiBatch ui, Vector2 c, Vector4 color)
+    {
+        var front = c + new Vector2(-9f, -4f);
+        var back = c + new Vector2(-4f, -9f);
+        ui.Border(front, new Vector2(12f), color, 1.5f, 1f);
+        ui.Line(back, back + new Vector2(13f, 0), color, 1.2f);
+        ui.Line(back + new Vector2(13f, 0), back + new Vector2(13f, 13f), color, 1.2f);
+        ui.Line(front, back, color, 1.2f);
+        ui.Line(front + new Vector2(12f, 0), back + new Vector2(13f, 0), color, 1.2f);
+        ui.Line(front + new Vector2(12f, 12f), back + new Vector2(13f, 13f), color, 1.2f);
+        ui.Line(front + new Vector2(0, 12f), back + new Vector2(13f, 0), Theme.Accent, 1.6f);
+    }
+
     private List<SelectionAction> ToolbarActions()
     {
         var actions = new List<SelectionAction>();
         if (SingleObject?.Kind == ShapeKind.Plot) actions.Add(SelectionAction.Edit);
         if (SelectedObjects.Any(o => ObjectGeometry.CanDash(o.Kind))) actions.Add(SelectionAction.Dash);
+        if (SelectedSolid is { } solid)
+        {
+            actions.AddRange([SelectionAction.Turn, SelectionAction.Section]);
+            if (solid.Solid?.Section != null) actions.Add(SelectionAction.Cut);
+            if (solid.Solid?.Section?.Cut is 1 or -1) actions.Add(SelectionAction.Flip);
+            actions.Add(SelectionAction.Lines);
+            if (solid.Solid?.Section != null || solid.Solid?.Marks.Length > 0) actions.Add(SelectionAction.Clear);
+        }
+
         actions.Add(SelectionAction.Duplicate);
         actions.Add(SelectionAction.Delete);
         return actions;
     }
 
-    /// <summary>Buttons in a row below the selection's bottom-right handle (the rotate handle is above).</summary>
-    private Vector2 ToolbarButtonPos(int index, int count)
+    private static string ActionLabel(SelectionAction action) => action switch
+    {
+        SelectionAction.Edit => Localization.Get("selection_edit", "Edit"),
+        SelectionAction.Dash => Localization.Get("selection_dash", "Dashed"),
+        SelectionAction.Turn => Localization.Get("selection_turn", "Turn"),
+        SelectionAction.Section => Localization.Get("selection_section", "Section"),
+        SelectionAction.Cut => Localization.Get("selection_cut", "Cut off"),
+        SelectionAction.Flip => Localization.Get("selection_flip", "Other part"),
+        SelectionAction.Lines => Localization.Get("selection_lines", "Lines"),
+        SelectionAction.Clear => Localization.Get("selection_clear", "Erase from the solid"),
+        SelectionAction.Duplicate => Localization.Get("selection_duplicate", "Copy"),
+        _ => Localization.Get("selection_delete", "Delete")
+    };
+
+    /// <summary>Buttons in a row below the selection's bottom-right handle (the rotate handle is above); their names show on hover.</summary>
+    private List<(Vector2 Pos, Vector2 Size)> ToolbarRects(List<SelectionAction> actions)
     {
         var (_, maxS) = HandleFrame();
-        float width = count * ToolbarButtonSize + (count - 1) * 6f;
+        var size = new Vector2(ToolbarButtonSize);
+        float width = actions.Count * (ToolbarButtonSize + 6f) - 6f;
         var start = new Vector2(maxS.X - width + ToolbarButtonSize * 0.5f, maxS.Y + 14f);
         start = Vector2.Clamp(start, new Vector2(4f), Vector2.Max(ScreenSize - new Vector2(width + 4f, ToolbarButtonSize + 4f), new Vector2(4f)));
-        return start + new Vector2(index * (ToolbarButtonSize + 6f), 0);
+        return actions.Select((_, i) => (start + new Vector2(i * (ToolbarButtonSize + 6f), 0), size)).ToList();
     }
 
     private int HitTestControlPoint(Vector2 screenPos)
@@ -255,18 +307,41 @@ public sealed partial class StrokeRenderer
     {
         if (HasSelection)
         {
+            // A press anywhere closes the menu of what to erase; on one of its choices it erases that.
+            if (_clearMenu != null)
+            {
+                int choice = ClearMenuRects().FindIndex(r => UiBatch.Contains(r.Pos, r.Size, screenPos));
+                _clearMenu = null;
+                _uiDirty = true;
+                if (choice >= 0) ChangeSolid(ClearChoices()[choice].Change);
+                return;
+            }
+
             var actions = ToolbarActions();
+            var rects = ToolbarRects(actions);
             for (int i = 0; i < actions.Count; i++)
             {
-                if (!UiBatch.Contains(ToolbarButtonPos(i, actions.Count), new Vector2(ToolbarButtonSize), screenPos)) continue;
+                if (!UiBatch.Contains(rects[i].Pos, rects[i].Size, screenPos)) continue;
                 switch (actions[i])
                 {
                     case SelectionAction.Edit: EditPlotRequested?.Invoke(SingleObject!); break;
                     case SelectionAction.Dash: ToggleDashedSelection(); break;
+                    case SelectionAction.Turn: ToggleSolidMode(SolidMode.Turn); break;
+                    case SelectionAction.Section: ToggleSolidMode(SolidMode.Section); break;
+                    case SelectionAction.Cut: ToggleCut(); break;
+                    case SelectionAction.Flip: ChangeSolid(s => s with { Section = s.Section! with { Cut = -s.Section.Cut } }); break;
+                    case SelectionAction.Lines: ToggleSolidMode(SolidMode.Lines); break;
+                    case SelectionAction.Clear: EraseOnSolid(screenPos); break;
                     case SelectionAction.Duplicate: DuplicateSelection(); break;
                     default: DeleteSelection(); break;
                 }
 
+                return;
+            }
+
+            if (OnSolid(screenPos))
+            {
+                BeginSolidGesture(screenPos);
                 return;
             }
 
@@ -336,6 +411,9 @@ public sealed partial class StrokeRenderer
                 SelectedObjects[0] = _liveObject!;
                 _edited[_dragged!] = _liveObject!;
                 if (_fillTies.Count > 0) _refillPending = true;
+                return;
+            case SelectionState.ChangingSolid or SelectionState.SolidGesture:
+                MoveSolidGesture(screenPos);
                 return;
             case SelectionState.None or SelectionState.DraggingPoint:
                 return;
@@ -511,7 +589,7 @@ public sealed partial class StrokeRenderer
     {
         var state = CurrentSelectionState;
         if (state is SelectionState.None or SelectionState.DrawingBox) return;
-        if (state == SelectionState.DraggingPoint) CommitLiveObject();
+        if (state is SelectionState.DraggingPoint or SelectionState.ChangingSolid) CommitLiveObject();
         if (state == SelectionState.Moving) PlaceMoved();
         if (state == SelectionState.Scaling && _carriedTies.Count > 0) Refill(_carriedTies, Edited, final: true);
         if (_fillTies.Count > 0) Refill(_fillTies, Edited, final: true);
@@ -535,6 +613,7 @@ public sealed partial class StrokeRenderer
             else SelectInBox(ScreenToWorld(minS), ScreenToWorld(maxS));
         }
 
+        if (CurrentSelectionState == SelectionState.SolidGesture) EndSolidGesture(screenPos);
         FinishEdit();
         CurrentSelectionState = SelectionState.None;
         _uiDirty = true;
@@ -635,10 +714,9 @@ public sealed partial class StrokeRenderer
     public bool HitsSelectionControls(Vector2 screenPos)
     {
         if (!HasSelection) return false;
-        var actions = ToolbarActions();
-        for (int i = 0; i < actions.Count; i++)
-            if (UiBatch.Contains(ToolbarButtonPos(i, actions.Count), new Vector2(ToolbarButtonSize), screenPos)) return true;
-        return HitTestControlPoint(screenPos) >= 0 || HitTestHandles(screenPos) >= 0 || DimensionAt(screenPos) != null;
+        if (_clearMenu != null) return true;
+        if (ToolbarRects(ToolbarActions()).Any(r => UiBatch.Contains(r.Pos, r.Size, screenPos))) return true;
+        return HitTestControlPoint(screenPos) >= 0 || HitTestHandles(screenPos) >= 0 || DimensionAt(screenPos) != null || OnSolid(screenPos);
     }
 
     private (Vector2 Min, Vector2 Max) HandleFrame()
@@ -731,32 +809,76 @@ public sealed partial class StrokeRenderer
             for (int i = 0; i < points.Length; i++)
             {
                 var s = WorldToScreen(Vector2.Transform(points[i], _movingTransform));
-                float corner = i < single.Points.Length ? 4f : 8f;
+                // Squares are points of the shape, circles move or size a whole side (of a solid in space: all but its middle).
+                float corner = single.Solid != null ? (i == 0 ? 4f : 8f) : i < single.Points.Length ? 4f : 8f;
                 ui.Rect(s - new Vector2(8f), new Vector2(16f), Theme.Accent, corner);
                 ui.Border(s - new Vector2(8f), new Vector2(16f), Theme.Text, 2f, corner);
             }
         }
 
         RenderDimensions(ui);
+        RenderSolidMode(ui);
         if (CurrentSelectionState != SelectionState.None) return;
         var actions = ToolbarActions();
+        var rects = ToolbarRects(actions);
         for (int i = 0; i < actions.Count; i++)
         {
-            var pos = ToolbarButtonPos(i, actions.Count);
-            var size = new Vector2(ToolbarButtonSize);
+            var (pos, size) = rects[i];
             bool hover = HoverPosition is { } p && UiBatch.Contains(pos, size, p);
             bool danger = actions[i] == SelectionAction.Delete;
-            ui.Rect(pos, size, hover ? (danger ? Theme.Danger : Theme.SurfaceHover) : Theme.WithAlpha(Theme.Surface, 0.95f), 10f);
-            ui.Border(pos, size, Theme.Border, 1f, 10f);
-            var iconColor = danger && !hover ? Theme.Danger : Theme.Text;
-            if (actions[i] == SelectionAction.Dash)
+            bool active = actions[i] switch
             {
-                ShapePicker.DrawDashes(ui, pos + size * 0.5f, 18f, iconColor);
-                continue;
+                SelectionAction.Turn => _solidMode == SolidMode.Turn,
+                SelectionAction.Section => _solidMode == SolidMode.Section,
+                SelectionAction.Lines => _solidMode == SolidMode.Lines,
+                SelectionAction.Cut => SelectedSolid?.Solid?.Section?.Cut is 1 or -1,
+                _ => false
+            };
+            ui.Rect(pos, size, active ? Theme.Accent : hover ? (danger ? Theme.Danger : Theme.SurfaceHover) : Theme.WithAlpha(Theme.Surface, 0.95f), 10f);
+            ui.Border(pos, size, Theme.Border, 1f, 10f);
+            var iconColor = active ? Theme.OnAccent : danger && !hover ? Theme.Danger : Theme.Text;
+            var center = pos + size * 0.5f;
+            switch (actions[i])
+            {
+                case SelectionAction.Dash:
+                    ShapePicker.DrawDashes(ui, center, 18f, iconColor);
+                    continue;
+                case SelectionAction.Turn:
+                    ui.Icon(Icons.Rotate, center, 16f, iconColor);
+                    continue;
+                case SelectionAction.Cut:
+                    ui.Icon(Icons.Cut, center, 16f, iconColor);
+                    continue;
+                case SelectionAction.Flip:
+                    ui.Icon(Icons.Flip, center, 16f, iconColor);
+                    continue;
+                case SelectionAction.Section:
+                    DrawSectionIcon(ui, center, iconColor);
+                    continue;
+                case SelectionAction.Lines:
+                    DrawCubeIcon(ui, center, iconColor);
+                    continue;
+                case SelectionAction.Clear:
+                    ui.Icon(Icons.Eraser, center, 16f, iconColor);
+                    continue;
             }
 
             string icon = actions[i] switch { SelectionAction.Edit => Icons.Edit, SelectionAction.Duplicate => Icons.Copy, _ => Icons.Delete };
-            ui.Icon(icon, pos + size * 0.5f, 16f, iconColor);
+            ui.Icon(icon, center, 16f, iconColor);
         }
+
+        if (_clearMenu != null)
+        {
+            RenderClearMenu(ui);
+            return;
+        }
+
+        for (int i = 0; i < actions.Count; i++)
+            if (HoverPosition is { } at && UiBatch.Contains(rects[i].Pos, rects[i].Size, at))
+                ui.Tooltip(ActionLabel(actions[i]), at, ScreenSize);
     }
+
+    /// <summary>The toolbar button under the pointer, so its highlight and name follow the pointer.</summary>
+    private int ToolbarButtonAt(Vector2? at) =>
+        at is { } p && HasSelection ? ToolbarRects(ToolbarActions()).FindIndex(r => UiBatch.Contains(r.Pos, r.Size, p)) : -1;
 }

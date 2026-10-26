@@ -9,7 +9,7 @@ public sealed record ScreenCapture(SKBitmap Bitmap, SKRectI[] Monitors, int Curr
     public void Dispose() => Bitmap.Dispose();
 }
 
-/// <summary>Where pictures come from — the screen, the clipboard, the open file dialog — and the export save dialog (Windows only).</summary>
+/// <summary>Where pictures come from - the screen, the clipboard, the open file dialog - and the export save dialog (Windows only).</summary>
 public static unsafe partial class ImageSources
 {
     private static readonly List<SKRectI> FoundMonitors = new();

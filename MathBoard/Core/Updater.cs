@@ -6,7 +6,7 @@ namespace MathBoard.Core;
 /// <summary>
 /// Checks GitHub Releases for a newer installer; on request downloads it, installs it silently and lets the installer
 /// start the new version. The release page redirect is used instead of the API, which allows only 60 requests per hour
-/// per IP — too few for a school network behind one address.
+/// per IP - too few for a school network behind one address.
 /// </summary>
 public sealed class Updater
 {

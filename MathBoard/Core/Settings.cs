@@ -123,6 +123,9 @@ public static class Settings
     /// <summary>How far (logical px) from a tap the selection looks for the nearest thing.</summary>
     public static Setting<float> SelectionRadius { get; } = new(20f);
 
+    /// <summary>Points tapped on a solid stick to the middles of its edges and faces (and its own middle), not only to its vertices and edges.</summary>
+    public static Setting<bool> SolidSnapMiddles { get; } = new(false);
+
     /// <summary>Look for a newer release on GitHub at startup.</summary>
     public static Setting<bool> CheckUpdates { get; } = new(true);
 

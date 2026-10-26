@@ -76,7 +76,25 @@ public sealed partial class StrokeRenderer : IDisposable
     public Vector4 CurrentColor { get; private set; } = Settings.Palette.FirstOrDefault(Vector4.One);
     public float CurrentBrushWidth { get; set; }
     public bool IsQuickShapeApplied { get; set; }
-    public Vector2? HoverPosition { get; set; }
+    /// <summary>Where the pointer is over the board; in a solid's building modes the point it would stick to follows it.</summary>
+    public Vector2? HoverPosition
+    {
+        get => _hover;
+        set
+        {
+            _hover = value;
+            if (_solidMode is SolidMode.Section or SolidMode.Lines || _clearMenu != null) _uiDirty = true;
+            int button = ToolbarButtonAt(value);
+            if (button != _hoveredButton)
+            {
+                _hoveredButton = button;
+                _uiDirty = true;
+            }
+        }
+    }
+
+    private Vector2? _hover;
+    private int _hoveredButton = -1;
 
     public StrokeRenderer(Document document, Camera camera)
     {
@@ -560,6 +578,7 @@ public sealed partial class StrokeRenderer : IDisposable
         SelectedStrokes.Clear();
         SelectedObjects.Clear();
         CurrentSelectionState = SelectionState.None;
+        ResetSolidMode();
         _fillTies = [];
         _carriedTies = [];
         _edited.Clear();

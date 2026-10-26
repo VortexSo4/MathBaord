@@ -5,7 +5,7 @@ using MathBoard.Graphics;
 namespace MathBoard.Rendering;
 
 /// <summary>
-/// Solids drawn the way they are in school: an oblique projection where local x, y and z go along the vectors U, V
+/// Solids of older lessons, drawn the way they are in school: an oblique projection where local x, y and z go along the vectors U, V
 /// and W from the origin, z away from the viewer. Edges and curves on the far side are dashed. Visibility comes from
 /// the viewing direction, so it stays right however the control points are dragged.
 /// </summary>
@@ -198,26 +198,4 @@ public static partial class ObjectGeometry
         float dash = MathF.Max(r * 5f, 6f);
         Dashes(prims, points, MathF.Max(r * 0.6f, 0.75f), c, dash, dash * 1.8f);
     }
-
-    /// <summary>Control points of a solid dragged out over a box, which it fills.</summary>
-    private static Vector2[] SolidFromDrag(ShapeKind kind, Vector2 min, Vector2 max)
-    {
-        float w = max.X - min.X, h = max.Y - min.Y;
-        var corner = new Vector2(min.X, max.Y);
-        // A shallower prism keeps its hidden back edge inside the front face, as in textbooks.
-        float depth = (kind == ShapeKind.Prism ? 0.2f : 0.3f) * MathF.Min(w, h);
-        float ry = MathF.Min(w * 0.25f, h / 3f);
-        var baseCenter = new Vector2(min.X + w * 0.5f, max.Y - ry);
-        return kind switch
-        {
-            ShapeKind.Pyramid => [corner, corner + new Vector2(w - depth, 0), new(min.X + w * 0.5f, min.Y), corner + new Vector2(depth, -depth)],
-            ShapeKind.Cylinder => [baseCenter, baseCenter + new Vector2(w * 0.5f, 0), new(baseCenter.X, min.Y + ry), baseCenter - new Vector2(0, ry)],
-            ShapeKind.Cone => [baseCenter, baseCenter + new Vector2(w * 0.5f, 0), new(baseCenter.X, min.Y), baseCenter - new Vector2(0, ry)],
-            ShapeKind.Sphere => SphereFromDrag((min + max) * 0.5f, MathF.Min(w, h) * 0.5f),
-            _ => [corner, corner + new Vector2(w - depth, 0), corner - new Vector2(0, h - depth), corner + new Vector2(depth, -depth)]
-        };
-    }
-
-    private static Vector2[] SphereFromDrag(Vector2 center, float radius) =>
-        [center, center + new Vector2(radius, 0), center - new Vector2(0, radius * 0.3f)];
 }

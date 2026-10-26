@@ -69,7 +69,7 @@ public sealed class UpdatePopup(StrokeRenderer renderer, Updater updater) : IPop
 
         string version = updater.AvailableVersion?.ToString(3) ?? "";
         var lineSize = new Vector2(PopupSize.X - Padding * 2, 24f);
-        ui.TextInRect(Localization.Get("update_title", "A new version is available") + " — " + version,
+        ui.TextInRect(Localization.Get("update_title", "A new version is available") + " - " + version,
             pos + new Vector2(Padding, Padding), lineSize, Theme.Text, Theme.Title);
 
         string status = updater.Status switch

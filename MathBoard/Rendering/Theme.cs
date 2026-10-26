@@ -93,4 +93,7 @@ public static class Icons
     public const string Sun = "\uE706";
     public const string Moon = "\uE708";
     public const string Backspace = "\uE750";
+    public const string Rotate = "\uE7AD";
+    public const string Cut = "\uE8C6";
+    public const string Flip = "\uE8AB";
 }

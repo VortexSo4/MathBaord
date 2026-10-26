@@ -255,6 +255,13 @@ public class SettingsPanel : IDisposable
             () => Settings.SelectionTapSize, v => Settings.SelectionTapSize.Value = Math.Clamp(v, 0f, 200f), "0"));
         Add(Numeric("settings_selection_radius", "Tap selects the nearest within, px",
             () => Settings.SelectionRadius, v => Settings.SelectionRadius.Value = Math.Clamp(v, 1f, 200f), "0"));
+        Add(new SettingItem
+        {
+            Name = Localization.Get("settings_solid_snap_middles", "Points on solids stick to middles of edges and faces"),
+            Type = SettingType.Bool,
+            GetValue = () => Settings.SolidSnapMiddles.Value.ToString(),
+            OnClick = () => Settings.SolidSnapMiddles.Value = !Settings.SolidSnapMiddles.Value
+        });
 
         Section("network", "Network");
         Add(new SettingItem

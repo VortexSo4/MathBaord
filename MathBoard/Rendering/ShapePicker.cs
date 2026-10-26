@@ -139,7 +139,9 @@ public sealed class ShapePicker(StrokeRenderer renderer) : IPopup
             // The real drawing, scaled into the cell.
             var prims = new List<Prim>();
             ObjectGeometry.Build(ObjectGeometry.FromDrag(kind, c - new Vector2(h), c + new Vector2(h), color, 1.5f), prims, null);
-            foreach (var p in prims) ui.Line(new Vector2(p.A.X, p.A.Y), new Vector2(p.A.Z, p.A.W), color, 1.5f);
+            // Hidden edges paler, as the icon is too small for dashes.
+            foreach (var p in prims)
+                ui.Line(new Vector2(p.A.X, p.A.Y), new Vector2(p.A.Z, p.A.W), p.IsDashed ? Theme.WithAlpha(color, color.W * 0.35f) : color, p.IsDashed ? 1f : 1.5f);
             return;
         }
 

@@ -214,13 +214,15 @@ public static partial class ObjectGeometry
         return contours;
     }
 
-    private static void BuildFill(BoardObject o, List<Prim> prims)
+    private static void BuildFill(BoardObject o, List<Prim> prims) => Pattern(prims, Contours(o.Points), o.Text, o.Width, o.Color);
+
+    /// <summary>A region filled in a style of the fill tool; the spacing of hatching, 0 for the usual one.</summary>
+    private static void Pattern(List<Prim> prims, List<Vector2[]> contours, string style, float spacing, Vector4 color)
     {
-        var contours = Contours(o.Points);
-        if (o.Text == FillSolid)
+        if (style == FillSolid)
         {
             // An opaque tint, so the overlapping lines that make up the area do not show.
-            var tint = Vector4.Lerp(Settings.Background, o.Color, 0.35f) with { W = 1f };
+            var tint = Vector4.Lerp(Settings.Background, color, 0.35f) with { W = 1f };
             Scan(prims, contours, 0f, SolidSpacing, SolidSpacing * 0.7f, tint);
             // The ends of the scanlines make a staircase along the edge, which shows between the dashes of a dashed
             // outline; a line along the edge smooths it.
@@ -228,11 +230,11 @@ public static partial class ObjectGeometry
             return;
         }
 
-        float spacing = Math.Clamp(o.Width > 0 ? o.Width : DefaultHatchSpacing, MinHatchSpacing, MaxHatchSpacing);
+        spacing = Math.Clamp(spacing > 0 ? spacing : DefaultHatchSpacing, MinHatchSpacing, MaxHatchSpacing);
         float r = Math.Clamp(spacing * 0.08f, 0.75f, 2f);
         // Screen y points down, so -45° reads as "/".
-        if (o.Text is FillHatch or FillCross) Scan(prims, contours, -MathF.PI / 4f, spacing, r, o.Color);
-        if (o.Text is FillBackHatch or FillCross) Scan(prims, contours, MathF.PI / 4f, spacing, r, o.Color);
+        if (style is FillHatch or FillCross) Scan(prims, contours, -MathF.PI / 4f, spacing, r, color);
+        if (style is FillBackHatch or FillCross) Scan(prims, contours, MathF.PI / 4f, spacing, r, color);
     }
 
     /// <summary>

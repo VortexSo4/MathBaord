@@ -269,6 +269,19 @@ public sealed class BoardSync(Document document)
         {
             Mix((ulong)o.Id);
             Mix((ulong)o.Kind);
+            if (o.Solid is { } solid)
+            {
+                MixFloat(solid.Yaw);
+                MixFloat(solid.Pitch);
+                Mix((ulong)solid.Marks.Length + (solid.Section != null ? 1000UL : 0));
+                if (solid.Section is { } section)
+                {
+                    foreach (char c in section.Style) Mix(c);
+                    MixFloat(section.Spacing);
+                    Mix((ulong)(section.Cut + 1));
+                }
+            }
+
             foreach (var p in o.Points)
             {
                 MixFloat(p.X);
@@ -534,6 +547,8 @@ public sealed class BoardSync(Document document)
         w.Write(o.Text);
         w.Write(o.XMin);
         w.Write(o.XMax);
+        w.Write(o.Solid != null);
+        o.Solid?.Write(w);
     }
 
     private static BoardObject ReadObject(BinaryReader r)
@@ -543,7 +558,8 @@ public sealed class BoardSync(Document document)
         var color = ReadVector(r);
         float width = r.ReadSingle();
         var points = ReadPoints(r).ToArray();
-        return new BoardObject(kind, points, color, width) { Id = id, Text = r.ReadString(), XMin = r.ReadSingle(), XMax = r.ReadSingle() };
+        var o = new BoardObject(kind, points, color, width) { Id = id, Text = r.ReadString(), XMin = r.ReadSingle(), XMax = r.ReadSingle() };
+        return r.ReadBoolean() ? o with { Solid = Solid3D.Read(r) } : o;
     }
 
     private static void WritePoints(BinaryWriter w, IReadOnlyList<Vector2> points)
